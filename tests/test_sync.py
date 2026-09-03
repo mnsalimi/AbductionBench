@@ -105,7 +105,7 @@ def test_exclude_patterns_are_honoured(tmp_path: Path):
     raw = run / "datasets/ds/model/tpl/raw"
     raw.mkdir()
     (raw / "batch-0.json").write_text("{}", encoding="utf-8")
-    syncer = ArtifactSync(_config(remote, exclude=["raw/**"]), run, "run-1")
+    syncer = ArtifactSync(_config(remote, exclude=["raw/"]), run, "run-1")
     syncer.flush()
     assert (remote / "run-1" / "datasets/ds/model/tpl/records.jsonl").exists()
     assert not (remote / "run-1" / "datasets/ds/model/tpl/raw").exists()
@@ -249,3 +249,69 @@ def test_preflight_retry_can_be_switched_off(tmp_path: Path):
     syncer.start()
     assert syncer._thread is None            # noqa: SLF001 - no watcher thread at all
     assert syncer.stop().successes == 0
+
+
+def test_uploads_a_snapshot_so_growing_files_are_stable(tmp_path: Path):
+    """Records and logs are appended to; uploading them live loses them.
+
+    rclone sizes/hashes a file, uploads it, compares with the remote copy, and
+    on a mismatch declares the transfer corrupt and DELETES it remotely -- which
+    is what happened to events.jsonl on the first live Drive run. Each pass
+    therefore rsyncs a snapshot first and uploads that.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, exclude=[]), run, "run-1")
+    assert syncer._snapshot() == syncer.stage_dir  # noqa: SLF001
+    assert (syncer.stage_dir / "engine.log").exists()
+
+    stats = syncer.flush()
+    assert stats.failures == 0
+    assert (remote / "run-1" / "engine.log").exists()
+
+    # Opting out uploads the live directory instead, and says so in the command.
+    direct = ArtifactSync(_config(remote, snapshot_before_upload=False), run, "run-1")
+    assert direct._snapshot() == run                     # noqa: SLF001
+    assert "--exclude" in direct._command(run)           # rclone filters instead
+    assert "--exclude" not in direct._command(direct.stage_dir)
+
+
+def test_api_calls_are_throttled(tmp_path: Path):
+    """Drive's shared OAuth client is rate-limited per project, not per user."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    command = syncer._command(syncer.stage_dir)  # noqa: SLF001
+    assert "--tpslimit" in command
+    unthrottled = ArtifactSync(_config(remote, tps_limit=0), run, "run-1")
+    assert "--tpslimit" not in unthrottled._command(unthrottled.stage_dir)  # noqa: SLF001
+
+
+def test_raw_payloads_are_excluded_by_default(tmp_path: Path):
+    """1,096 of a run's 1,201 files are debug payloads; results must not starve."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    raw = run / "datasets/ds/model/tpl/raw"
+    raw.mkdir()
+    for index in range(5):
+        (raw / f"batch-{index}.json").write_text("{}", encoding="utf-8")
+
+    syncer = ArtifactSync(_config(remote), run, "run-1")  # default exclude
+    syncer.flush()
+    assert (remote / "run-1" / "datasets/ds/model/tpl/records.jsonl").exists()
+    assert not (remote / "run-1" / "datasets/ds/model/tpl/raw").exists()
+
+    # ... and everything can be backed up when asked for explicitly.
+    everything = ArtifactSync(_config(remote, exclude=[]), run, "run-2")
+    everything.flush()
+    assert (remote / "run-2" / "datasets/ds/model/tpl/raw/batch-0.json").exists()
+
+
+def test_a_file_growing_during_upload_still_reaches_the_remote(tmp_path: Path):
+    """End-to-end version of the bug: a file appended to during the pass lands."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    events = run / "events.jsonl"
+    events.write_text("\n".join(f'{{"i": {i}}}' for i in range(2000)) + "\n", encoding="utf-8")
+
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._tick(reason="interval")  # noqa: SLF001 - a live pass
+
+    assert (remote / "run-1" / "events.jsonl").exists()
+    assert syncer.stats.failures == 0

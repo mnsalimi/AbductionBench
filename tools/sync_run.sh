@@ -6,19 +6,35 @@
 # rclone loop in its own process, which by construction cannot slow the
 # evaluation down or crash it.
 #
-#     bash tools/sync_run.sh runs/20260903-184330_full            # foreground
-#     nohup bash tools/sync_run.sh runs/20260903-184330_full \
+#     bash tools/sync_run.sh runs/20260903-190409_full            # foreground
+#     nohup bash tools/sync_run.sh runs/20260903-190409_full \
 #           > /tmp/abench_sync.log 2>&1 &                          # detached
 #
-# It keeps running until you stop it (Ctrl-C / kill), uploading only what
-# changed each pass, and does one final pass on exit so the reports written at
-# the very end are included.
+# Two things it does that a naive "rclone copy" does not, both learned from a
+# live run against Google Drive:
+#
+#   * It uploads a SNAPSHOT, not the live directory. records.jsonl and the logs
+#     are appended to continuously, so rclone would size/hash a file, upload it,
+#     find the remote copy no longer matches, call the transfer corrupt and
+#     DELETE it from the remote -- losing exactly the files worth keeping. An
+#     rsync into a staging directory takes a moment and makes every upload a
+#     stable, verifiable file.
+#   * It excludes raw/ by default and throttles API calls. In a full run 1,096
+#     of 1,201 files are per-batch debug payloads; uploading them exhausts
+#     Google Drive's per-minute request quota for rclone's shared OAuth client
+#     (HTTP 403 rateLimitExceeded) and starves the files that matter. Every
+#     record, metric, checkpoint, log and report is still backed up.
+#
+# It runs until stopped (Ctrl-C / kill) and does one final pass on exit, so the
+# reports written at the very end are included.
 #
 # Environment:
 #   SYNC_REMOTE    rclone destination        (default: gdrive:AbductionBench)
 #   SYNC_INTERVAL  seconds between passes    (default: 60)
-#   SYNC_EXCLUDE   comma-separated globs     (default: none; try "raw/**")
+#   SYNC_EXCLUDE   comma-separated globs     (default: "raw/"; set to "" for all)
+#   SYNC_TPSLIMIT  API calls per second      (default: 8; Drive's shared client is strict)
 #   SYNC_BWLIMIT   e.g. 8M                   (default: unlimited)
+#   SYNC_STAGE     staging directory         (default: $TMPDIR/abench_sync_stage)
 
 set -uo pipefail   # deliberately not -e: a failed pass must not end the loop
 
@@ -26,50 +42,60 @@ RUN_DIR="${1:-}"
 REMOTE="${SYNC_REMOTE:-gdrive:AbductionBench}"
 INTERVAL="${SYNC_INTERVAL:-60}"
 BWLIMIT="${SYNC_BWLIMIT:-}"
-EXCLUDES="${SYNC_EXCLUDE:-}"
+TPSLIMIT="${SYNC_TPSLIMIT:-8}"
+EXCLUDES="${SYNC_EXCLUDE-raw/}"
+STAGE_ROOT="${SYNC_STAGE:-${TMPDIR:-/tmp}/abench_sync_stage}"
 
 if [[ -z "$RUN_DIR" || ! -d "$RUN_DIR" ]]; then
-  echo "usage: bash tools/sync_run.sh <run-dir>   (e.g. runs/20260903-184330_full)" >&2
+  echo "usage: bash tools/sync_run.sh <run-dir>   (e.g. runs/20260903-190409_full)" >&2
   exit 2
 fi
-if ! command -v rclone >/dev/null; then
-  echo "rclone is not installed" >&2
-  exit 1
-fi
+command -v rclone >/dev/null || { echo "rclone is not installed" >&2; exit 1; }
+command -v rsync  >/dev/null || { echo "rsync is not installed" >&2; exit 1; }
 
-RUN_ID="$(basename "$RUN_DIR")"
+RUN_ID="$(basename "$(cd "$RUN_DIR" && pwd)")"
 DEST="${REMOTE%/}/$RUN_ID"
+STAGE="$STAGE_ROOT/$RUN_ID"
+mkdir -p "$STAGE"
 
-args=(copy "$RUN_DIR" "$DEST" --update --transfers=4 --checkers=8
-      --timeout=300s --retries=2 --low-level-retries=3 --fast-list --stats=0)
-[[ -n "$BWLIMIT" ]] && args+=("--bwlimit=$BWLIMIT")
+rsync_args=(-a --delete)
+rclone_args=(copy "$STAGE" "$DEST" --update --transfers=4 --checkers=8
+             --timeout=300s --retries=3 --low-level-retries=10 --fast-list --stats=0
+             --tpslimit "$TPSLIMIT" --drive-pacer-min-sleep 100ms)
+[[ -n "$BWLIMIT" ]] && rclone_args+=("--bwlimit=$BWLIMIT")
 if [[ -n "$EXCLUDES" ]]; then
   IFS=',' read -ra patterns <<< "$EXCLUDES"
-  for pattern in "${patterns[@]}"; do args+=(--exclude "$pattern"); done
+  for pattern in "${patterns[@]}"; do rsync_args+=(--exclude "$pattern"); done
 fi
 
 # Verify the destination is usable before claiming to back anything up.
 remote_name="${REMOTE%%:*}"
 if [[ "$REMOTE" == *:* ]] && ! rclone listremotes 2>/dev/null | grep -qx "$remote_name:"; then
   echo "rclone remote '$remote_name' is not configured." >&2
-  echo "Run:  bash tools/setup_drive_remote.sh '<token-json>'" >&2
+  echo "Run:  bash tools/connect_drive.sh" >&2
   exit 1
 fi
 
+one_pass() {
+  rsync "${rsync_args[@]}" "$RUN_DIR/" "$STAGE/" || return 1
+  rclone "${rclone_args[@]}"
+}
+
 final_pass() {
   echo "[$(date -Is)] final pass"
-  rclone "${args[@]}"
+  one_pass
   echo "[$(date -Is)] stopped"
   exit 0
 }
 trap final_pass INT TERM
 
-echo "[$(date -Is)] backing up $RUN_DIR -> $DEST every ${INTERVAL}s (incremental)"
+echo "[$(date -Is)] backing up $RUN_DIR -> $DEST every ${INTERVAL}s" \
+     "(snapshot via $STAGE; excluding: ${EXCLUDES:-nothing}; ${TPSLIMIT} API calls/s)"
 passes=0
 failures=0
 while true; do
   start=$SECONDS
-  if rclone "${args[@]}"; then
+  if one_pass; then
     passes=$((passes + 1))
     echo "[$(date -Is)] pass $passes ok in $((SECONDS - start))s ($failures failure(s) so far)"
   else

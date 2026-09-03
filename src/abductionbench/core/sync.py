@@ -19,6 +19,15 @@ Design constraints, in order of importance:
 4. **It must never delete remote data.** ``copy`` is used rather than ``sync``,
    so a local file disappearing (or a fresh run directory) cannot wipe results
    already backed up.
+5. **It must upload files that are not changing under it.** Records and logs are
+   appended to continuously; uploading them live makes rclone size/hash a file,
+   send it, find the remote copy no longer matches, declare the transfer corrupt
+   and *delete it from the remote*.  Each pass therefore rsyncs a snapshot
+   locally first (cheap) and uploads that.
+6. **It must respect the destination's rate limits.** A full run writes ~1,200
+   files, 1,096 of them per-batch debug payloads; sending those exhausts Google
+   Drive's per-minute request quota for rclone's shared OAuth client, so
+   ``raw/`` is excluded by default and API calls are throttled.
 
 Any rclone remote works -- Google Drive, S3, another host over SFTP -- and a
 plain local path works too, which is how this module is tested without
@@ -28,6 +37,7 @@ credentials.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -114,11 +124,45 @@ class ArtifactSync:
             return f"{base}/{self.run_id}"
         return base
 
-    def _command(self) -> list[str]:
+    @property
+    def stage_dir(self) -> Path:
+        """Local snapshot directory uploaded in place of the live run dir."""
+        base = self.config.stage_dir or os.path.join(
+            os.environ.get("TMPDIR", "/tmp"), "abench_sync_stage"
+        )
+        return Path(base) / self.run_id
+
+    def _snapshot(self) -> Path:
+        """rsync the run directory into the staging dir; returns what to upload.
+
+        Falls back to uploading the live directory if rsync is unavailable, so a
+        missing tool degrades the guarantee rather than the backup.
+        """
+        if not self.config.snapshot_before_upload:
+            return self.run_dir
+        if shutil.which("rsync") is None:
+            logger.warning(
+                "rsync not found: uploading the live directory, so a file appended to "
+                "mid-upload may be rejected by the remote and retried next pass"
+            )
+            return self.run_dir
+        stage = self.stage_dir
+        stage.mkdir(parents=True, exist_ok=True)
+        command = ["rsync", "-a", "--delete"]
+        for pattern in self.config.exclude:
+            command.extend(["--exclude", pattern])
+        command.extend([f"{self.run_dir}/", f"{stage}/"])
+        subprocess.run(  # noqa: S603 - fixed binary, paths from config
+            command, capture_output=True, text=True, timeout=self.config.timeout_s, check=True
+        )
+        return stage
+
+    def _command(self, source: Path) -> list[str]:
+        """rclone arguments for uploading ``source`` to the destination."""
         command = [
             self.config.rclone_binary,
             "copy",
-            str(self.run_dir),
+            str(source),
             self.destination,
             # Only send what changed: skip files already on the remote whose
             # modification time is not older than the local one.
@@ -134,10 +178,17 @@ class ArtifactSync:
             "--fast-list",
             "--stats=0",
         ]
+        if self.config.tps_limit:
+            # Drive's shared OAuth client is rate-limited per project across all
+            # rclone users; without this a run's file count trips HTTP 403.
+            command.extend(["--tpslimit", str(self.config.tps_limit)])
+            command.extend(["--drive-pacer-min-sleep", "100ms"])
         if self.config.bandwidth_limit:
             command.append(f"--bwlimit={self.config.bandwidth_limit}")
-        for pattern in self.config.exclude:
-            command.extend(["--exclude", pattern])
+        if source == self.run_dir:
+            # Not snapshotting, so rclone has to do the filtering itself.
+            for pattern in self.config.exclude:
+                command.extend(["--exclude", pattern])
         command.extend(self.config.extra_args)
         return command
 
@@ -276,8 +327,9 @@ class ArtifactSync:
         started = time.monotonic()
         try:
             self.stats.ticks += 1
+            source = self._snapshot()
             completed = subprocess.run(  # noqa: S603 - binary and args come from config
-                self._command(),
+                self._command(source),
                 capture_output=True,
                 text=True,
                 timeout=self.config.timeout_s + 60,

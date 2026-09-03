@@ -93,7 +93,34 @@ How it behaves, and why:
   changed, so a tick uploads the few `records.jsonl` and log files that grew.
 * **It never deletes remote data** (`copy`, not `sync`), so a fresh run
   directory cannot wipe results already backed up.
+* **It uploads a snapshot, not the live directory.** Records and logs are
+  appended to continuously; uploading them live makes rclone size/hash a file,
+  send it, find the remote copy no longer matches, declare the transfer corrupt
+  and *delete it remotely*. Each pass rsyncs locally first (a moment) and
+  uploads that, so every transfer is stable and verifiable.
+* **It respects the destination's rate limits.** A full run writes ~1,200 files,
+  1,096 of them per-batch debug payloads under `raw/`; sending those exhausts
+  Google Drive's per-minute quota for rclone's shared OAuth client (HTTP 403)
+  and starves the files that matter. `raw/` is excluded by default and API calls
+  are throttled (`exclude: []` backs up everything).
 * A final pass runs after the workbook and run documentation are written.
+
+The Drive layout mirrors the local one, one folder per run:
+
+```
+AbductionBench/                        <- the folder you shared
+└── 20260903-190409_full/              <- run id: UTC timestamp + run name
+    ├── RUN_REPORT.md                  <- headline table, skipped datasets, reliability
+    ├── run_config.resolved.yaml       <- exactly what was run (API keys redacted)
+    ├── engine.log · engine.jsonl · events.jsonl
+    ├── reports/
+    │   ├── abductionbench_results.xlsx
+    │   └── summary.csv · metrics_long.csv
+    └── datasets/<dataset>/<model>/<template@version>/
+        ├── records.jsonl              <- one JSON object per sample
+        ├── metrics.json · checkpoint.json
+        └── run_documentation.md
+```
 
 ### One-time Google Drive setup
 

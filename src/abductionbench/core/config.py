@@ -475,15 +475,31 @@ class SyncConfig(_Base):
     timeout_s: int = Field(300, ge=10)
     #: e.g. "8M" to cap upload bandwidth; empty means unlimited.
     bandwidth_limit: str = ""
-    #: Glob patterns to leave out.  Raw per-batch payloads are the bulky part of
-    #: a run, so a slow link can drop them while still backing up every record,
-    #: metric and log.
-    exclude: list[str] = Field(default_factory=list)
+    #: Patterns to leave out (rsync syntax when snapshotting, rclone otherwise).
+    #: ``raw/`` is excluded by default: in a full run it is 1,096 of 1,201 files
+    #: -- per-batch request/response payloads kept for auditing -- and uploading
+    #: them exhausts Drive's per-minute request quota while starving the records,
+    #: metrics, checkpoints, logs and reports, which are all still backed up.
+    #: Set to ``[]`` to back up everything including raw payloads.
+    exclude: list[str] = Field(default_factory=lambda: ["raw/"])
     extra_args: list[str] = Field(default_factory=list)
     #: If the destination is unusable at startup (e.g. credentials not set up
     #: yet), re-check this often and begin uploading once it works.  0 disables
     #: the re-check, leaving the run permanently un-backed-up.
     preflight_retry_s: float = Field(300.0, ge=0)
+    #: Upload an rsync snapshot instead of the live directory.  Records and logs
+    #: are appended to continuously, so rclone would size/hash a file, upload it,
+    #: find the remote copy no longer matches, declare the transfer corrupt and
+    #: *delete it from the remote* -- losing exactly the files worth backing up.
+    #: Snapshotting first makes every upload a stable, verifiable file.  Turning
+    #: this off is only sane for a destination that tolerates changing files.
+    snapshot_before_upload: bool = True
+    #: Where snapshots live.  Empty means ``<TMPDIR>/abench_sync_stage``.
+    stage_dir: str = ""
+    #: Cap on rclone API calls per second.  Google Drive's shared OAuth client
+    #: is rate-limited per project across all rclone users, and a run with a
+    #: thousand small files trips HTTP 403 rateLimitExceeded without this.
+    tps_limit: float = Field(8.0, ge=0)
 
 
 class ReportingConfig(_Base):
