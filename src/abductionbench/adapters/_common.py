@@ -40,6 +40,9 @@ __all__ = [
     "read_json",
     "read_jsonl",
     "read_csv_rows",
+    "read_parquet_rows",
+    "read_gzip_jsonl",
+    "read_lines",
     "read_text",
     "find_files",
     "first_existing",
@@ -239,6 +242,46 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             logger.debug("%s:%d is not valid JSON; skipped", path, number)
     return rows
+
+
+def read_parquet_rows(path: Path) -> list[dict[str, Any]]:
+    """Read a parquet file into plain dicts (numpy arrays become lists)."""
+    import pandas as pd
+
+    frame = pd.read_parquet(path)
+    rows: list[dict[str, Any]] = []
+    for record in frame.to_dict(orient="records"):
+        rows.append({key: _plain(value) for key, value in record.items()})
+    return rows
+
+
+def _plain(value: Any) -> Any:
+    """Convert numpy/pandas scalars and arrays into plain Python values."""
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def read_gzip_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a gzip-compressed JSONL file."""
+    import gzip
+
+    rows: list[dict[str, Any]] = []
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def read_lines(path: Path) -> list[str]:
+    """Read a text file as a list of stripped, non-empty lines."""
+    return [line.strip() for line in read_text(path).splitlines() if line.strip()]
 
 
 def read_csv_rows(path: Path, *, delimiter: str | None = None) -> list[dict[str, str]]:

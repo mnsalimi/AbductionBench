@@ -1,0 +1,5 @@
+dataset:
+  id: hypogen
+  impl: abductionbench.adapters.hypogen:HypoGenAdapter
+  sample_size: 300   # official test split has 50 items; the shortfall is reported
+  notes: Test split only; title/abstract/spark withheld to avoid leaking the hypothesis.

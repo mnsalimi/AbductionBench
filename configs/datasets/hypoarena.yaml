@@ -1,0 +1,7 @@
+dataset:
+  id: hypoarena
+  impl: abductionbench.adapters.hypoarena:HypoArenaAdapter
+  sample_size: 300
+  options:
+    domains: null   # null -> all six domains
+  notes: Whole release (830 items, 6 domains); generation only (no candidate sets upstream).

@@ -1,0 +1,46 @@
+id: sel_mcq_multi_v1
+version: "1.0"
+description: >-
+  Multi-answer hypothesis selection: choose every option that is a plausible
+  explanation of the observation (for datasets whose gold answer is a set).
+task_kinds: [multi_selection]
+required_fields: [observation, options]
+optional_fields: [context, question, instructions, option_labels]
+messages:
+  - role: system
+    content: |
+      You are an expert at abductive reasoning: identifying which candidate
+      explanations actually account for an observation. Several candidates may
+      each be a genuine explanation, and some may be merely related without
+      explaining anything. Include exactly those that explain the observation.
+  - role: user
+    content: |
+      {% if context %}
+      Background:
+      {{ context }}
+
+      {% endif %}
+      Observation:
+      {{ observation }}
+      {% if question %}
+
+      Question: {{ question }}
+      {% else %}
+
+      Which of the following are plausible direct explanations of the observation?
+      {% endif %}
+
+      Options:
+      {{ options | enumerate_options }}
+      {% if instructions %}
+
+      Task: {{ instructions }}
+      {% endif %}
+
+      Finish with exactly one line listing every label that applies, comma
+      separated and nothing else:
+      Answer: <label>[,<label>...]
+output_contract:
+  answer_prefix: "Answer:"
+  strip_markdown: true
+  style: multi_label

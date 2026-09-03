@@ -1,0 +1,12 @@
+dataset:
+  id: aer
+  impl: abductionbench.adapters.aer:AERAdapter
+  sample_size: 300
+  prompt_bindings:
+    multi_selection: sel_mcq_multi_v1
+  options:
+    doc_content: snippets   # snippets (default) | full | none
+    max_docs: 12
+    words_per_doc: 120
+  notes: >-
+    Dev split (test ships unlabelled); multi-answer selection scored with set F1.

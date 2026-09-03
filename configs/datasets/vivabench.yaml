@@ -1,0 +1,10 @@
+dataset:
+  id: vivabench
+  impl: abductionbench.adapters.vivabench:VivaBenchAdapter
+  sample_size: 300
+  options:
+    table: pubmed_reviewed   # pubmed_reviewed (human-reviewed) | dataset_generated
+    subtask: generation      # generation | selection (uses the case's own differentials)
+    evidence: vignette       # vignette | with_findings
+    words_per_section: 250
+  notes: Human-reviewed table; vignette-only evidence (single-turn analogue of a viva).

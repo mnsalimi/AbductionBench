@@ -1,0 +1,5 @@
+dataset:
+  id: matter_to_mechanism
+  impl: abductionbench.adapters.matter_to_mechanism:MatterToMechanismAdapter
+  sample_size: 300
+  notes: Single unsplit table (2,645 rows); answer-bearing columns withheld from prompts.

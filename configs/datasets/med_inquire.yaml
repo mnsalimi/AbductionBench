@@ -3,6 +3,11 @@ dataset:
   impl: abductionbench.adapters.med_inquire:MedInquireAdapter
   sample_size: 300
   options:
-    subtask: generation   # generation (default, per the suite's mode) | selection
-    evidence: full        # full | case_and_exam | case_only
-  notes: Official test split (915 case reports); free-text diagnosis.
+    subtask: generation      # generation (default, per the suite's mode) | selection
+    # EvoClinician's premise is that the work-up must be *requested*, so the
+    # default withholds it -- which also keeps this run distinct from
+    # diagnosisarena, whose items are the same 915 case reports.
+    evidence: case_and_exam  # full | case_and_exam | case_only
+  notes: >-
+    Official test split (915 case reports); free-text diagnosis from presentation +
+    examination only. Same underlying items as diagnosisarena (see its notes).

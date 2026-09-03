@@ -61,7 +61,7 @@ class MedInquireAdapter(PooledDatasetAdapter):
 
     def _evidence(self, item: dict[str, Any]) -> tuple[str, str]:
         """Return ``(observation, context)`` for the configured evidence level."""
-        level = str(self.context.option("evidence", "full"))
+        level = str(self.context.option("evidence", "case_and_exam"))
         narrative = C.normalize_whitespace(item.get("case_information"))
         examination = C.normalize_whitespace(item.get("physical_examination"))
         tests = C.normalize_whitespace(item.get("diagnostic_tests"))
@@ -210,6 +210,9 @@ class MedInquireAdapter(PooledDatasetAdapter):
                 "the answer itself is a short disease name.",
             ],
             caveats=[
+                "SAME UNDERLYING ITEMS AS diagnosisarena: this test file is the DiagnosisArena "
+                "release re-used by EvoClinician. The two rows are one dataset viewed two ways "
+                "(here without the diagnostic work-up), not independent evidence.",
                 "Case reports are published literature and may be memorized by large models.",
                 "String matching under-credits correct paraphrases; enable engine.judge for "
                 "diagnosis_match_judged.",
@@ -217,7 +220,7 @@ class MedInquireAdapter(PooledDatasetAdapter):
             statistics={
                 **self.base_statistics(),
                 "subtask": self._subtask,
-                "evidence": str(self.context.option("evidence", "full")),
+                "evidence": str(self.context.option("evidence", "case_and_exam")),
             },
         )
 

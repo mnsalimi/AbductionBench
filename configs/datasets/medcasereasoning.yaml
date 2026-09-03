@@ -1,0 +1,5 @@
+dataset:
+  id: medcasereasoning
+  impl: abductionbench.adapters.medcasereasoning:MedCaseReasoningAdapter
+  sample_size: 300
+  notes: HF test split (897 cases); clinician reasoning withheld from the prompt.
