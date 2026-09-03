@@ -1,0 +1,12 @@
+dataset:
+  id: researchbench
+  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  sample_size: 300
+  options:
+    name: "ResearchBench"
+    domain: "Scientific Discovery: Literature-Grounded"
+    processing_mode: "Generation / Selection"
+    source_url: "https://huggingface.co/datasets/ankilok/ResearchBench"
+    reason: "gated Hugging Face repository"
+    detail: "Downloads return HTTP 401 (GatedRepoError): the repo requires accepting terms with an authenticated HF token. Set HF_TOKEN with access and re-enable this dataset to include it."
+  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

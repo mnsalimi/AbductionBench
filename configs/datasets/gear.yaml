@@ -1,0 +1,9 @@
+dataset:
+  id: gear
+  impl: abductionbench.adapters.gear:GearAdapter
+  sample_size: 300
+  options:
+    subtask: acre   # acre (default) | arc (not implemented; see the adapter docstring)
+  notes: >-
+    Repository confirmed from arXiv:2509.24096 (the table's URL was a placeholder).
+    ACRE family; reports undetermined-recall and overcaution alongside accuracy.

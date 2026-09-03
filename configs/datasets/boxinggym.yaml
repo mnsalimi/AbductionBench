@@ -1,0 +1,12 @@
+dataset:
+  id: boxinggym
+  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  sample_size: 300
+  options:
+    name: "BoxingGym"
+    domain: "Scientific Discovery: Experimental Design"
+    processing_mode: "Generation"
+    source_url: "https://github.com/kanishkg/boxing-gym"
+    reason: "interactive simulation environment, no static dataset"
+    detail: "BoxingGym's tasks are simulated environments in which an agent designs experiments and updates a model over many turns; the repository contains environment code and configs but no static observation/hypothesis pairs to evaluate single-turn."
+  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

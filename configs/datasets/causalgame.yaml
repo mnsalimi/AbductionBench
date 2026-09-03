@@ -1,0 +1,12 @@
+dataset:
+  id: causalgame
+  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  sample_size: 300
+  options:
+    name: "CausalGame"
+    domain: "Causal Science: Experimental Reasoning"
+    processing_mode: "Generation"
+    source_url: "https://causalgame.github.io/"
+    reason: "interactive game server, no static dataset"
+    detail: "The repository is an agent harness (agent/, api/, experiments/) that plays an interactive causal-discovery game against a live server; no static items with gold answers are released."
+  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

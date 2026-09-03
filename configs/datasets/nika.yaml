@@ -1,0 +1,12 @@
+dataset:
+  id: nika
+  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  sample_size: 300
+  options:
+    name: "NIKA"
+    domain: "Computing Systems: Network Troubleshooting"
+    processing_mode: "Generation"
+    source_url: "https://github.com/sands-lab/nika"
+    reason: "no static observations in the release"
+    detail: "The repository ships fault-injection specifications (benchmark/releases/*.yaml, benchmark/working/pool/*.yaml) and a network emulator, but no telemetry: an item's observations only exist once the emulator has been run. There is therefore nothing to abduce from without standing up the emulated network, so the dataset is out of scope for a text-only single-turn harness."
+  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

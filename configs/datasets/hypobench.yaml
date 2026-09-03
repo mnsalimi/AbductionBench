@@ -1,0 +1,11 @@
+dataset:
+  id: hypobench
+  impl: abductionbench.adapters.hypobench:HypoBenchAdapter
+  sample_size: 300
+  options:
+    families: [real, synthetic]
+    examples_per_sample: 12
+    samples_per_task: 45
+  notes: >-
+    One sample = a deterministic block of labelled train examples; scored against
+    each task's known_hypotheses.

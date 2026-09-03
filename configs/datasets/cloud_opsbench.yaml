@@ -1,0 +1,11 @@
+dataset:
+  id: cloud_opsbench
+  impl: abductionbench.adapters.cloud_opsbench:CloudOpsBenchAdapter
+  sample_size: 300
+  options:
+    evidence: tool_cache      # tool_cache (bounded slice) | symptom_only
+    max_evidence_entries: 6
+    words_per_entry: 220
+  notes: >-
+    All cases with ground truth; evidence is a bounded slice of the shipped tool
+    cache (the full cache/logs exceed the input budget by orders of magnitude).

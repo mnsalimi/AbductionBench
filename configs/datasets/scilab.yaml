@@ -1,0 +1,12 @@
+dataset:
+  id: scilab
+  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  sample_size: 300
+  options:
+    name: "SciLab (LLM-AutoSciLab)"
+    domain: "Scientific Discovery: Closed-Loop Experimentation"
+    processing_mode: "Generation & Selection"
+    source_url: "https://github.com/scientific-discovery/LLM-AutoSciLab"
+    reason: "closed-loop experimentation framework, no static dataset"
+    detail: "The repository provides the autonomous-lab loop plus NewtonBench configuration files (configs/noise_studies/*.json); the evaluation items are produced by running the loop against a simulator, so there is no released set of abductive items."
+  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
