@@ -47,7 +47,25 @@ uv pip install -e ".[adapters,dev]"
 cp .env.example .env    # then fill in ABENCH_API_KEY and the URLs
 ```
 
-## Use
+## Run the whole suite
+
+```bash
+set -a; . ./.env; set +a                       # or: export ABENCH_API_KEY=...
+
+abench doctor configs/runs/full.yaml           # 30 s: endpoint + batch route reachable
+abench run    configs/runs/full.yaml           # 300 samples x 39 datasets x every model
+
+# interrupted? continue exactly where it stopped (per-sample checkpoints):
+abench run configs/runs/full.yaml --resume runs/<run-id>
+```
+
+`configs/runs/full.yaml` is the single place that decides scope: it picks up
+every dataset config automatically and lists the models. Adding a model is one
+line there. One model over the whole suite is 9,882 prompts (~1,270 native batch
+calls at group size 8) and takes roughly 2-3 h on an idle GPU; selection
+datasets cost ~0.02 s/sample, long-form physics ~4 s/sample.
+
+## Other commands
 
 ```bash
 abench validate configs/runs/pilot.yaml        # config, templates, adapter imports
