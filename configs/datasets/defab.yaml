@@ -1,0 +1,13 @@
+dataset:
+  id: defab
+  impl: abductionbench.adapters.defab:DeFAbAdapter
+  sample_size: 300
+  prompt_bindings:
+    multi_selection: sel_mcq_multi_v1
+    knowledge_completion: gen_structured_v1
+  options:
+    subtask: selection   # selection (matches the release structure) | generation
+    domains: null        # null -> every released instance set
+  notes: >-
+    All released instance sets pooled (no official split); multi-gold instances
+    scored with set F1.

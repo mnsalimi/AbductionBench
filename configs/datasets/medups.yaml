@@ -1,0 +1,9 @@
+dataset:
+  id: medups
+  impl: abductionbench.adapters.medups:MedUPSAdapter
+  sample_size: 300
+  options:
+    subtask: generation   # generation (default) | selection (uses the shipped ICD distractors)
+  notes: >-
+    MedUPS_final_diagnosis test split (the suite's URL is a collection, resolved to
+    its member datasets); mid-stream subset excluded as not abduction-only.

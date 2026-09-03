@@ -1,0 +1,11 @@
+dataset:
+  id: proof_writer
+  impl: abductionbench.adapters.proof_writer:ProofWriterAdapter
+  sample_size: 300
+  prompt_bindings:
+    knowledge_completion: gen_structured_v1
+  options:
+    configs: [OWA-depth-1, OWA-depth-2, OWA-depth-3, OWA-depth-5]
+  notes: >-
+    Abduction items reconstructed from the released proofs (the official abduction
+    files are no longer downloadable); official test splits only.

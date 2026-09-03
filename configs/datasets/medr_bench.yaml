@@ -1,0 +1,7 @@
+dataset:
+  id: medr_bench
+  impl: abductionbench.adapters.medr_bench:MedRBenchAdapter
+  sample_size: 300
+  notes: >-
+    Diagnosis collection only (treatment cases are not abductive); answer-bearing
+    narratives withheld; rare/common breakdown reported.
