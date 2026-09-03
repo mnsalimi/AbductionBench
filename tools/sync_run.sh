@@ -58,6 +58,22 @@ DEST="${REMOTE%/}/$RUN_ID"
 STAGE="$STAGE_ROOT/$RUN_ID"
 mkdir -p "$STAGE"
 
+# One sidecar per run, enforced. Two of them upload the same files at the same
+# time, and Google Drive happily stores same-named duplicates -- which then need
+# an `rclone dedupe` to clean up. flock releases automatically when this process
+# dies, so a crashed sidecar does not block the next one.
+# The lock lives OUTSIDE the staged tree: rsync --delete would otherwise remove
+# it on every pass, leaving each process holding a lock on an unlinked inode --
+# which is exactly how two sidecars ended up running at once.
+LOCK="$STAGE_ROOT/.${RUN_ID}.sidecar.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "another sidecar is already backing up $RUN_ID (lock: $LOCK)." >&2
+  echo "Stop it first, or let it keep running -- do not run two." >&2
+  exit 3
+fi
+echo $$ >&9
+
 rsync_args=(-a --delete)
 rclone_args=(copy "$STAGE" "$DEST" --update --transfers=4 --checkers=8
              --timeout=300s --retries=3 --low-level-retries=10 --fast-list --stats=0
