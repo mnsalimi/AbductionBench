@@ -1,0 +1,15 @@
+# The same model, batched straight against its OWN tunnel rather than the
+# gateway pass-through.  Requires the model's own vLLM key (the admin key);
+# per-user virtual keys are rejected by a model's tunnel.
+extends: [gpt-oss-120b.yaml]
+model:
+  id: gpt-oss-120b-direct
+  endpoint:
+    batch:
+      base_url: ${env:ABENCH_MODEL_TUNNEL_URL|https://internationally-springer-practices-cholesterol.trycloudflare.com}
+      path: /v1/chat/completions/batch
+      api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    discovery:
+      batch_base_url_command: >-
+        grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+        /var/log/portal/gpt-oss-120b-tunnel.log | tail -1

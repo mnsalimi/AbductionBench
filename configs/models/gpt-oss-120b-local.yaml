@@ -1,0 +1,23 @@
+# Same model, reached without any tunnel: use this when the engine runs on the
+# GPU host itself, or through an SSH port-forward
+# (`ssh -L 18004:127.0.0.1:18004 <host>`).
+#
+# Why it exists: Cloudflare quick tunnels cut every request off at ~100 s with
+# HTTP 524.  A batch call that generates more than roughly (100 s x tokens/s)
+# tokens cannot complete over a quick tunnel no matter how patient the client
+# is, so large batches or long generations need either this direct path or a
+# smaller group_size.
+extends: [gpt-oss-120b.yaml]
+model:
+  id: gpt-oss-120b-local
+  endpoint:
+    base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18004}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    batch:
+      base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18004}
+      path: /v1/chat/completions/batch
+      group_size: 8
+    discovery:
+      # A fixed local address never rotates, so discovery is disabled.
+      base_url_command: null
+      batch_base_url_command: null

@@ -1,0 +1,44 @@
+id: judge_graded_v1
+version: "1.0"
+description: >-
+  Graded plausibility judge (0-5): how well does the candidate explanation
+  account for the observation, relative to the reference?
+task_kinds: [judge]
+required_fields: [candidate]
+optional_fields: [gold, observation, context, criteria]
+messages:
+  - role: system
+    content: |
+      You rate how well a candidate explanation accounts for an observation,
+      on a 0-5 scale:
+      5 -- fully accounts for the observation; equivalent to the reference.
+      4 -- correct cause, missing a minor detail.
+      3 -- partially correct: right general mechanism, wrong specifics.
+      2 -- related but does not explain the observation.
+      1 -- incorrect, though on-topic.
+      0 -- irrelevant, contradictory, or no explanation given.
+  - role: user
+    content: |
+      {% if observation %}
+      Observation:
+      {{ observation }}
+
+      {% endif %}
+      {% if gold %}
+      Reference explanation:
+      {{ gold }}
+
+      {% endif %}
+      Candidate explanation:
+      {{ candidate }}
+      {% if criteria %}
+
+      Additional criteria: {{ criteria }}
+      {% endif %}
+
+      Reply with exactly one line:
+      Score: <integer 0-5>
+output_contract:
+  score_regex: "score\\s*:?\\s*(?P<score>[0-5])"
+  expect_numeric_score: true
+  score_scale: 5

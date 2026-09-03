@@ -1,0 +1,200 @@
+"""Configuration layering, interpolation, overrides and validation."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
+from abductionbench.core.config import ConfigError, load_run_config
+
+
+def _write(path: Path, payload: dict) -> Path:
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_extends_and_override(tmp_path: Path, prompt_dir: Path):
+    _write(
+        tmp_path / "base.yaml",
+        {
+            "engine": {"concurrency": {"max_parallel_tasks": 7}, "limits": {"input_token_budget": 999}},
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+        },
+    )
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "extends": ["base.yaml"],
+            "name": "layered",
+            "engine": {"limits": {"input_token_budget": 42}},
+            "models": [
+                {"id": "m", "model_name": "test/model", "endpoint": {"base_url": "http://x"}}
+            ],
+            "datasets": [{"id": "d", "impl": "fake_adapter:FakeAdapter"}],
+        },
+    )
+    config = load_run_config(run)
+    assert config.name == "layered"
+    # inherited from base
+    assert config.engine.concurrency.max_parallel_tasks == 7
+    # overridden by the run file
+    assert config.engine.limits.input_token_budget == 42
+    assert config.datasets[0].sample_size == 300  # schema default
+
+
+def test_env_interpolation_and_missing_env(tmp_path: Path, prompt_dir: Path):
+    payload = {
+        "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+        "models": [
+            {
+                "id": "m",
+                "model_name": "test/model",
+                "endpoint": {"base_url": "${env:TEST_URL|http://fallback}", "api_key": "${env:TEST_KEY}"},
+            }
+        ],
+        "datasets": [],
+    }
+    run = _write(tmp_path / "run.yaml", payload)
+    os.environ.pop("TEST_URL", None)
+    os.environ.pop("TEST_KEY", None)
+    with pytest.raises(ConfigError, match="TEST_KEY"):
+        load_run_config(run)
+    os.environ["TEST_KEY"] = "secret"
+    try:
+        config = load_run_config(run)
+        assert config.models[0].endpoint.base_url == "http://fallback"
+        assert config.models[0].endpoint.api_key == "secret"
+        os.environ["TEST_URL"] = "http://explicit/"
+        config = load_run_config(run)
+        assert config.models[0].endpoint.base_url == "http://explicit"  # trailing slash stripped
+    finally:
+        os.environ.pop("TEST_KEY", None)
+        os.environ.pop("TEST_URL", None)
+
+
+def test_dotted_set_override_and_filters(tmp_path: Path, prompt_dir: Path):
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+            "models": [
+                {"id": "a", "model_name": "t/a", "endpoint": {"base_url": "http://a"}},
+                {"id": "b", "model_name": "t/b", "endpoint": {"base_url": "http://b"}},
+            ],
+            "datasets": [
+                {"id": "d1", "impl": "fake_adapter:FakeAdapter"},
+                {"id": "d2", "impl": "fake_adapter:FakeAdapter"},
+            ],
+            "dataset_defaults": {"sample_size": 11},
+        },
+    )
+    config = load_run_config(
+        run,
+        overrides=["engine.limits.input_token_budget=123", "seed=7"],
+        dataset_filter=["d2"],
+        model_filter=["b"],
+    )
+    assert config.engine.limits.input_token_budget == 123
+    assert config.seed == 7
+    assert [d.id for d in config.datasets] == ["d2"]
+    assert [m.id for m in config.models] == ["b"]
+    assert config.datasets[0].sample_size == 11  # dataset_defaults applied
+
+
+def test_unknown_filter_and_duplicate_ids(tmp_path: Path, prompt_dir: Path):
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+            "models": [{"id": "a", "model_name": "t/a", "endpoint": {"base_url": "http://a"}}],
+            "datasets": [
+                {"id": "d", "impl": "fake_adapter:FakeAdapter"},
+                {"id": "d", "impl": "fake_adapter:FakeAdapter"},
+            ],
+        },
+    )
+    with pytest.raises(ConfigError, match="unknown model ids"):
+        load_run_config(run, model_filter=["zzz"])
+    with pytest.raises(ConfigError, match="duplicate dataset ids"):
+        load_run_config(run)
+
+
+def test_model_file_reference_with_inline_override(tmp_path: Path, prompt_dir: Path):
+    _write(
+        tmp_path / "model.yaml",
+        {
+            "model": {
+                "id": "ref",
+                "model_name": "test/model",
+                "endpoint": {
+                    "base_url": "http://ref",
+                    "batch": {"group_size": 8, "path": "/v1/chat/completions/batch"},
+                },
+            }
+        },
+    )
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+            "models": [{"file": "model.yaml", "id": "renamed"}],
+            "datasets": [],
+        },
+    )
+    config = load_run_config(run)
+    assert config.models[0].id == "renamed"
+    assert config.models[0].endpoint.batch.group_size == 8
+    assert config.models[0].endpoint.resolved_batch_base_url() == "http://ref"
+
+
+def test_batch_url_and_key_fallbacks(tmp_path: Path, prompt_dir: Path):
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+            "models": [
+                {
+                    "id": "m",
+                    "model_name": "test/model",
+                    "endpoint": {
+                        "base_url": "http://gateway",
+                        "api_key": "shared",
+                        "batch": {"base_url": "http://tunnel", "api_key": "own"},
+                    },
+                }
+            ],
+            "datasets": [],
+        },
+    )
+    endpoint = load_run_config(run).models[0].endpoint
+    assert endpoint.resolved_batch_base_url() == "http://tunnel"
+    assert endpoint.resolved_batch_api_key() == "own"
+
+
+def test_nested_interpolation_fallback(tmp_path: Path, prompt_dir: Path, monkeypatch):
+    """A fallback may itself be a placeholder: ${env:A|${env:B}}."""
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {"template_dirs": [str(prompt_dir)], "bindings": {"generation": "gen_freeform_v1"}},
+            "models": [
+                {
+                    "id": "m",
+                    "model_name": "test/model",
+                    "endpoint": {
+                        "base_url": "http://x",
+                        "api_key": "${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}",
+                    },
+                }
+            ],
+            "datasets": [],
+        },
+    )
+    monkeypatch.delenv("ABENCH_ADMIN_KEY", raising=False)
+    monkeypatch.setenv("ABENCH_API_KEY", "shared-key")
+    assert load_run_config(run).models[0].endpoint.api_key == "shared-key"
+    monkeypatch.setenv("ABENCH_ADMIN_KEY", "admin-key")
+    assert load_run_config(run).models[0].endpoint.api_key == "admin-key"

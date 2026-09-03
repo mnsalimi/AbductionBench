@@ -1,0 +1,58 @@
+# openai/gpt-oss-120b served by vLLM on this instance's GPU server.
+#
+# Two URLs matter and they are deliberately separate:
+#   * endpoint.base_url        -> the LiteLLM gateway: model discovery + single calls.
+#   * endpoint.batch.base_url  -> where POST /v1/chat/completions/batch actually
+#     exists.  That route is not an OpenAI route, so it lives either on this
+#     model's own tunnel or on a gateway pass-through path (used here, because it
+#     accepts per-user virtual keys as well as the admin key).
+#
+# Both URLs are Cloudflare quick tunnels and rotate whenever the tunnel service
+# restarts, so `discovery` re-reads them from the tunnel logs on a connection
+# error rather than failing the run.
+model:
+  id: gpt-oss-120b
+  model_name: openai/gpt-oss-120b
+  description: 117B-total / 5.1B-active MoE reasoning model, MXFP4, vLLM 0.28.
+  reasoning_model: true       # content may be null when reasoning eats max_tokens
+
+  endpoint:
+    base_url: ${env:ABENCH_GATEWAY_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+    api_key: ${env:ABENCH_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_BATCH_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+      path: /gpt-oss-120b/v1/chat/completions/batch
+      group_size: 8           # per-model batch group size
+    discovery:
+      base_url_command: >-
+        grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+        /var/log/portal/gateway-tunnel.log | tail -1
+      batch_base_url_command: >-
+        grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+        /var/log/portal/gateway-tunnel.log | tail -1
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 1024
+    max_tokens_cap: 8192
+    # A reasoning model spends max_tokens on hidden chain-of-thought before it
+    # emits any content, so the floor is generous on purpose.
+    max_tokens_floor: 256
+    extra: {}
+
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    context_window: 131072
+
+  notes:
+    served_by: vLLM 0.28.0 (gpt-oss-120b-vllm supervisor service, port 18004)
+    batch_route_note: >-
+      Enabled via gateway pass_through_endpoints; add a model's entry there (and
+      re-run manage_users.py) before pointing this config at a new model.

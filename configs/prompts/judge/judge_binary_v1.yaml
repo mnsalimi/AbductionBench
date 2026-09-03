@@ -1,0 +1,42 @@
+id: judge_binary_v1
+version: "1.0"
+description: >-
+  Binary equivalence judge: does a generated explanation express the same
+  hypothesis as the reference? Used only when engine.judge.enabled is true.
+task_kinds: [judge]
+required_fields: [candidate, gold]
+optional_fields: [observation, context, criteria]
+messages:
+  - role: system
+    content: |
+      You grade candidate explanations against a reference explanation. Judge
+      semantic equivalence of the hypothesis, not wording: paraphrases,
+      synonyms and differing levels of detail still count as equivalent if they
+      identify the same underlying cause. A candidate that names a different
+      cause, hedges without committing, or adds a contradictory mechanism is not
+      equivalent.
+  - role: user
+    content: |
+      {% if observation %}
+      Observation:
+      {{ observation }}
+
+      {% endif %}
+      Reference explanation:
+      {{ gold }}
+
+      Candidate explanation:
+      {{ candidate }}
+      {% if criteria %}
+
+      Additional criteria: {{ criteria }}
+      {% endif %}
+
+      Does the candidate identify the same explanation as the reference?
+      Reply with exactly one line:
+      Verdict: yes
+      or
+      Verdict: no
+output_contract:
+  verdict_regex: "verdict\\s*:?\\s*(?P<label>yes|no)"
+  labels: ["yes", "no"]

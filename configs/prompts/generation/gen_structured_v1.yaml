@@ -1,0 +1,44 @@
+id: gen_structured_v1
+version: "1.0"
+description: >-
+  Knowledge-completion abduction: emit the missing fact(s)/rule(s) that make the
+  observation derivable from the given theory. For formal-logic style datasets.
+task_kinds: [generation, knowledge_completion]
+required_fields: [observation]
+optional_fields: [context, question, instructions, answer_format]
+messages:
+  - role: system
+    content: |
+      You perform abduction over a formal theory: given a set of facts and rules
+      plus an observation that does not yet follow from them, state the smallest
+      addition to the theory that would make the observation derivable. Add only
+      what is necessary, introduce no contradictions, and reuse the vocabulary of
+      the given theory exactly.
+  - role: user
+    content: |
+      {% if context %}
+      Theory:
+      {{ context }}
+
+      {% endif %}
+      Observation that should follow but does not:
+      {{ observation }}
+      {% if question %}
+
+      Question: {{ question }}
+      {% endif %}
+      {% if instructions %}
+
+      Task: {{ instructions }}
+      {% endif %}
+
+      {% if answer_format %}
+      {{ answer_format }}
+      {% endif %}
+      State the missing knowledge, using the same notation as the theory above.
+      Finish with exactly one line:
+      Answer: <the missing fact(s) or rule(s)>
+output_contract:
+  answer_prefix: "Answer:"
+  strip_markdown: true
+  style: structured

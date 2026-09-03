@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Engine defaults.  Every knob the core engine has lives here; run configs
+# `extends:` this file and override only what they need.
+# ---------------------------------------------------------------------------
+engine:
+  output_root: runs          # one directory per run
+  data_root: data            # materialized datasets and caches
+
+  concurrency:
+    max_parallel_tasks: 2            # (dataset x model x template) units in flight
+    max_parallel_batches_global: 6   # ceiling on concurrent batch calls, all models
+    scoring_workers: 4               # threads for adapter scoring
+
+  batching:
+    # vLLM's batch endpoint shares one sampling-parameter set across the whole
+    # call, so per-sample max_tokens is rounded up onto this grid to keep
+    # batches packable.  Rounding up only grants headroom, never truncates.
+    max_tokens_quantum: 256
+    sort_by_input_tokens: true       # similar-length conversations in one call
+    bisect_on_invalid_request: true  # isolate a poison sample instead of losing the batch
+    # Also halve a batch whose retries were exhausted by timeouts/5xx: a big
+    # batch can exceed a proxy's request ceiling (Cloudflare quick tunnels cut
+    # off at ~100s with HTTP 524) or queue behind a busy server.
+    bisect_on_timeout: true
+    fallback_to_single: true         # if a model has no working batch route
+    max_group_size: 64
+
+  retry:
+    max_attempts: 5
+    initial_backoff_s: 2.0
+    max_backoff_s: 120.0
+    backoff_multiplier: 2.0
+    jitter: 0.3
+    rate_limit_backoff_s: 20.0
+    retry_error_classes: [transient, rate_limit, unknown, protocol]
+    recovery:
+      enabled: true
+      probe_path: /v1/models
+      probe_timeout_s: 30
+      # Quick-tunnel URLs rotate on restart: re-run the model's discovery
+      # command on a connection error and pick up the new address.
+      rediscover_on_connection_error: true
+      probe_interval_s: 15
+      max_probe_attempts: 20
+
+  timeouts:
+    connect_s: 30
+    read_s: 1800     # a batch of long generations can take many minutes
+    write_s: 120
+    pool_s: 60
+
+  checkpoint:
+    enabled: true
+    resume_policy: strict   # strict | sample_id | off
+    fsync_every: 1
+    store_raw_payloads: true
+    max_raw_payloads: 0     # 0 = keep every batch payload
+
+  tokenizer:
+    backend: auto           # auto | hf | tiktoken | heuristic | endpoint
+    hf_model: null          # set to a HF repo id for exact counting
+    tiktoken_encoding: cl100k_base
+    chars_per_token: 3.6
+    per_message_overhead: 4
+    safety_margin_tokens: 64
+
+  limits:
+    input_token_budget: 16000   # INPUT tokens only; output budget is separate
+    on_oversize: resample       # resample | skip | fail
+    max_resample_attempts: 200
+    oversize_abort_fraction: 0.5
+
+  logging:
+    level: INFO
+    json_log: true
+    progress: auto
+    log_text_clip: 400
+
+  judge:
+    enabled: false            # opt-in LLM-as-judge scoring stage
+    model: null               # must be one of the run's models
+    template: judge_binary_v1
+    max_tokens: 512
+    temperature: 0.0
+    group_size: 8
+    cache: true
+
+  reporting:
+    excel_filename: abductionbench_results.xlsx
+    include_sample_sheets: true
+    max_sample_rows_per_sheet: 5000
+    write_csv: true
+    write_run_documentation: true
+    response_clip_chars: 2000
