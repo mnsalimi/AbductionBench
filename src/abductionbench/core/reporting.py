@@ -78,6 +78,7 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
                 "dataset_id": task.identity.dataset_id,
                 "model_id": task.identity.model_id,
                 "template": f"{task.identity.template_id}@{task.identity.template_version}",
+                "variant": task.diagnostics.get("variant", "default"),
                 "primary_metric": primary,
                 "value": _fmt(task.metrics.get(primary)),
                 "value_strict": _fmt(task.metrics.get(f"{primary}_strict")),
@@ -294,12 +295,28 @@ def write_reports(result: RunResult) -> dict[str, Path]:
 
 
 def _pivot(summary: pd.DataFrame) -> pd.DataFrame:
-    """Dataset x model matrix of primary-metric values."""
+    """Dataset x model matrix of primary-metric values.
+
+    Columns are keyed by model and *prompt variant*, not by the bound template
+    id: datasets legitimately bind different templates (a formal-logic dataset
+    uses the structured template, an MCQ dataset the selection one), so keying
+    on template id would scatter one model across several mostly-empty columns.
+    The variant ("default", or a name from ``prompts.template_variants``) is the
+    axis a reader actually compares, and the exact template per task stays in
+    ``Summary_Long``, ``Metrics`` and ``Tasks``.
+    """
     if summary.empty:
         return summary
     frame = summary.copy()
     frame["row"] = frame["dataset_id"] + " [" + frame["primary_metric"].fillna("") + "]"
-    frame["column"] = frame["model_id"] + " (" + frame["template"] + ")"
+    variants = frame.get("variant")
+    if variants is None:
+        variants = pd.Series(["default"] * len(frame), index=frame.index)
+    variants = variants.fillna("default")
+    if variants.nunique() > 1:
+        frame["column"] = frame["model_id"] + " (" + variants + ")"
+    else:
+        frame["column"] = frame["model_id"]
     return frame.pivot_table(
         index="row", columns="column", values="value", aggfunc="first"
     ).sort_index()

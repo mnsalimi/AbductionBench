@@ -198,3 +198,55 @@ def test_nested_interpolation_fallback(tmp_path: Path, prompt_dir: Path, monkeyp
     assert load_run_config(run).models[0].endpoint.api_key == "shared-key"
     monkeypatch.setenv("ABENCH_ADMIN_KEY", "admin-key")
     assert load_run_config(run).models[0].endpoint.api_key == "admin-key"
+
+
+def test_dataset_force_overrides_dataset_config(tmp_path: Path, prompt_dir: Path):
+    """`dataset_defaults` yields to a dataset's own value; `dataset_force` wins."""
+    (tmp_path / "ds.yaml").write_text(
+        yaml.safe_dump(
+            {"dataset": {"id": "d", "impl": "fake_adapter:FakeAdapter", "sample_size": 300}}
+        ),
+        encoding="utf-8",
+    )
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {
+                "template_dirs": [str(prompt_dir)],
+                "bindings": {"generation": "gen_freeform_v1"},
+            },
+            "models": [{"id": "m", "model_name": "t/m", "endpoint": {"base_url": "http://x"}}],
+            "datasets": [{"file": "ds.yaml"}],
+            "dataset_defaults": {"sample_size": 50, "seed": 7},
+            "dataset_force": {"sample_size": 12},
+        },
+    )
+    config = load_run_config(run)
+    assert config.datasets[0].sample_size == 12  # forced over the dataset's own 300
+    assert config.datasets[0].seed == 7          # default still fills what was unset
+
+
+def test_datasets_glob_expands_and_skips_templates(tmp_path: Path, prompt_dir: Path):
+    directory = tmp_path / "ds"
+    directory.mkdir()
+    for name in ("a", "b"):
+        (directory / f"{name}.yaml").write_text(
+            yaml.safe_dump({"dataset": {"id": name, "impl": "fake_adapter:FakeAdapter"}}),
+            encoding="utf-8",
+        )
+    (directory / "_TEMPLATE.yaml").write_text(
+        yaml.safe_dump({"dataset": {"id": "tpl", "impl": "x:Y"}}), encoding="utf-8"
+    )
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {
+                "template_dirs": [str(prompt_dir)],
+                "bindings": {"generation": "gen_freeform_v1"},
+            },
+            "models": [{"id": "m", "model_name": "t/m", "endpoint": {"base_url": "http://x"}}],
+            "datasets_glob": ["ds/*.yaml"],
+        },
+    )
+    config = load_run_config(run)
+    assert sorted(d.id for d in config.datasets) == ["a", "b"]  # _TEMPLATE ignored

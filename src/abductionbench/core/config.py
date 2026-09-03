@@ -306,6 +306,14 @@ class RetryConfig(_Base):
         default_factory=lambda: ["transient", "rate_limit", "unknown", "protocol"]
     )
     recovery: EndpointRecoveryConfig = Field(default_factory=EndpointRecoveryConfig)
+    #: Re-issue a sample whose response came back empty *because the token
+    #: budget ran out* (a reasoning model can spend its whole ``max_tokens`` on
+    #: hidden chain-of-thought and return ``content: null``).  Only that sample
+    #: is retried, with a multiplied budget -- far cheaper than raising the
+    #: budget for every sample in the dataset.
+    escalate_empty_responses: bool = True
+    empty_budget_multiplier: float = Field(2.0, gt=1.0)
+    max_empty_escalations: int = Field(1, ge=0)
 
 
 class TimeoutConfig(_Base):
@@ -756,9 +764,15 @@ def load_run_config(
         body.get("datasets", []), anchor=anchor, key="dataset"
     )
 
+    # `dataset_defaults` supplies values a dataset's own config may override;
+    # `dataset_force` overrides the dataset's config (useful for smoke runs, e.g.
+    # forcing sample_size: 12 across every dataset in one line).
     dataset_defaults = body.pop("dataset_defaults", {}) or {}
     if dataset_defaults:
         body["datasets"] = [deep_merge(dataset_defaults, d) for d in body["datasets"]]
+    dataset_force = body.pop("dataset_force", {}) or {}
+    if dataset_force:
+        body["datasets"] = [deep_merge(d, dataset_force) for d in body["datasets"]]
 
     if model_filter:
         wanted = set(model_filter)

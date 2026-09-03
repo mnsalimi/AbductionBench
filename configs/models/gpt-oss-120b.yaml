@@ -41,8 +41,14 @@ model:
     max_tokens_default: 1024
     max_tokens_cap: 8192
     # A reasoning model spends max_tokens on hidden chain-of-thought before it
-    # emits any content, so the floor is generous on purpose.
-    max_tokens_floor: 256
+    # emits any content, so the floor is generous on purpose. Measured on this
+    # server: with a 512-token budget, half of the short-answer formal-logic
+    # prompts (AbductionRules) came back with content: null because the reasoning
+    # had consumed the budget. 768 is the standing floor; the engine's
+    # escalate_empty_responses then re-asks only the samples that still run out,
+    # with a doubled budget, so a long-reasoning outlier costs one extra call
+    # instead of inflating every request in the dataset.
+    max_tokens_floor: 768
     extra: {}
 
   limits:

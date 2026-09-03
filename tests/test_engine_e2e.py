@@ -396,3 +396,92 @@ def test_transient_probe_failure_keeps_batch_mode(fake_server, write_run_config,
     assert task.diagnostics["batch_mode"] is True
     assert fake_server.state.single_calls == 0
     assert task.n_scored == 4
+
+
+def test_summary_matrix_is_dense_across_datasets(fake_server, write_run_config, fake_dataset):
+    """One column per model when a run has a single prompt variant.
+
+    Datasets bind different templates, so keying the headline matrix on template
+    id would leave a mostly-empty grid; it is keyed on the prompt variant.
+    """
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=4, sample_size=4), fake_dataset("b", n=4, sample_size=4)],
+    )
+    result, _ = _run(config_path)
+    from abductionbench.core.reporting import _pivot, build_summary_frame
+
+    pivot = _pivot(build_summary_frame(result))
+    assert list(pivot.columns) == ["fake-model"]
+    assert pivot.notna().all().all()  # no holes
+    assert len(pivot.index) == 2
+
+
+def test_summary_matrix_separates_prompt_variants(fake_server, write_run_config, fake_dataset):
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=4, sample_size=4)],
+        prompts={"template_variants": {"cot": {"generation": "gen_cot_v1"}}},
+    )
+    result, _ = _run(config_path)
+    from abductionbench.core.reporting import _pivot, build_summary_frame
+
+    pivot = _pivot(build_summary_frame(result))
+    assert sorted(pivot.columns) == ["fake-model (cot)", "fake-model (default)"]
+
+
+def test_empty_response_is_retried_with_a_larger_budget(
+    fake_server, write_run_config, fake_dataset
+):
+    """A reasoning model that burns its budget on hidden CoT is re-asked.
+
+    The fake server returns ``content: null`` while the requested budget is
+    small, and real content once the escalated budget arrives -- so the sample
+    ends up scored instead of counted as empty.
+    """
+    original = fake_server.state.responder
+    threshold = 96
+
+    def responder(conversation, max_tokens):
+        if max_tokens < threshold:
+            return None  # budget exhausted by "reasoning"
+        return original(conversation, max_tokens)
+
+    fake_server.state.responder = responder
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4, max_tokens=48)],
+        engine={
+            "batching": {"max_tokens_quantum": 16},
+            "retry": {
+                "max_attempts": 2,
+                "initial_backoff_s": 0.01,
+                "jitter": 0.0,
+                "recovery": {"enabled": False},
+                "escalate_empty_responses": True,
+                "empty_budget_multiplier": 2.0,
+                "max_empty_escalations": 1,
+            },
+        },
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.checkpoint.empty_escalations == 4
+    assert task.diagnostics["empty_escalations"] == 4
+    assert task.metrics["empty_response_rate"] == 0.0
+    assert task.n_scored == 4
+    statuses = {record["status"] for record in _records(task.output_dir)}
+    assert statuses == {"ok"}
+
+
+def test_empty_escalation_can_be_disabled(fake_server, write_run_config, fake_dataset):
+    fake_server.state.empty_marker = "observation number"  # every sample comes back empty
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        engine={"retry": {"escalate_empty_responses": False, "recovery": {"enabled": False}}},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.checkpoint.empty_escalations == 0
+    assert task.metrics["empty_response_rate"] == 1.0

@@ -112,6 +112,13 @@ server:
    off at ~100 s with HTTP 524. A batch whose retries are exhausted by
    timeouts is also split (`engine.batching.bisect_on_timeout`), which both
    shortens each call and salvages samples.
+7. **An empty response is an under-budgeted request, not a failure.** When a
+   reasoning model returns `content: null` with `finish_reason="length"`, the
+   engine re-asks *only that sample* with a multiplied budget
+   (`engine.retry.escalate_empty_responses`). Measured on gpt-oss-120b over
+   AbductionRules: 16.7% of samples came back empty at a 768-token floor, and
+   escalation took that to 0% at the cost of one extra call per affected
+   sample -- far cheaper than raising the budget for all 300.
 
 ## Failure handling summary
 
@@ -125,6 +132,7 @@ server:
 | wrong choice count/index | `protocol` | retry, then fail the batch's samples |
 | adapter `score()` raises | — | logged, sample recorded with `parse_ok=false` |
 | adapter `prepare()` raises | — | dataset skipped and reported; run continues |
+| `content: null` at the budget | — | that sample re-asked with a ×N budget, then reported as `empty` if still empty |
 
 **Endpoint recovery** is what makes a rotating tunnel survivable: on a
 connection-level failure the engine re-runs the model's configured

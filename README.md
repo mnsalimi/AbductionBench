@@ -140,8 +140,69 @@ then reported as skipped rather than guessed at.
 ## Development
 
 ```bash
-python -m pytest -q            # 57 tests: config, prompts, batching, metrics,
-                               # checkpointing, judge, and end-to-end engine runs
-                               # against a fake vLLM server (real HTTP)
-abench run configs/runs/smoke_local.yaml     # live smoke test, ~30 s
+python -m pytest -q            # 73 tests: config, prompts, batching, metrics,
+                               # checkpointing, judge, adapter scorers, and
+                               # end-to-end engine runs against a fake vLLM
+                               # server over real HTTP
+abench run configs/runs/smoke_local.yaml    # engine smoke test, ~30 s
+abench run configs/runs/pilot_smoke.yaml \
+  -d ecare,gear,hypospace,aer,abductionrules,medcasereasoning   # live, real adapters
+python tools/preview.py configs/runs/pilot.yaml <dataset_id>    # inspect one adapter
+python tools/dataset_catalogue.py                               # regenerate docs/datasets.md
 ```
+
+---
+
+## Dataset coverage (Phase 2)
+
+`docs/datasets.md` is the catalogue — **generated from the adapters themselves**
+(`python tools/dataset_catalogue.py`), so its numbers, splits and stated
+decisions cannot drift from the code. Current state: **48 datasets configured,
+39 evaluable, 9 reported as skipped with a reason.**
+
+Policies applied uniformly, and recorded per dataset:
+
+* **Split**: test → validation → train, and the fallback is always reported
+  (e.g. e-CARE's test labels are withheld upstream, so dev is used).
+* **Abductive subset only**: `ask-for=cause` in e-CARE, `question=cause` in
+  XCOPA, murder mysteries in MuSR, the causal family in SciR, the diagnosis
+  collection in MedR-Bench, ACRE in GEAR, and so on — with the excluded portion
+  and the reason named.
+* **Answer leakage**: fields that contain the answer (worked solutions,
+  reasoning traces, inspirations, model-generated columns) are withheld from
+  prompts and listed in each adapter's decisions.
+* **Per-sample `max_tokens`** from that item's complexity — proof depth, node
+  count, reasoning-step count, or output shape — never one flat value.
+* **300 samples** per dataset by a seeded shuffle; oversize prompts are replaced
+  from the same shuffle rather than dropped, and shortfalls (e.g. HypoGen's 50
+  test items) are reported.
+* **Skipped, never guessed**: a dataset whose data is unobtainable, whose gold is
+  withheld, or that only exists as an interactive environment is declared with
+  `UnavailableAdapter` and appears in every run's `Skipped` sheet with its
+  reason.
+
+Two datasets required constructing items from released material rather than
+using a shipped item file; both say so explicitly and are excluded from
+comparison with published numbers: **ProofWriter** (the official abduction files
+are no longer downloadable, so abduction items are rebuilt from the released
+proofs) and **SynPAT** (items assembled from the release's own replacement files
+plus true-system data). **HypoSpace** runs the release's own seeded generator.
+
+### Metrics beyond accuracy
+
+Where a dataset's task makes a single accuracy number misleading, the adapter
+reports what the task actually measures:
+
+| dataset | metric | why |
+|---|---|---|
+| `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; coverage of the hypothesis space is the point |
+| `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
+| `physgym`, `synpat` | `symbolic_match` (SymPy) | physical laws have many algebraically equal forms |
+| `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
+| `aer`, `defab` | `set_f1`, `exact_set_match` | the gold answer is a set |
+| `true_detective` | `human_agreement_spearman` | do models find the same puzzles hard that people do |
+| `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
+| `commonwhy` | `popularity_gap` | head vs long-tail entities |
+| `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
+| `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
+| `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |

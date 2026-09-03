@@ -822,6 +822,11 @@ class EvaluationEngine:
                         for prompt in batch.prompts
                     ]
 
+            pairs = await self._escalate_empty(
+                pairs, client=client, store=store, use_batch=use_batch,
+                checkpoint=checkpoint, model=model,
+            )
+
             records: list[EvalRecord] = []
             for prompt, response in pairs:
                 score = await self._score(adapter, prompt, response)
@@ -892,6 +897,7 @@ class EvaluationEngine:
             "batches_submitted": checkpoint.batches_submitted,
             "batches_failed": checkpoint.batches_failed,
             "bisections": checkpoint.bisections,
+            "empty_escalations": checkpoint.empty_escalations,
             "endpoint": client.batch_url if use_batch else client.base_url,
             "template": f"{prompt_set.template.id}@{prompt_set.template.version}",
             "variant": prompt_set.variant,
@@ -1095,6 +1101,92 @@ class EvaluationEngine:
             choice = self._choice_for(batch_result, position)
             pairs.append((prompt, self._normalize(prompt, choice, batch_result, client, batch)))
         return pairs
+
+    async def _escalate_empty(
+        self,
+        pairs: list[tuple[RenderedPrompt, ModelResponse]],
+        *,
+        client: ModelClient,
+        store: RecordStore,
+        use_batch: bool,
+        checkpoint: TaskCheckpoint,
+        model: ModelConfig,
+    ) -> list[tuple[RenderedPrompt, ModelResponse]]:
+        """Re-issue samples that came back empty because the budget ran out.
+
+        A reasoning model can spend its whole ``max_tokens`` on hidden
+        chain-of-thought and return ``content: null`` with
+        ``finish_reason="length"``.  That is not a wrong answer and not an
+        endpoint failure -- it is an under-budgeted request.  Rather than raise
+        the budget for every sample in the dataset, only the affected samples
+        are retried with a multiplied budget (bounded by the model's cap and its
+        context window).
+        """
+        config = self.engine_cfg.retry
+        if not config.escalate_empty_responses or config.max_empty_escalations <= 0:
+            return pairs
+
+        keep: list[tuple[RenderedPrompt, ModelResponse]] = []
+        retry_prompts: list[RenderedPrompt] = []
+        for prompt, response in pairs:
+            budget_exhausted = (
+                response.status is ResponseStatus.EMPTY
+                and (response.finish_reason == "length" or response.finish_reason is None)
+            )
+            escalated = prompt.sample.metadata.get("_empty_escalations", 0)
+            if not budget_exhausted or escalated >= config.max_empty_escalations:
+                keep.append((prompt, response))
+                continue
+            bigger = int(prompt.sampling.max_tokens * config.empty_budget_multiplier)
+            bigger = min(bigger, model.sampling.max_tokens_cap)
+            if model.limits.context_window:
+                bigger = min(bigger, model.limits.context_window - prompt.input_tokens_est - 8)
+            if bigger <= prompt.sampling.max_tokens:
+                # No headroom left; keep the empty response and report it.
+                keep.append((prompt, response))
+                continue
+            prompt.sample.metadata["_empty_escalations"] = escalated + 1
+            retry_prompts.append(
+                RenderedPrompt(
+                    sample=prompt.sample,
+                    messages=prompt.messages,
+                    template_id=prompt.template_id,
+                    template_version=prompt.template_version,
+                    sampling=prompt.sampling.merged(max_tokens=bigger),
+                    input_tokens_est=prompt.input_tokens_est,
+                    output_contract=prompt.output_contract,
+                )
+            )
+
+        if not retry_prompts:
+            return pairs
+
+        checkpoint.empty_escalations += len(retry_prompts)
+        logger.info(
+            "%d sample(s) returned empty content at the token budget; retrying them with a "
+            "%.1fx budget",
+            len(retry_prompts),
+            config.empty_budget_multiplier,
+        )
+        self.events.emit(
+            "empty_escalation",
+            model_id=model.id,
+            n_samples=len(retry_prompts),
+            sample_ids=[p.sample_id for p in retry_prompts],
+            multiplier=config.empty_budget_multiplier,
+        )
+        for batch in batching_mod.plan_batches(
+            retry_prompts,
+            group_size=(
+                (model.endpoint.batch.group_size if use_batch else 1)
+            ),
+            batching=self.engine_cfg.batching,
+            prefix="empty-retry",
+        ):
+            keep.extend(
+                await self._execute_batch(batch, client, store, use_batch, checkpoint)
+            )
+        return keep
 
     @staticmethod
     def _choice_for(batch_result: BatchResult, position: int) -> RawChoice | None:

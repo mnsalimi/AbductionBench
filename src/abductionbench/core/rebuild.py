@@ -166,6 +166,20 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                 metrics["parse_failure_rate"] = (
                     sum(1 for s in scores if not s.parse_ok) / len(scores) if scores else 0.0
                 )
+                metrics["truncation_rate"] = (
+                    sum(
+                        1
+                        for rec in records
+                        if rec.get("status") == ResponseStatus.TRUNCATED.value
+                    )
+                    / max(1, planned)
+                )
+                metrics["empty_response_rate"] = (
+                    sum(
+                        1 for rec in records if rec.get("status") == ResponseStatus.EMPTY.value
+                    )
+                    / max(1, planned)
+                )
                 latencies = [
                     float((rec.get("response") or {}).get("latency_s") or 0.0) for rec in records
                 ]

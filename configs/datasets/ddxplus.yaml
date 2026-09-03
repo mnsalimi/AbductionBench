@@ -1,0 +1,10 @@
+dataset:
+  id: ddxplus
+  impl: abductionbench.adapters.ddxplus:DDXPlusAdapter
+  sample_size: 300
+  options:
+    subtask: generation   # generation (default) | selection (uses the case's own differential)
+    n_options: 6
+  notes: >-
+    Official test split from figshare; coded evidences decoded to English
+    question/answer lines.
