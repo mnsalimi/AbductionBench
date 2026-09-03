@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 from .adapter import DatasetAdapter
 from .errors import ConfigError

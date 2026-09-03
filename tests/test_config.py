@@ -250,3 +250,27 @@ def test_datasets_glob_expands_and_skips_templates(tmp_path: Path, prompt_dir: P
     )
     config = load_run_config(run)
     assert sorted(d.id for d in config.datasets) == ["a", "b"]  # _TEMPLATE ignored
+
+
+def test_set_keeps_yaml_boolean_words_as_strings(tmp_path: Path, prompt_dir: Path):
+    """`--set ...resume_policy=off` must not become the boolean False.
+
+    YAML 1.1 reads bare `off`/`no`/`yes` as booleans, which would fail
+    validation for a field whose allowed values include the literal "off".
+    """
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {
+                "template_dirs": [str(prompt_dir)],
+                "bindings": {"generation": "gen_freeform_v1"},
+            },
+            "models": [{"id": "m", "model_name": "t/m", "endpoint": {"base_url": "http://x"}}],
+            "datasets": [],
+        },
+    )
+    config = load_run_config(run, overrides=["engine.checkpoint.resume_policy=off"])
+    assert config.engine.checkpoint.resume_policy == "off"
+    # Genuine booleans still parse as booleans.
+    config = load_run_config(run, overrides=["engine.checkpoint.enabled=false"])
+    assert config.engine.checkpoint.enabled is False

@@ -19,7 +19,8 @@ own dataset, and including it would double-count those items.
 from __future__ import annotations
 
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, rouge_l, token_f1

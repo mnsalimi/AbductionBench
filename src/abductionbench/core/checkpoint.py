@@ -26,9 +26,10 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import orjson
 
@@ -36,7 +37,7 @@ from .types import EvalRecord, ResponseStatus
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RecordStore", "TaskCheckpoint", "load_records"]
+__all__ = ["RecordStore", "TaskCheckpoint", "load_records", "dedupe_records"]
 
 RECORDS_FILENAME = "records.jsonl"
 CHECKPOINT_FILENAME = "checkpoint.json"
@@ -70,6 +71,22 @@ def load_records(path: Path) -> list[dict[str, Any]]:
                     line_number,
                 )
     return records
+
+
+def dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the last record per (sample_id, prompt_fingerprint).
+
+    The records file is append-only, so re-running a task into the same
+    directory -- after fixing a scorer, or with checkpointing disabled -- leaves
+    two entries for the same request.  The newest one is the truth; anything
+    reading records back (``abench report``, the workbook's sample sheets) must
+    therefore dedupe, or a re-run would be double-counted.
+    """
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        key = (str(record.get("sample_id")), str(record.get("prompt_fingerprint", "")))
+        latest[key] = record
+    return list(latest.values())
 
 
 @dataclass(slots=True)

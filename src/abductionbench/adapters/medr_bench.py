@@ -20,10 +20,11 @@ separately for them -- the split MedR-Bench itself highlights.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, mean
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
 from ._base import PooledDatasetAdapter, text_match_score

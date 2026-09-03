@@ -31,9 +31,11 @@ def test_physgym_symbolic_equivalence():
     assert _extract_expression("v = x\nv = y", "v") == "y"  # last assignment wins
     assert _symbolic_equal("a*b/c", "b*a/c", ["a", "b", "c"]) is True
     assert _symbolic_equal("2*a", "a", ["a"]) is False
-    # An unparseable candidate is undecidable, not wrong-by-default.
-    assert _symbolic_equal("\\frac{a}{b}", "a/b", ["a", "b"]) is None
+    # LaTeX is normalized before parsing, so it is decided rather than skipped.
+    assert _symbolic_equal("\\frac{a}{b}", "a/b", ["a", "b"]) is True
+    # A missing candidate stays undecidable rather than wrong-by-default.
     assert _symbolic_equal("", "a/b", ["a", "b"]) is None
+    assert _symbolic_equal(None, "a/b", ["a", "b"]) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -239,8 +241,8 @@ def test_shared_scorers():
 
 
 def test_pooled_adapter_draw_is_deterministic_and_replacements_disjoint():
-    from abductionbench.core.adapter import AdapterContext
     from abductionbench.adapters._base import PooledDatasetAdapter
+    from abductionbench.core.adapter import AdapterContext
     from abductionbench.core.types import AdapterDocumentation
 
     class Dummy(PooledDatasetAdapter):
@@ -281,3 +283,56 @@ def test_pooled_adapter_draw_is_deterministic_and_replacements_disjoint():
     replacements = adapter.replacement_samples(3, set(built))
     assert len(replacements) == 3
     assert not (set(s.sample_id for s in replacements) & set(built))  # never a re-draw
+
+
+# --------------------------------------------------------------------------- #
+# Math normalization (shared by PhysGym and SynPAT)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reference", "symbols"),
+    [
+        # LaTeX \dfrac with thin spaces (whose backslashes extractors strip).
+        (
+            "dfrac{mu G M_m}{R,n,(R_m+h)}).",
+            "(mu * G * M_m) / (n * R * (R_m + h))",
+            ["mu", "G", "M_m", "R", "n", "R_m", "h"],
+        ),
+        # Unicode Greek, subscripts, superscripts, minus sign and root.
+        (
+            "2ε₀E₀ / √[1 − (r/a)²]",
+            "2 * epsilon_0 * E_0 / (1 - (r/a)**2)**0.5",
+            ["epsilon_0", "E_0", "a", "r"],
+        ),
+        # \sqrt{...} plus implicit multiplication inside.
+        (
+            r"\sqrt{k T epsilon_0/(2 e**2 n_0)}",
+            "(k * T * epsilon_0 / (2 * e**2 * n_0))**0.5",
+            ["k", "T", "epsilon_0", "e", "n_0"],
+        ),
+        # A plain Python-style answer with a variable assignment.
+        ("v = a*b/c", "b*a/c", ["a", "b", "c"]),
+    ],
+)
+def test_math_normalization_makes_real_answers_comparable(candidate, reference, symbols):
+    """These are the exact answer shapes gpt-oss-120b produced in a live run.
+
+    Before normalization every one of them was 'undecidable' -- one had 0.95
+    token overlap with the reference yet scored zero.
+    """
+    from abductionbench.adapters._mathnorm import equal_expressions
+
+    assert equal_expressions(candidate, reference, symbols) is True
+
+
+def test_math_normalization_does_not_make_wrong_answers_right():
+    from abductionbench.adapters._mathnorm import equal_expressions, equal_up_to_scale
+
+    assert equal_expressions("2*a", "a", ["a"]) is False
+    assert equal_expressions("a+b", "a*b", ["a", "b"]) is False
+    # Expressions equal to zero are scale-invariant, plain equality is not.
+    assert equal_up_to_scale("2*F - 2*m*a", "F - m*a", ["F", "m", "a"]) is True
+    assert equal_expressions("2*F - 2*m*a", "F - m*a", ["F", "m", "a"]) is False
+    # Empty input stays undecidable rather than counting as a mismatch.
+    assert equal_expressions("", "a", ["a"]) is None

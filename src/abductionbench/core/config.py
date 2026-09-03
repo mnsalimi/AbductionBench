@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -173,14 +172,30 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+#: YAML 1.1 reads these bare words as booleans, which silently breaks a --set
+#: whose value is a real choice name (``resume_policy=off``).
+_YAML_BOOL_WORDS = {"on", "off", "yes", "no", "y", "n"}
+
+
 def _apply_dotted(target: dict[str, Any], dotted: str, raw_value: str) -> None:
-    """Apply ``a.b.c=value`` onto a nested dict, parsing the value as YAML."""
+    """Apply ``a.b.c=value`` onto a nested dict, parsing the value as YAML.
+
+    ``off`` and friends are kept as strings: YAML would turn them into
+    booleans, so ``--set engine.checkpoint.resume_policy=off`` would fail
+    validation even though ``off`` is exactly one of the allowed values.
+    """
     keys = dotted.split(".")
     node = target
     for key in keys[:-1]:
         node = node.setdefault(key, {})
         if not isinstance(node, dict):
             raise ConfigError(f"--set {dotted}: {key!r} is not a mapping")
+    stripped = raw_value.strip()
+    if stripped.lower() in _YAML_BOOL_WORDS and not (
+        stripped.startswith(("'", '"'))
+    ):
+        node[keys[-1]] = stripped
+        return
     node[keys[-1]] = yaml.safe_load(raw_value)
 
 

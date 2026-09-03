@@ -148,7 +148,7 @@ class JudgeStage:
             except EndpointError as exc:
                 logger.warning("judge batch failed permanently: %s", exc)
                 continue
-            for (index, _fields, key), choice in zip(chunk, result.choices):
+            for (_index, _fields, key), choice in zip(chunk, result.choices, strict=True):
                 verdict = self._parse(choice.content or "")
                 self._cache[key] = {
                     "label": verdict.label,

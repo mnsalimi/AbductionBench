@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import DatasetAdapter, SkippedDataset
 from ..core.metrics import (

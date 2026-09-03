@@ -18,7 +18,8 @@ workbooks do not inflate the item count.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1

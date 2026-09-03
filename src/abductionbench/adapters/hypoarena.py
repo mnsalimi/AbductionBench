@@ -20,7 +20,8 @@ distractors would mean inventing data, which this adapter does not do.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, rouge_l, token_f1

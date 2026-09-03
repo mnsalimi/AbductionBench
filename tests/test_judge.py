@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Sequence
-
-import yaml
 
 from abductionbench.core.config import load_run_config
 from abductionbench.core.engine import EvaluationEngine
-from abductionbench.core.types import AdapterDocumentation, SampleScore
 
 
 def test_judge_stage_updates_scores(fake_server, write_run_config, tmp_path, monkeypatch):

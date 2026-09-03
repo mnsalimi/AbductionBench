@@ -16,7 +16,7 @@ from typing import Any
 import orjson
 
 from .adapter import AdapterContext
-from .checkpoint import TaskCheckpoint, load_records
+from .checkpoint import TaskCheckpoint, dedupe_records, load_records
 from .config import RunConfig, load_yaml
 from .engine import RunResult, TaskResult
 from .errors import ConfigError
@@ -72,7 +72,7 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
         dataset_cfg = next((d for d in config.datasets if d.id == dataset_id), None)
         for model_dir in sorted(p for p in dataset_dir.iterdir() if p.is_dir()):
             for template_dir in sorted(p for p in model_dir.iterdir() if p.is_dir()):
-                records = load_records(template_dir / "records.jsonl")
+                records = dedupe_records(load_records(template_dir / "records.jsonl"))
                 if not records:
                     continue
                 metrics_blob = _read_json(template_dir / "metrics.json")

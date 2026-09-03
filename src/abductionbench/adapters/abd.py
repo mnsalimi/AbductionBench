@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import gzip
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, normalize_text, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score

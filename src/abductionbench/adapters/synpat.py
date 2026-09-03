@@ -28,13 +28,15 @@ from __future__ import annotations
 
 import random
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
+from ._mathnorm import equal_up_to_scale as _shared_equal_up_to_scale
 
 HF_REPO = "Karan0901/synpat-dataset"
 GITHUB_URL = "https://github.com/jlenchner/theorizer"
@@ -131,7 +133,9 @@ class SynPATAdapter(PooledDatasetAdapter):
             return None
         differing = [
             position
-            for position, (a, b) in enumerate(zip(true_system["equations"], corrupted["equations"]))
+            for position, (a, b) in enumerate(
+                zip(true_system["equations"], corrupted["equations"], strict=True)
+            )
             if a.strip() != b.strip()
         ]
         if len(differing) != 1:
@@ -316,25 +320,5 @@ def _clean_expression(text: str) -> str:
 
 
 def _equal_up_to_scale(candidate: str, gold: str, symbols: Sequence[str]) -> bool | None:
-    if not candidate or not gold:
-        return None
-    try:
-        import sympy
-        from sympy.parsing.sympy_parser import parse_expr
-    except ImportError:  # pragma: no cover
-        return None
-    local = {name: sympy.Symbol(name) for name in symbols}
-    try:
-        left = parse_expr(candidate, local_dict=local, evaluate=True)
-        right = parse_expr(gold.replace("^", "**"), local_dict=local, evaluate=True)
-    except Exception:  # noqa: BLE001 - unparseable model output
-        return None
-    try:
-        if sympy.simplify(left - right) == 0:
-            return True
-        if right == 0:
-            return bool(sympy.simplify(left) == 0)
-        ratio = sympy.simplify(left / right)
-        return bool(ratio.is_number and ratio != 0)
-    except Exception:  # noqa: BLE001 - simplification blew up
-        return None
+    """Equality up to a non-zero scalar factor, tolerant of LaTeX/unicode input."""
+    return _shared_equal_up_to_scale(candidate, gold, symbols)

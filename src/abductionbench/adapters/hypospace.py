@@ -25,8 +25,8 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-from pathlib import Path
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span
@@ -89,7 +89,7 @@ class HypoSpaceAdapter(PooledDatasetAdapter):
             payload = C.read_json(output)
             by_count = payload.get("datasets_by_n_observations") or {}
             count = 0
-            for observation_count, entries in sorted(by_count.items(), key=lambda kv: int(kv[0])):
+            for _count, entries in sorted(by_count.items(), key=lambda kv: int(kv[0])):
                 for entry in entries:
                     items.append({**entry, "graph_nodes": nodes})
                     count += 1

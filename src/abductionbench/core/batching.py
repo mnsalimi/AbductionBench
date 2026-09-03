@@ -14,8 +14,8 @@ the adapter expected to fit.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator
 
 from .config import BatchingConfig, ModelSamplingConfig
 from .types import RenderedPrompt, SamplingParams

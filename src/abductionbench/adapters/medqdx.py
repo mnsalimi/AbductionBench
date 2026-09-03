@@ -29,7 +29,8 @@ distractors are drawn with the run seed, so they are identical across models.
 from __future__ import annotations
 
 import random
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics

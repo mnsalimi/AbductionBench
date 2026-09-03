@@ -19,7 +19,8 @@ abduction with no telemetry, which is a useful contrast.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, contains_match, extract_answer_span, token_f1

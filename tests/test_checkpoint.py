@@ -81,3 +81,33 @@ def test_raw_payload_cap(tmp_path: Path):
     for index in range(5):
         store.save_raw(f"b{index}", {"i": index})
     assert len(list((tmp_path / "raw").glob("*.json"))) == 2
+
+
+def test_dedupe_records_keeps_the_newest_per_request(tmp_path: Path):
+    """A task re-run into the same directory must not be double-counted."""
+    from abductionbench.core.checkpoint import dedupe_records
+
+    store = RecordStore(tmp_path)
+    first = _record("a", ResponseStatus.OK)
+    first.metrics = {"accuracy": 0.0}
+    store.append(first)
+    second = _record("a", ResponseStatus.OK)  # same sample and fingerprint
+    second.metrics = {"accuracy": 1.0}
+    store.append(second)
+    store.append(_record("b", ResponseStatus.OK))
+
+    raw = store.existing()
+    assert len(raw) == 3  # the file keeps both, by design (append-only)
+    deduped = dedupe_records(raw)
+    assert len(deduped) == 2
+    by_id = {record["sample_id"]: record for record in deduped}
+    assert by_id["a"]["metrics"]["accuracy"] == 1.0  # newest wins
+
+
+def test_rebuilt_report_is_not_inflated_by_a_rerun(tmp_path: Path):
+    from abductionbench.core.checkpoint import dedupe_records
+
+    store = RecordStore(tmp_path)
+    for _ in range(3):  # three passes over the same two samples
+        store.append_many([_record("a", ResponseStatus.OK), _record("b", ResponseStatus.OK)])
+    assert len(dedupe_records(store.existing())) == 2

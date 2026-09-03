@@ -86,7 +86,7 @@ class ARTAdapter(PooledDatasetAdapter):
                 "align them by guesswork"
             )
         self.split_used = f"alphaNLI {split} ({len(rows)} items, labels from {label_path.name})"
-        return [{"kind": "selection", "label": label, **row} for row, label in zip(rows, labels)]
+        return [{"kind": "selection", "label": label, **row} for row, label in zip(rows, labels, strict=True)]
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         obs1 = C.normalize_whitespace(item.get("obs1"))

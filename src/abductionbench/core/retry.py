@@ -18,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, TypeVar
 
 from .config import RetryConfig
 from .errors import AbenchError, EndpointError, ErrorClass

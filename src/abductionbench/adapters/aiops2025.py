@@ -21,7 +21,8 @@ own alert text and topology are the evidence.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, contains_match, extract_answer_span

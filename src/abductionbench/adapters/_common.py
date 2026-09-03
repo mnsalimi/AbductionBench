@@ -24,8 +24,9 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 

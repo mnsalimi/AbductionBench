@@ -28,9 +28,10 @@ from __future__ import annotations
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from .types import (
     AdapterDocumentation,

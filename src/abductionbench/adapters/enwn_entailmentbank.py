@@ -19,8 +19,9 @@ trees) are different tasks and are ignored.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
@@ -64,7 +65,7 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
                         len(targets),
                     )
                     continue
-                for position, (source, target) in enumerate(zip(sources, targets)):
+                for position, (source, target) in enumerate(zip(sources, targets, strict=True)):
                     items.append(
                         {
                             "corpus": corpus,

@@ -30,7 +30,7 @@ from typing import Any
 
 import pandas as pd
 
-from .checkpoint import load_records
+from .checkpoint import dedupe_records, load_records
 from .engine import RunResult, TaskResult
 from .types import AdapterDocumentation
 
@@ -157,7 +157,7 @@ def _build_datasets_frame(result: RunResult) -> pd.DataFrame:
 def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for directory in task_dirs:
-        for record in load_records(directory / "records.jsonl"):
+        for record in dedupe_records(load_records(directory / "records.jsonl")):
             response = record.get("response") or {}
             row: dict[str, Any] = {
                 "dataset_id": record.get("dataset_id"),

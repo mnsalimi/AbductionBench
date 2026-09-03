@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 
 
 class FakeServerState:

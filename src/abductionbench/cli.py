@@ -20,7 +20,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -48,9 +47,9 @@ ModelsOpt = typer.Option(None, "--models", "-m", help="Restrict to these model i
 
 def _load(
     config: Path,
-    overrides: Optional[list[str]],
-    datasets: Optional[list[str]],
-    models: Optional[list[str]],
+    overrides: list[str] | None,
+    datasets: list[str] | None,
+    models: list[str] | None,
 ) -> RunConfig:
     try:
         return load_run_config(
@@ -61,7 +60,7 @@ def _load(
         raise typer.Exit(code=2) from exc
 
 
-def _split_csv(values: Optional[list[str]]) -> Optional[list[str]]:
+def _split_csv(values: list[str] | None) -> list[str] | None:
     """Accept both ``-d a -d b`` and ``-d a,b``."""
     if not values:
         return None
@@ -74,9 +73,9 @@ def _split_csv(values: Optional[list[str]]) -> Optional[list[str]]:
 @app.command()
 def validate(
     config: Path = ConfigArg,
-    set_: Optional[list[str]] = SetOpt,
-    datasets: Optional[list[str]] = DatasetsOpt,
-    models: Optional[list[str]] = ModelsOpt,
+    set_: list[str] | None = SetOpt,
+    datasets: list[str] | None = DatasetsOpt,
+    models: list[str] | None = ModelsOpt,
     check_adapters: bool = typer.Option(
         True, help="Import each dataset's adapter class (does not download data)."
     ),
@@ -121,8 +120,8 @@ def validate(
 @app.command()
 def templates(
     config: Path = ConfigArg,
-    set_: Optional[list[str]] = SetOpt,
-    show: Optional[str] = typer.Option(None, help="Print the full body of one template id."),
+    set_: list[str] | None = SetOpt,
+    show: str | None = typer.Option(None, help="Print the full body of one template id."),
 ) -> None:
     """List the prompt templates a run can use (and preview one)."""
     setup_logging(level="WARNING")
@@ -157,8 +156,8 @@ def templates(
 @app.command()
 def doctor(
     config: Path = ConfigArg,
-    set_: Optional[list[str]] = SetOpt,
-    models: Optional[list[str]] = ModelsOpt,
+    set_: list[str] | None = SetOpt,
+    models: list[str] | None = ModelsOpt,
 ) -> None:
     """Probe every model endpoint: discovery, chat, and the native batch route."""
     setup_logging(level="INFO")
@@ -203,8 +202,8 @@ def doctor(
 @app.command()
 def prepare(
     config: Path = ConfigArg,
-    set_: Optional[list[str]] = SetOpt,
-    datasets: Optional[list[str]] = DatasetsOpt,
+    set_: list[str] | None = SetOpt,
+    datasets: list[str] | None = DatasetsOpt,
     offline: bool = typer.Option(False, help="Fail instead of downloading anything."),
 ) -> None:
     """Materialize datasets and build their samples without calling any model."""
@@ -235,11 +234,11 @@ def prepare(
 @app.command()
 def run(
     config: Path = ConfigArg,
-    set_: Optional[list[str]] = SetOpt,
-    datasets: Optional[list[str]] = DatasetsOpt,
-    models: Optional[list[str]] = ModelsOpt,
-    run_id: Optional[str] = typer.Option(None, help="Reuse a run id to resume into its directory."),
-    resume: Optional[Path] = typer.Option(
+    set_: list[str] | None = SetOpt,
+    datasets: list[str] | None = DatasetsOpt,
+    models: list[str] | None = ModelsOpt,
+    run_id: str | None = typer.Option(None, help="Reuse a run id to resume into its directory."),
+    resume: Path | None = typer.Option(
         None, help="Resume into an existing run directory (implies its run id)."
     ),
     dry_run: bool = typer.Option(False, help="Plan and render prompts, but call no model."),

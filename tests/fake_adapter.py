@@ -6,7 +6,8 @@ real dataset present, which is the whole point of the Phase 1 / Phase 2 split.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from abductionbench.core.adapter import AdapterContext, DatasetAdapter, SkippedDataset
 from abductionbench.core.metrics import aggregate_mean_metrics, exact_match, extract_answer_span

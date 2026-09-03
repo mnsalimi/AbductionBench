@@ -26,7 +26,8 @@ from __future__ import annotations
 import json
 import random
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics

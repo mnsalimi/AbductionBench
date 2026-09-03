@@ -45,4 +45,7 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["B008"]
+# B008: typer declares CLI defaults as function calls, which is its documented API.
+# E501: docstrings and metric descriptions carry explanatory prose; wrapping them
+#       at 100 columns would hurt readability more than the long lines do.
+ignore = ["B008", "E501"]

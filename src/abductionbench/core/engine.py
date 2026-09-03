@@ -37,17 +37,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from . import batching as batching_mod
 from .adapter import AdapterContext, DatasetAdapter, SkippedDataset
 from .checkpoint import RecordStore, TaskCheckpoint
 from .client import BatchResult, ModelClient, RawChoice
 from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
-from .errors import AbenchError, AdapterError, AuthError, EndpointError, ErrorClass, TemplateError
+from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
 from .judge import JudgeStage
 from .metrics import mean
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate, TemplateBinding
@@ -304,7 +305,7 @@ class EvaluationEngine:
             gathered = await asyncio.gather(
                 *(_guarded(*task) for task in tasks), return_exceptions=True
             )
-            for task, outcome in zip(tasks, gathered):
+            for task, outcome in zip(tasks, gathered, strict=True):
                 identity = task[0]
                 if isinstance(outcome, TaskResult):
                     result.tasks.append(outcome)
@@ -637,7 +638,7 @@ class EvaluationEngine:
     ) -> list[tuple[TaskIdentity, PromptSet, ModelConfig, DatasetBundle]]:
         tasks: list[tuple[TaskIdentity, PromptSet, ModelConfig, DatasetBundle]] = []
         by_id = {bundle.config.id: bundle for bundle in bundles}
-        for (dataset_id, variant), prompt_set in prompt_sets.items():
+        for (dataset_id, _variant), prompt_set in prompt_sets.items():
             bundle = by_id[dataset_id]
             for model in self.config.models:
                 identity = TaskIdentity(
@@ -1178,7 +1179,7 @@ class EvaluationEngine:
         for batch in batching_mod.plan_batches(
             retry_prompts,
             group_size=(
-                (model.endpoint.batch.group_size if use_batch else 1)
+                model.endpoint.batch.group_size if use_batch else 1
             ),
             batching=self.engine_cfg.batching,
             prefix="empty-retry",

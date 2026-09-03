@@ -18,7 +18,8 @@ import re
 import string
 import unicodedata
 from collections import Counter
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 __all__ = [
     "normalize_text",
@@ -256,7 +257,7 @@ def spearman(a: Sequence[float], b: Sequence[float]) -> float:
         return 0.0
     rank_a, rank_b = _ranks(list(a)), _ranks(list(b))
     mean_a, mean_b = mean(rank_a), mean(rank_b)
-    num = sum((x - mean_a) * (y - mean_b) for x, y in zip(rank_a, rank_b))
+    num = sum((x - mean_a) * (y - mean_b) for x, y in zip(rank_a, rank_b, strict=True))
     den = math.sqrt(sum((x - mean_a) ** 2 for x in rank_a)) * math.sqrt(
         sum((y - mean_b) ** 2 for y in rank_b)
     )

@@ -23,13 +23,15 @@ reported.
 from __future__ import annotations
 
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
+from ._mathnorm import equal_expressions
 
 REPO_URL = "https://github.com/principia-ai/PhysGym"
 
@@ -165,7 +167,9 @@ class PhysGymAdapter(PooledDatasetAdapter):
                 "symbolic_match": "1 if SymPy proves the answer equivalent to the reference "
                 "expression (primary; an undecidable comparison counts as 0)",
                 "symbolic_match_decidable": "symbolic_match over the items SymPy could compare",
-                "symbolic_undecidable": "fraction of items where parsing/simplification failed",
+                "symbolic_undecidable": "fraction of items where parsing/simplification failed; "
+                "rare now that answers are normalized and parsed with implicit multiplication, so "
+                "a prose answer counts as a mismatch rather than as unscorable",
                 "expression_token_f1": "token F1 against the reference expression, a lenient "
                 "fallback view",
             },
@@ -174,6 +178,11 @@ class PhysGymAdapter(PooledDatasetAdapter):
                 "Scored by symbolic equivalence rather than string match: a physical law has many "
                 "algebraically equal forms. PhysGym itself uses an LLM equivalence check; SymPy "
                 "was chosen here because it is deterministic and free.",
+                "Answers are normalized before parsing (LaTeX \\frac/\\sqrt, unicode Greek and "
+                "subscripts, implicit multiplication). Without this, models answering in "
+                "mathematical notation were scored 'undecidable' even when correct -- measured on "
+                "a live run, every item was undecidable while token overlap with the reference "
+                "reached 0.95.",
                 "Asked for a Python-style expression using the dataset's own variable names, so "
                 "the answer is parseable; the reference is the dataset's `equation` field.",
                 "Counted undecidable comparisons as misses in the primary metric but reported "
@@ -192,7 +201,7 @@ class PhysGymAdapter(PooledDatasetAdapter):
 
 def _extract_expression(answer: str, output_name: str) -> str | None:
     """Pull the right-hand side of ``output = ...`` out of a model answer."""
-    text = answer.strip().strip("`").replace("\\", "")
+    text = answer.strip().strip("`")
     # Prefer the last assignment to the target variable.
     matches = re.findall(rf"{re.escape(output_name)}\s*=\s*([^\n;]+)", text)
     if matches:
@@ -203,20 +212,14 @@ def _extract_expression(answer: str, output_name: str) -> str | None:
 
 
 def _symbolic_equal(candidate: str | None, reference: str, variables: Sequence[str]) -> bool | None:
-    """Return True/False, or None when the comparison cannot be decided."""
-    if not candidate or not reference:
+    """Symbolic equality, tolerant of LaTeX/unicode notation.
+
+    Delegates to :mod:`abductionbench.adapters._mathnorm`, which rewrites
+    ``\\dfrac``/``\\sqrt``/unicode Greek/subscripts and parses with implicit
+    multiplication -- models answer in mathematical notation regardless of the
+    prompt's request for Python syntax, and without this a correct answer is
+    scored as undecidable.
+    """
+    if not candidate:
         return None
-    try:
-        import sympy
-        from sympy.parsing.sympy_parser import parse_expr
-    except ImportError:  # pragma: no cover - sympy is a declared dependency
-        return None
-    symbols = {name: sympy.Symbol(name) for name in variables}
-    symbols.update({"pi": sympy.pi, "e": sympy.Symbol("e")})
-    try:
-        left = parse_expr(candidate.replace("^", "**"), local_dict=symbols, evaluate=True)
-        right = parse_expr(reference.replace("^", "**"), local_dict=symbols, evaluate=True)
-        difference = sympy.simplify(left - right)
-        return bool(difference == 0)
-    except Exception:  # noqa: BLE001 - unparseable model output or exotic reference
-        return None
+    return equal_expressions(candidate, reference, variables)
