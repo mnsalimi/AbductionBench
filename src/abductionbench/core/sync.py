@@ -186,17 +186,31 @@ class ArtifactSync:
             self._degraded = True
             self.stats.failures += 1
             self.stats.last_error = problem
-            logger.error(
-                "artifact sync disabled for this run: %s. The run continues; results stay "
-                "on local disk only.",
-                problem,
-            )
+            if self.config.preflight_retry_s:
+                logger.error(
+                    "artifact sync cannot start yet: %s. The run continues (results on local "
+                    "disk); the destination is re-checked every %.0fs, so fixing it now is "
+                    "enough for this run to start backing up.",
+                    problem,
+                    self.config.preflight_retry_s,
+                )
+            else:
+                logger.error(
+                    "artifact sync disabled for this run: %s. The run continues; results stay "
+                    "on local disk only.",
+                    problem,
+                )
             self._emit("sync_disabled", reason=problem)
-            return
+            if not self.config.preflight_retry_s:
+                return
+            # Keep a thread alive purely to watch for the destination becoming
+            # usable; it uploads nothing until preflight passes.
         self._thread = threading.Thread(
             target=self._loop, name="artifact-sync", daemon=True
         )
         self._thread.start()
+        if self._degraded:
+            return
         logger.info(
             "artifact sync started: %s -> %s every %ss (incremental, in a background thread)",
             self.run_dir,
@@ -208,7 +222,26 @@ class ArtifactSync:
     def _loop(self) -> None:
         # Wait one interval first: the very first seconds of a run produce only
         # the resolved config, and there is no point racing the engine's startup.
+        last_probe = time.monotonic()
         while not self._stop.wait(self.config.interval_s):
+            if self._degraded:
+                if not self.config.preflight_retry_s:
+                    return
+                if time.monotonic() - last_probe < self.config.preflight_retry_s:
+                    continue
+                last_probe = time.monotonic()
+                problem = self.preflight()
+                if problem:
+                    logger.debug("artifact sync still unavailable: %s", problem)
+                    continue
+                self._degraded = False
+                self.stats.last_error = None
+                logger.warning(
+                    "artifact sync is now available (%s); backing up everything produced so "
+                    "far, then continuing incrementally",
+                    self.destination,
+                )
+                self._emit("sync_recovered", destination=self.destination)
             self._tick(reason="interval")
 
     def stop(self, *, final: bool = True) -> SyncStats:

@@ -122,10 +122,13 @@ def test_a_broken_destination_is_reported_not_raised(tmp_path: Path):
     problem = syncer.preflight()
     assert problem and "not configured" in problem
 
-    syncer.start()  # must not raise, and must not spawn a doomed thread
-    assert syncer._thread is None  # noqa: SLF001 - asserting it declined to start
+    syncer.start()  # must not raise
+    # It uploads nothing, but keeps a watcher thread so that fixing the remote
+    # mid-run starts the backup (see the recovery test below).
+    assert syncer._degraded is True  # noqa: SLF001
     assert syncer.stats.failures == 1
     stats = syncer.stop()
+    assert stats.successes == 0
     assert stats.last_error and "not configured" in stats.last_error
 
 
@@ -191,3 +194,58 @@ def test_engine_run_backs_up_artifacts_end_to_end(
     assert (remote / result.run_id / "run_config.resolved.yaml").exists()
     assert result.sync_stats["successes"] >= 1
     assert result.sync_stats["failures"] == 0
+
+
+def test_sync_recovers_when_the_destination_becomes_usable(tmp_path: Path, monkeypatch):
+    """Credentials added mid-run must start the backup, not be ignored.
+
+    Preflight fails first (unconfigured remote), then succeeds -- as it would
+    after `setup_drive_remote.sh` runs while an evaluation is in flight.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    config = SyncConfig(
+        enabled=True,
+        remote_path=str(remote),
+        interval_s=0.2,
+        preflight_retry_s=0.2,
+    )
+    syncer = ArtifactSync(config, run, "run-1")
+
+    calls = {"n": 0}
+    real_preflight = syncer.preflight
+
+    def flaky_preflight():
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return "rclone remote 'gdrive' is not configured (configured: none)"
+        return real_preflight()
+
+    monkeypatch.setattr(syncer, "preflight", flaky_preflight)
+
+    syncer.start()
+    assert syncer._degraded is True          # noqa: SLF001 - it must not upload yet
+    assert syncer._thread is not None        # noqa: SLF001 - but it must keep watching
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and not (remote / "run-1" / "engine.log").exists():
+            time.sleep(0.2)
+        assert (remote / "run-1" / "engine.log").exists(), "did not recover"
+        assert syncer._degraded is False     # noqa: SLF001
+        assert syncer.stats.successes >= 1
+    finally:
+        syncer.stop()
+
+
+def test_preflight_retry_can_be_switched_off(tmp_path: Path):
+    """With retries off, a bad destination stays off for the whole run."""
+    run = _run_dir(tmp_path)
+    config = SyncConfig(
+        enabled=True,
+        remote_path="definitely-not-a-remote:path",
+        interval_s=0.2,
+        preflight_retry_s=0,
+    )
+    syncer = ArtifactSync(config, run, "run-1")
+    syncer.start()
+    assert syncer._thread is None            # noqa: SLF001 - no watcher thread at all
+    assert syncer.stop().successes == 0

@@ -480,6 +480,10 @@ class SyncConfig(_Base):
     #: metric and log.
     exclude: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
+    #: If the destination is unusable at startup (e.g. credentials not set up
+    #: yet), re-check this often and begin uploading once it works.  0 disables
+    #: the re-check, leaving the run permanently un-backed-up.
+    preflight_retry_s: float = Field(300.0, ge=0)
 
 
 class ReportingConfig(_Base):

@@ -97,24 +97,28 @@ How it behaves, and why:
 
 ### One-time Google Drive setup
 
-This machine has no browser, so use rclone's headless flow. On a machine that
-does have one:
-
 ```bash
-rclone authorize "drive" '{"scope":"drive"}'      # approve, copy the JSON token
+bash tools/connect_drive.sh
 ```
 
-Then here:
+That is the whole thing. It prints an authorization link; **Ctrl+click it** --
+if you are attached over VS Code Remote SSH, VS Code forwards the port
+automatically and the link opens in your own browser, so nothing needs to be
+installed locally. Approve the account that owns the target folder and the
+script writes the remote, verifies read *and* write access, and attaches the
+backup to a run that is already in progress.
 
-```bash
-bash tools/setup_drive_remote.sh '<token-json>'   # pins gdrive: to one folder
-```
+The remote is pinned with `root_folder_id`, so nothing can be written anywhere
+else in the Drive. If the link does not become clickable: VS Code -> **PORTS**
+tab -> Forward a Port -> `53682`, then open the link.
 
-The script writes the remote with `root_folder_id` set to the target folder, so
-nothing can be written elsewhere in the Drive, and it verifies read *and* write
-access before declaring success. A service account is an alternative for a
-**Shared** Drive; the script's header explains why it does not work for a folder
-in a personal My Drive.
+Two alternatives, if you prefer them:
+
+* `bash tools/setup_drive_remote.sh '<token-json>'` -- when you already have a
+  token from running `rclone authorize "drive"` on another machine.
+* A service account, for a **Shared** Drive. `setup_drive_remote.sh`'s header
+  explains why that does not work for a folder in a personal My Drive (the
+  service account would own the files and has no storage quota).
 
 ### A run that is already in progress
 
