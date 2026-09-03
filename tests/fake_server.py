@@ -17,6 +17,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
+def _finish_reason(content: str | None, max_tokens: int) -> str:
+    """"length" when the budget was spent: no content at all, or a cut-off answer."""
+    if not content:
+        return "length"
+    return "length" if len(content.split()) > max_tokens else "stop"
+
+
+def _clip_to_budget(content: str | None, max_tokens: int) -> str | None:
+    """Return only as many words as the budget allows, like a real server."""
+    if not content:
+        return content
+    words = content.split()
+    if len(words) <= max_tokens:
+        return content
+    return " ".join(words[:max_tokens])
+
+
 class FakeServerState:
     """Knobs the tests flip to shape server behaviour."""
 
@@ -162,10 +179,13 @@ class _Handler(BaseHTTPRequestHandler):
                     "index": index,
                     "message": {
                         "role": "assistant",
-                        "content": content,
+                        "content": _clip_to_budget(content, max_tokens),
                         "reasoning": None if content else "thought too long",
                     },
-                    "finish_reason": "stop" if content else "length",
+                    # Real servers report "length" both when the budget is spent
+                    # before any content (reasoning models) and when a longer
+                    # answer was cut off mid-way.
+                    "finish_reason": _finish_reason(content, max_tokens),
                 }
             )
         self._json(
@@ -191,7 +211,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         with self.state.lock:
             self.state.single_calls += 1
-        content = self._content_for(conversation, int(payload.get("max_tokens") or 16))
+        max_tokens = int(payload.get("max_tokens") or 16)
+        content = self._content_for(conversation, max_tokens)
         self._json(
             200,
             {
@@ -201,8 +222,11 @@ class _Handler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": content},
-                        "finish_reason": "stop" if content else "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": _clip_to_budget(content, max_tokens),
+                        },
+                        "finish_reason": _finish_reason(content, max_tokens),
                     }
                 ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},

@@ -112,13 +112,24 @@ server:
    off at ~100 s with HTTP 524. A batch whose retries are exhausted by
    timeouts is also split (`engine.batching.bisect_on_timeout`), which both
    shortens each call and salvages samples.
-7. **An empty response is an under-budgeted request, not a failure.** When a
-   reasoning model returns `content: null` with `finish_reason="length"`, the
-   engine re-asks *only that sample* with a multiplied budget
-   (`engine.retry.escalate_empty_responses`). Measured on gpt-oss-120b over
-   AbductionRules: 16.7% of samples came back empty at a 768-token floor, and
-   escalation took that to 0% at the cost of one extra call per affected
-   sample -- far cheaper than raising the budget for all 300.
+7. **An empty or cut-off response is an under-budgeted request, not a
+   failure.** When a model returns `content: null` with
+   `finish_reason="length"`, the engine re-asks *only that sample* with a
+   multiplied budget (`engine.retry.escalate_empty_responses`, on by default).
+   Measured on gpt-oss-120b over AbductionRules: 16.7% of samples came back
+   empty at a 768-token floor, and escalation took that to 0% at the cost of one
+   extra call per affected sample -- far cheaper than raising the budget for all
+   300. `escalate_truncated_responses` (off by default, since a verbose model
+   would double the cost of every long-form dataset) extends the same treatment
+   to answers that were cut off mid-way; on gemma-4-E4B over PhysGym it took the
+   truncation rate from 50% to 0%.
+8. **A small context window silently shortens answers.** With
+   `limits.context_window` set, the engine clamps each sample's output budget to
+   what is left after its prompt, counts how often it had to, and reports
+   `output_budget_clamped_rate` plus a warning naming the worst sample. On a
+   16k-window model (gemma-4-E4B) the longest prompt any adapter currently
+   produces is ~8.1k tokens, so nothing is clamped -- but the metric is there so
+   a tighter model cannot quietly turn a scoring result into a budget artifact.
 
 ## Failure handling summary
 

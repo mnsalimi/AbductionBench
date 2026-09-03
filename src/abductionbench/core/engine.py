@@ -703,6 +703,7 @@ class EvaluationEngine:
 
         # Compose model-specific sampling params for every prompt.
         rendered: list[RenderedPrompt] = []
+        clamped: list[tuple[str, int, int]] = []
         for sample, messages, tokens in prompt_set.entries:
             contract = sample.metadata.get("_output_contract", prompt_set.output_contract)
             sampling = batching_mod.resolve_sampling(
@@ -714,6 +715,20 @@ class EvaluationEngine:
                 context_window=model.limits.context_window,
                 input_tokens=tokens,
             )
+            # A model with a small context window (e.g. 16k) can leave less room
+            # than the adapter asked for. That silently shortens answers, so it
+            # is counted and reported rather than absorbed.
+            unclamped = batching_mod.resolve_sampling(
+                requested_max_tokens=sample.max_tokens,
+                per_sample_overrides=sample.sampling_overrides,
+                model_sampling=model.sampling,
+                template_sampling=prompt_set.template.sampling,
+                batching=self.engine_cfg.batching,
+                context_window=None,
+                input_tokens=tokens,
+            )
+            if sampling.max_tokens < unclamped.max_tokens:
+                clamped.append((sample.sample_id, unclamped.max_tokens, sampling.max_tokens))
             rendered.append(
                 RenderedPrompt(
                     sample=sample,
@@ -727,6 +742,31 @@ class EvaluationEngine:
             )
 
         result.n_planned = len(rendered)
+        self._clamped_output_budgets = len(clamped)
+        if clamped:
+            worst = min(clamped, key=lambda item: item[2])
+            logger.warning(
+                "task %s: %d of %d prompt(s) had their output budget clamped by the model's "
+                "%s-token context window (worst: sample %s asked for %d, got %d). Scores for "
+                "those samples may reflect a truncated answer.",
+                identity.slug,
+                len(clamped),
+                len(rendered),
+                model.limits.context_window,
+                worst[0],
+                worst[1],
+                worst[2],
+            )
+            self.events.emit(
+                "output_budget_clamped",
+                **identity.as_dict(),
+                n_clamped=len(clamped),
+                n_planned=len(rendered),
+                context_window=model.limits.context_window,
+                worst_sample=worst[0],
+                worst_requested=worst[1],
+                worst_granted=worst[2],
+            )
         checkpoint = TaskCheckpoint(task=identity.as_dict(), total_planned=len(rendered))
         previous = store.load_checkpoint()
         if previous:
@@ -899,6 +939,7 @@ class EvaluationEngine:
             "batches_failed": checkpoint.batches_failed,
             "bisections": checkpoint.bisections,
             "empty_escalations": checkpoint.empty_escalations,
+            "output_budgets_clamped": getattr(self, "_clamped_output_budgets", 0),
             "endpoint": client.batch_url if use_batch else client.base_url,
             "template": f"{prompt_set.template.id}@{prompt_set.template.version}",
             "variant": prompt_set.variant,
@@ -1113,7 +1154,7 @@ class EvaluationEngine:
         checkpoint: TaskCheckpoint,
         model: ModelConfig,
     ) -> list[tuple[RenderedPrompt, ModelResponse]]:
-        """Re-issue samples that came back empty because the budget ran out.
+        """Re-issue samples whose answer was limited by the token budget.
 
         A reasoning model can spend its whole ``max_tokens`` on hidden
         chain-of-thought and return ``content: null`` with
@@ -1124,7 +1165,9 @@ class EvaluationEngine:
         context window).
         """
         config = self.engine_cfg.retry
-        if not config.escalate_empty_responses or config.max_empty_escalations <= 0:
+        if config.max_empty_escalations <= 0:
+            return pairs
+        if not (config.escalate_empty_responses or config.escalate_truncated_responses):
             return pairs
 
         keep: list[tuple[RenderedPrompt, ModelResponse]] = []
@@ -1133,6 +1176,9 @@ class EvaluationEngine:
             budget_exhausted = (
                 response.status is ResponseStatus.EMPTY
                 and (response.finish_reason == "length" or response.finish_reason is None)
+            ) or (
+                config.escalate_truncated_responses
+                and response.status is ResponseStatus.TRUNCATED
             )
             escalated = prompt.sample.metadata.get("_empty_escalations", 0)
             if not budget_exhausted or escalated >= config.max_empty_escalations:
@@ -1164,7 +1210,7 @@ class EvaluationEngine:
 
         checkpoint.empty_escalations += len(retry_prompts)
         logger.info(
-            "%d sample(s) returned empty content at the token budget; retrying them with a "
+            "%d sample(s) hit the token budget (empty or cut off); retrying them with a "
             "%.1fx budget",
             len(retry_prompts),
             config.empty_budget_multiplier,
@@ -1337,6 +1383,9 @@ class EvaluationEngine:
             1 for rec in reused_records if rec.get("status") == ResponseStatus.EMPTY.value
         )
         metrics["truncation_rate"] = (truncated + reused_truncated) / planned
+        metrics["output_budget_clamped_rate"] = (
+            getattr(self, "_clamped_output_budgets", 0) / planned
+        )
         metrics["empty_response_rate"] = (empty + reused_empty) / planned
         return metrics
 

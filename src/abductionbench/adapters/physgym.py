@@ -97,8 +97,10 @@ class PhysGymAdapter(PooledDatasetAdapter):
             },
             task_kind="generation",
             # Deriving a physical law needs room to work, even though the final
-            # line is one expression.
-            max_tokens=1536,
+            # line is one expression. Measured: at 1,536 tokens half of
+            # gemma-4-E4B's answers were cut off mid-derivation, which makes the
+            # metric about verbosity rather than physics.
+            max_tokens=2560,
             metadata={"tag": item.get("tag"), "n_inputs": len(inputs)},
         )
 
@@ -187,7 +189,10 @@ class PhysGymAdapter(PooledDatasetAdapter):
                 "the answer is parseable; the reference is the dataset's `equation` field.",
                 "Counted undecidable comparisons as misses in the primary metric but reported "
                 "them separately, so the number cannot be silently inflated.",
-                "max_tokens=1536 to allow a derivation before the final expression.",
+                "max_tokens=2560: at 1,536 half of one model's answers were truncated "
+                "mid-derivation. A cut-off equation is unscorable rather than merely shorter, so "
+                "runs on verbose models should also set "
+                "engine.retry.escalate_truncated_responses=true.",
             ],
             caveats=[
                 "Only 97 problems, so this dataset reports far fewer than the 300-sample target.",

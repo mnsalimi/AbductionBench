@@ -1,0 +1,73 @@
+# google/gemma-4-E4B-it served by vLLM on this instance (gemma-4-e4b-vllm,
+# 127.0.0.1:18000), reached through the LiteLLM gateway.
+#
+# Two URLs matter and they are deliberately separate:
+#   * endpoint.base_url        -> the gateway: model discovery + single calls.
+#   * endpoint.batch.base_url  -> where POST /v1/chat/completions/batch exists.
+#     That route is not an OpenAI route, so it lives either on this model's own
+#     tunnel or on a gateway pass-through path (used here, because it accepts
+#     per-user virtual keys as well as the admin key).
+#
+# Both URLs are Cloudflare quick tunnels and rotate whenever the tunnel service
+# restarts, so `discovery` re-reads them from the tunnel logs on a connection
+# error rather than failing the run.
+model:
+  id: gemma-4-e4b
+  model_name: google/gemma-4-E4B-it
+  description: >-
+    Gemma 4 E4B instruction-tuned, served by vLLM 0.28 with MAX_MODEL_LEN=16384
+    and MAX_NUM_SEQS=8.
+  # Not a reasoning model: it returns content directly and leaves `reasoning`
+  # null, so it needs no hidden chain-of-thought headroom (contrast the
+  # gpt-oss-120b config, whose max_tokens_floor exists for exactly that).
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_GATEWAY_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+    api_key: ${env:ABENCH_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_BATCH_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+      path: /gemma-4-e4b/v1/chat/completions/batch
+      # The server runs MAX_NUM_SEQS=8, so a batch of 8 fills its scheduler
+      # exactly; larger batches would just queue inside vLLM.
+      group_size: 8
+    discovery:
+      base_url_command: >-
+        grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+        /var/log/portal/gateway-tunnel.log | tail -1
+      batch_base_url_command: >-
+        grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'
+        /var/log/portal/gateway-tunnel.log | tail -1
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 512
+    # Capped well under the 16,384-token window so a long prompt plus its output
+    # still fit; the engine clamps per sample anyway and reports when it has to.
+    max_tokens_cap: 4096
+    # A non-reasoning model emits its answer immediately, so a small floor is
+    # enough and keeps generation cheap.
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN from gemma-4-e4b/.env. This is much tighter than the suite's
+    # 16,000-token *input* budget, so the engine's per-sample clamp matters here:
+    # it reduces max_tokens to what is left after the prompt and reports the
+    # clamp rate. The longest prompt any adapter currently produces is ~8.1k
+    # tokens (SciR), which still leaves ~8k for output.
+    context_window: 16384
+
+  notes:
+    served_by: vLLM 0.28.0 (gemma-4-e4b-vllm supervisor service, port 18000)
+    batch_route_note: >-
+      Enabled via gateway pass_through_endpoints; add a model's entry there (and
+      re-run manage_users.py) before pointing this config at a new model.

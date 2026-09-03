@@ -274,3 +274,55 @@ def test_set_keeps_yaml_boolean_words_as_strings(tmp_path: Path, prompt_dir: Pat
     # Genuine booleans still parse as booleans.
     config = load_run_config(run, overrides=["engine.checkpoint.enabled=false"])
     assert config.engine.checkpoint.enabled is False
+
+
+def test_inherited_paths_resolve_against_the_declaring_config(tmp_path: Path, prompt_dir: Path):
+    """A `datasets_glob`/`template_dirs` declared in a parent must still resolve.
+
+    The child config lives in a different directory, so resolving only against
+    the child would break every inherited relative path.
+    """
+    parent_dir = tmp_path / "base"
+    child_dir = tmp_path / "elsewhere" / "runs"
+    (parent_dir / "ds").mkdir(parents=True)
+    child_dir.mkdir(parents=True)
+    (parent_dir / "ds" / "a.yaml").write_text(
+        yaml.safe_dump({"dataset": {"id": "a", "impl": "fake_adapter:FakeAdapter"}}),
+        encoding="utf-8",
+    )
+    _write(
+        parent_dir / "parent.yaml",
+        {
+            "prompts": {
+                "template_dirs": [str(prompt_dir)],
+                "bindings": {"generation": "gen_freeform_v1"},
+            },
+            "datasets_glob": ["ds/*.yaml"],
+        },
+    )
+    child = _write(
+        child_dir / "child.yaml",
+        {
+            "extends": [str(parent_dir / "parent.yaml")],
+            "name": "child",
+            "models": [{"id": "m", "model_name": "t/m", "endpoint": {"base_url": "http://x"}}],
+        },
+    )
+    config = load_run_config(child)
+    assert [d.id for d in config.datasets] == ["a"]
+
+
+def test_unmatched_glob_reports_where_it_looked(tmp_path: Path, prompt_dir: Path):
+    run = _write(
+        tmp_path / "run.yaml",
+        {
+            "prompts": {
+                "template_dirs": [str(prompt_dir)],
+                "bindings": {"generation": "gen_freeform_v1"},
+            },
+            "models": [{"id": "m", "model_name": "t/m", "endpoint": {"base_url": "http://x"}}],
+            "datasets_glob": ["nowhere/*.yaml"],
+        },
+    )
+    with pytest.raises(ConfigError, match="searched relative to"):
+        load_run_config(run)

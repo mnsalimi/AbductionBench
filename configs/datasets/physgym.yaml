@@ -3,5 +3,6 @@ dataset:
   impl: abductionbench.adapters.physgym:PhysGymAdapter
   sample_size: 300   # only 97 problems exist; the shortfall is reported
   notes: >-
-    Law discovery from the described setup; scored by SymPy symbolic equivalence.
-    The dataset's worked solution is withheld from the prompt.
+    Law discovery from the described setup; scored by SymPy symbolic equivalence
+    (LaTeX/unicode/numpy notation is normalized first). The dataset's worked
+    solution is withheld from the prompt.

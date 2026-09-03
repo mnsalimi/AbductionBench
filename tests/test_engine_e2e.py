@@ -485,3 +485,92 @@ def test_empty_escalation_can_be_disabled(fake_server, write_run_config, fake_da
     task = result.tasks[0]
     assert task.checkpoint.empty_escalations == 0
     assert task.metrics["empty_response_rate"] == 1.0
+
+
+def test_output_budget_clamped_by_context_window_is_reported(
+    fake_server, write_run_config, fake_dataset
+):
+    """A small context window silently shortens answers -- so it is counted.
+
+    The model here has a 600-token window and the samples ask for 512 output
+    tokens on top of a long prompt, so the engine must cut the output budget and
+    say so instead of absorbing it.
+    """
+    models = [
+        {
+            "id": "tiny-window",
+            "model_name": "test/model",
+            "endpoint": {
+                "base_url": fake_server.base_url,
+                "api_key": "test-key",
+                "batch": {"enabled": True, "group_size": 4},
+            },
+            "sampling": {"max_tokens_default": 512, "max_tokens_cap": 512, "max_tokens_floor": 8},
+            "limits": {"max_parallel_batches": 1, "context_window": 600},
+        }
+    ]
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        models=models,
+        datasets=[
+            fake_dataset("fake", n=4, sample_size=4, max_tokens=512, long_every=1, long_chars=300)
+        ],
+        engine={"limits": {"input_token_budget": 4000}},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.diagnostics["output_budgets_clamped"] == 4
+    assert task.metrics["output_budget_clamped_rate"] == 1.0
+    assert task.n_scored == 4  # still evaluated, just with a smaller budget
+
+
+def test_no_clamp_reported_when_the_window_is_ample(fake_server, write_run_config, fake_dataset):
+    config_path = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("fake", n=4, sample_size=4)]
+    )
+    result, _ = _run(config_path)
+    assert result.tasks[0].metrics["output_budget_clamped_rate"] == 0.0
+
+
+def test_truncated_response_escalation_is_opt_in(fake_server, write_run_config, fake_dataset):
+    """A cut-off answer is re-asked only when the run opts in.
+
+    The fake server clips its answer to the budget and reports
+    ``finish_reason="length"`` when it does -- exactly what a real server does
+    for a verbose answer.
+    """
+
+    def responder(conversation, max_tokens):
+        return " ".join(["word"] * 60)  # longer than the small budget below
+
+    fake_server.state.responder = responder
+
+    def run(escalate: bool):
+        config_path = write_run_config(
+            base_url=fake_server.base_url,
+            datasets=[fake_dataset("fake", n=4, sample_size=4, max_tokens=32)],
+            engine={
+                "batching": {"max_tokens_quantum": 16},
+                "retry": {
+                    "max_attempts": 2,
+                    "initial_backoff_s": 0.01,
+                    "jitter": 0.0,
+                    "recovery": {"enabled": False},
+                    "escalate_empty_responses": False,
+                    "escalate_truncated_responses": escalate,
+                },
+            },
+            name=f"trunc-{escalate}",
+        )
+        return _run(config_path)[0].tasks[0]
+
+    off = run(False)
+    assert off.checkpoint.empty_escalations == 0
+    assert off.metrics["truncation_rate"] == 1.0  # all four cut off, none re-asked
+
+    on = run(True)
+    assert on.checkpoint.empty_escalations == 4  # each cut-off sample re-asked once
+    # 32 -> 64 tokens is still under the 60-word answer for some, so what is
+    # asserted is that the escalation happened and nothing was lost.
+    assert on.n_scored == 4
+    assert on.n_error == 0

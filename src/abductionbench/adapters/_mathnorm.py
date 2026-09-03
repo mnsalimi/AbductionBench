@@ -38,6 +38,36 @@ _SUBSCRIPTS = {"₀": "_0", "₁": "_1", "₂": "_2", "₃": "_3", "₄": "_4",
                "₅": "_5", "₆": "_6", "₇": "_7", "₈": "_8", "₉": "_9"}
 _SUPERSCRIPTS = {"²": "**2", "³": "**3", "⁴": "**4", "½": "*0.5"}
 
+#: PhysGym's reference equations are written for numpy/python evaluation
+#: (``np.pi``, ``np.arctan``, ``math.sqrt``); SymPy needs the bare names.
+_MODULE_PREFIXES = (
+    (r"\b(?:np|numpy|math|sp|sympy)\s*\.\s*", ""),
+    (r"\barctan\b", "atan"),
+    (r"\barcsin\b", "asin"),
+    (r"\barccos\b", "acos"),
+    (r"\barctan2\b", "atan2"),
+    (r"\bpower\s*\(", "Pow("),
+    (r"\babs\s*\(", "Abs("),
+)
+
+#: LaTeX Greek commands (``\eta``, ``\Delta``) as opposed to the unicode forms
+#: handled by ``_UNICODE_NAMES``.  Longest names first so ``\theta`` is not
+#: matched as ``\the`` + ``ta``.
+_LATEX_GREEK = tuple(
+    sorted(
+        (
+            "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta",
+            "eta", "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu",
+            "xi", "pi", "rho", "varrho", "sigma", "varsigma", "tau", "upsilon",
+            "phi", "varphi", "chi", "psi", "omega", "Gamma", "Delta", "Theta",
+            "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi", "Psi", "Omega",
+            "hbar", "ell", "infty",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
 _LATEX_COMMANDS = (
     (r"\\?[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"((\1)/(\2))"),
     (r"\\?sqrt\s*\[\s*([^\]]*)\s*\]\s*\{([^{}]*)\}", r"((\2)**(1/(\1)))"),
@@ -63,12 +93,23 @@ def normalize_math(text: str) -> str:
     body = text.strip().strip("`$ ").replace("\n", " ")
     # Strip a leading "<var> =" so only the right-hand side remains.
     body = re.sub(r"^[^=]{0,40}=\s*", "", body) if body.count("=") == 1 else body
-    for pattern, replacement in _LATEX_COMMANDS:
-        for _ in range(3):  # nested \frac needs a few passes
-            new_body = re.sub(pattern, replacement, body)
-            if new_body == body:
-                break
-            body = new_body
+    body = body.replace("$", " ")
+    for name in _LATEX_GREEK:
+        # "lambda" is a Python keyword, so it gets the same suffix the unicode
+        # mapping uses; "infty" becomes SymPy's oo.
+        target = {"lambda": "lambda_", "infty": "oo"}.get(name, name)
+        body = re.sub(rf"\\{name}\b", target, body)
+    for pattern, replacement in _MODULE_PREFIXES:
+        body = re.sub(pattern, replacement, body)
+    # Apply the whole rule set repeatedly: a nested construct such as
+    # \frac{\sqrt{3} a}{b} only becomes matchable once the inner \sqrt has been
+    # rewritten, and the brace-free patterns cannot see through nesting.
+    for _ in range(4):
+        before = body
+        for pattern, replacement in _LATEX_COMMANDS:
+            body = re.sub(pattern, replacement, body)
+        if body == before:
+            break
     for source, target in {**_UNICODE_NAMES, **_SUBSCRIPTS, **_SUPERSCRIPTS}.items():
         body = body.replace(source, target)
     body = body.replace("^", "**").replace("{", "(").replace("}", ")")
@@ -81,6 +122,10 @@ def normalize_math(text: str) -> str:
     body = re.sub(r"(?<=[A-Za-z0-9_)])\s*,\s*(?=[A-Za-z(])", "*", body)
     # "epsilon_0E_0" is two symbols juxtaposed, which SymPy would read as one.
     body = re.sub(r"(?<=_\d)(?=[A-Za-z])", "*", body)
+    # A prime is notation for a related quantity ("t'"); rename it so the
+    # expression parses and is *decided* (as a mismatch) instead of being
+    # reported as unreadable.
+    body = re.sub(r"([A-Za-z][A-Za-z0-9_]*)'", r"\1_prime", body)
     body = re.sub(r"\s+", " ", body).strip().rstrip(".,;:")
     # Drop a trailing unbalanced ')' left by prose like "...)."
     while body.count(")") > body.count("("):
@@ -107,7 +152,15 @@ def parse_math(text: str, symbols: Sequence[str]) -> Any | None:
     except ImportError:  # pragma: no cover - sympy is a declared dependency
         return None
     local = {name: sympy.Symbol(name) for name in symbols if name}
-    local.setdefault("pi", sympy.pi)
+    # Function and constant names must be bound, or implicit multiplication
+    # turns `sqrt(x)` into `sqrt * (x)`.
+    for name in (
+        "sqrt", "exp", "log", "sin", "cos", "tan", "atan", "asin", "acos",
+        "sinh", "cosh", "tanh", "atan2", "Abs", "Pow",
+    ):
+        local[name] = getattr(sympy, name, None) or sympy.Function(name)
+    local["pi"] = sympy.pi
+    local.setdefault("E", sympy.E)
     transformations = standard_transformations + (implicit_multiplication_application,)
     try:
         return parse_expr(

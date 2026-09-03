@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -210,6 +211,28 @@ def _resolve_relative(path: str | Path, anchor: Path) -> Path:
     return candidate.resolve()
 
 
+def _resolve_against_sources(
+    path: str | Path, anchor: Path, sources: Sequence[str]
+) -> Path:
+    """Resolve a relative path against any config file in the ``extends`` chain.
+
+    A key like ``datasets_glob`` or ``template_dirs`` is often declared in a
+    *parent* config and inherited by a child that lives in a different
+    directory.  Resolving only against the child would break the inherited
+    value, so every file that contributed to this configuration is tried --
+    deepest (the child) first, then its parents, then the working directory.
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    anchors = [anchor, *(Path(source) for source in reversed(list(sources)))]
+    for source in anchors:
+        resolved = (source.parent / candidate).resolve()
+        if resolved.exists():
+            return resolved
+    return candidate.resolve()
+
+
 def load_layered(
     path: str | Path,
     *,
@@ -329,6 +352,12 @@ class RetryConfig(_Base):
     escalate_empty_responses: bool = True
     empty_budget_multiplier: float = Field(2.0, gt=1.0)
     max_empty_escalations: int = Field(1, ge=0)
+    #: Also re-issue a sample whose answer was *cut off* at the budget
+    #: (``finish_reason="length"`` with partial content).  Off by default: a
+    #: verbose model would double the cost of every long-form dataset.  Turn it
+    #: on for datasets where a truncated answer is unscorable (a symbolic
+    #: equation, a label list) rather than merely shorter.
+    escalate_truncated_responses: bool = False
 
 
 class TimeoutConfig(_Base):
@@ -710,7 +739,7 @@ def _load_referenced_list(
         if ref is None:
             out.append(entry)
             continue
-        loaded = load_layered(_resolve_relative(ref, anchor))
+        loaded = load_layered(_resolve_relative(ref, anchor))  # noqa: E501 - per-entry anchor
         loaded.pop("_source_files", None)
         body = loaded.get(key, loaded)
         if not isinstance(body, dict):
@@ -765,13 +794,26 @@ def load_run_config(
         discovered: list[str] = []
         for pattern in globs:
             pattern_path = Path(str(pattern))
-            root = anchor.parent if not pattern_path.is_absolute() else Path("/")
-            matches = sorted(root.glob(str(pattern_path)))
+            # The pattern may have been declared by any file in the extends
+            # chain, so try each of their directories (child first).
+            roots = (
+                [Path("/")]
+                if pattern_path.is_absolute()
+                else [anchor.parent, *(Path(src).parent for src in reversed(sources))]
+            )
+            matches: list[Path] = []
+            for root in roots:
+                matches = sorted(root.glob(str(pattern_path)))
+                if matches:
+                    break
             discovered.extend(
                 str(match) for match in matches if not match.name.startswith("_")
             )
         if not discovered:
-            raise ConfigError(f"datasets_glob matched no files: {globs}")
+            raise ConfigError(
+                f"datasets_glob matched no files: {globs} (searched relative to "
+                f"{[str(anchor.parent), *[str(Path(s).parent) for s in reversed(sources)]]})"
+            )
         body["datasets"] = [*(body.get("datasets") or []), *discovered]
 
     body["models"] = _load_referenced_list(body.get("models", []), anchor=anchor, key="model")
@@ -808,7 +850,8 @@ def load_run_config(
     prompts_block = body.get("prompts")
     if isinstance(prompts_block, dict) and prompts_block.get("template_dirs"):
         prompts_block["template_dirs"] = [
-            str(_resolve_relative(entry, anchor)) for entry in prompts_block["template_dirs"]
+            str(_resolve_against_sources(entry, anchor, sources))
+            for entry in prompts_block["template_dirs"]
         ]
 
     body = interpolate(body)

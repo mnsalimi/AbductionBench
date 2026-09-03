@@ -94,16 +94,26 @@ Each model is one file in `configs/models/`, with **its own batch group size**:
 
 ```yaml
 model:
-  id: gpt-oss-120b
-  model_name: openai/gpt-oss-120b
+  id: gemma-4-e4b
+  model_name: google/gemma-4-E4B-it
   endpoint:
     base_url: ${env:ABENCH_GATEWAY_URL}       # discovery + single calls
     api_key:  ${env:ABENCH_API_KEY}
     batch:
       base_url: ${env:ABENCH_BATCH_URL}       # the native batch route lives here
-      path: /gpt-oss-120b/v1/chat/completions/batch
+      path: /gemma-4-e4b/v1/chat/completions/batch
       group_size: 8                           # 8 samples per batch call, server-side
+  limits:
+    context_window: 16384                     # this model's MAX_MODEL_LEN
 ```
+
+`configs/models/` ships one file per model and per access path — gateway
+pass-through (`gemma-4-e4b.yaml`), the model's own tunnel
+(`gemma-4-e4b-direct.yaml`), and tunnel-free local/SSH-forwarded
+(`gemma-4-e4b-local.yaml`) — plus the same three for `gpt-oss-120b`, which stay
+valid for whenever that model is brought back up. Add every model you want in
+one run to the run config's `models:` list; each keeps its own group size,
+sampling and limits.
 
 "Batch of 8" means **one HTTP request carrying 8 conversations** to vLLM's
 `POST /v1/chat/completions/batch`, executed as a batch server-side — not 8
@@ -125,9 +135,11 @@ runs/<run-id>/
 ```
 
 Reliability is reported next to every score: `coverage`,
-`parse_failure_rate`, `truncation_rate`, `empty_response_rate`, and
-`<primary>_strict` (the primary metric with unscored samples counted as zero),
-so a number produced under endpoint trouble cannot look like a clean result.
+`parse_failure_rate`, `truncation_rate`, `empty_response_rate`,
+`output_budget_clamped_rate`, and `<primary>_strict` (the primary metric with
+unscored samples counted as zero), so a number produced under endpoint trouble,
+a squeezed token budget or a model that never answered cannot look like a clean
+result.
 
 ## Adding a dataset
 

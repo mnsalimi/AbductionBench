@@ -1,0 +1,20 @@
+# Same model, reached without any tunnel: use this when the engine runs on the
+# GPU host itself, or through an SSH port-forward
+# (`ssh -L 18000:127.0.0.1:18000 <host>`).
+#
+# Why it exists: Cloudflare quick tunnels cut every request off at ~100 s with
+# HTTP 524, so a batch that generates more than roughly (100 s x tokens/s)
+# tokens cannot complete over a quick tunnel however patient the client is.
+extends: [gemma-4-e4b.yaml]
+model:
+  id: gemma-4-e4b-local
+  endpoint:
+    base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18000}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    batch:
+      base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18000}
+      path: /v1/chat/completions/batch
+    discovery:
+      # A fixed local address never rotates, so discovery is disabled.
+      base_url_command: null
+      batch_base_url_command: null

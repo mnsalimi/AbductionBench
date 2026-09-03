@@ -1031,15 +1031,16 @@ Each of these appears in every run's `Skipped` report sheet and in `RUN_REPORT.m
 
 * `symbolic_match` **(primary)** -- 1 if SymPy proves the answer equivalent to the reference expression (primary; an undecidable comparison counts as 0)
 * `symbolic_match_decidable` -- symbolic_match over the items SymPy could compare
-* `symbolic_undecidable` -- fraction of items where parsing/simplification failed
+* `symbolic_undecidable` -- fraction of items where parsing/simplification failed; rare now that answers are normalized and parsed with implicit multiplication, so a prose answer counts as a mismatch rather than as unscorable
 * `expression_token_f1` -- token F1 against the reference expression, a lenient fallback view
 
 **Decisions**
 
 * Scored by symbolic equivalence rather than string match: a physical law has many algebraically equal forms. PhysGym itself uses an LLM equivalence check; SymPy was chosen here because it is deterministic and free.
+* Answers are normalized before parsing (LaTeX \frac/\sqrt, unicode Greek and subscripts, implicit multiplication). Without this, models answering in mathematical notation were scored 'undecidable' even when correct -- measured on a live run, every item was undecidable while token overlap with the reference reached 0.95.
 * Asked for a Python-style expression using the dataset's own variable names, so the answer is parseable; the reference is the dataset's `equation` field.
 * Counted undecidable comparisons as misses in the primary metric but reported them separately, so the number cannot be silently inflated.
-* max_tokens=1536 to allow a derivation before the final expression.
+* max_tokens=2560: at 1,536 half of one model's answers were truncated mid-derivation. A cut-off equation is unscorable rather than merely shorter, so runs on verbose models should also set engine.retry.escalate_truncated_responses=true.
 
 **Caveats**
 

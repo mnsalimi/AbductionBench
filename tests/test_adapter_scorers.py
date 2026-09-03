@@ -336,3 +336,43 @@ def test_math_normalization_does_not_make_wrong_answers_right():
     assert equal_expressions("2*F - 2*m*a", "F - m*a", ["F", "m", "a"]) is False
     # Empty input stays undecidable rather than counting as a mismatch.
     assert equal_expressions("", "a", ["a"]) is None
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reference", "symbols"),
+    [
+        # LaTeX Greek *commands* (not the unicode forms) plus a nested \sqrt
+        # inside a \frac, and a trailing math-mode "$".
+        (
+            r"\frac{\sqrt{3} a^4 \Delta p}{12 \eta l}$.",
+            "3**0.5 * a**4 * Delta * p / (12 * eta * l)",
+            ["a", "Delta", "p", "eta", "l"],
+        ),
+        # numpy-flavoured references, which PhysGym ships.
+        (
+            "np.arctan(np.sqrt(c**4 - d**2*(a**2-c**2))/(a*d))",
+            "np.arctan(np.sqrt(c**4 - d**2 * (a**2 - c**2)) / (a * d))",
+            ["a", "c", "d"],
+        ),
+        ("math.atan(c**2/(a**2-d**2))", "np.arctan(c**2 / (a**2 - d**2))", ["a", "c", "d"]),
+    ],
+)
+def test_math_normalization_handles_latex_commands_and_numpy(candidate, reference, symbols):
+    from abductionbench.adapters._mathnorm import equal_expressions
+
+    assert equal_expressions(candidate, reference, symbols) is True
+
+
+def test_math_normalization_distinguishes_unreadable_from_wrong():
+    """A prose answer stays undecidable; a parseable answer is decided.
+
+    This is the distinction the PhysGym/SynPAT metrics claim to make: an answer
+    the scorer cannot read must not be silently counted as a wrong equation.
+    """
+    from abductionbench.adapters._mathnorm import equal_expressions
+
+    assert equal_expressions("The Debye radius is the square root of the ratio", "(k*T)**0.5", ["k", "T"]) is None
+    # A prime is notation for a related quantity: renamed so the answer parses
+    # and is judged, rather than reported as unreadable.
+    assert equal_expressions("t'**3", "t**3", ["t"]) is False
+    assert equal_expressions("t'**3", "t_prime**3", ["t", "t_prime"]) is True
