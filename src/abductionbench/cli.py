@@ -271,6 +271,13 @@ def run(
 
         written = write_reports(result)
         console.print(f"[green]reports:[/green] {written.get('excel', '-')}")
+        # The reports were written after the engine's final upload, so send them too.
+        stats = engine.flush_sync()
+        if stats:
+            console.print(
+                f"[green]backup:[/green] {engine.sync.destination} "
+                f"({stats['successes']} ok, {stats['failures']} failed)"
+            )
     _print_summary(result)
     if any(task.failure for task in result.tasks):
         raise typer.Exit(code=3)

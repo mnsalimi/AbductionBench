@@ -54,6 +54,7 @@ from .metrics import mean
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate, TemplateBinding
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
+from .sync import ArtifactSync
 from .telemetry import EventLog, clip, setup_logging
 from .tokenizer import build_token_counter
 from .types import (
@@ -142,6 +143,7 @@ class RunResult:
     tasks: list[TaskResult] = field(default_factory=list)
     skipped_datasets: list[dict[str, str]] = field(default_factory=list)
     endpoint_reports: list[dict[str, Any]] = field(default_factory=list)
+    sync_stats: dict[str, Any] = field(default_factory=dict)
     started_at: float = 0.0
     finished_at: float = 0.0
 
@@ -181,6 +183,14 @@ class EvaluationEngine:
             json_log=self.engine_cfg.logging.json_log,
         )
         self.events = EventLog(self.run_dir / "events.jsonl")
+        # Off-box backup runs in its own thread and shells out to rclone, so it
+        # never touches the event loop that drives inference.
+        self.sync = ArtifactSync(
+            self.engine_cfg.sync,
+            self.run_dir,
+            self.run_id,
+            on_event=self.events.emit,
+        )
         self.registry = PromptRegistry(list(config.prompts.template_dirs))
         self.renderer = PromptRenderer(self.registry, config.prompts)
         self.token_counter = build_token_counter(self.engine_cfg.tokenizer)
@@ -209,6 +219,7 @@ class EvaluationEngine:
             run_id=self.run_id, run_dir=self.run_dir, config=self.config, started_at=time.time()
         )
         dump_resolved(self.config, self.run_dir / "run_config.resolved.yaml")
+        self.sync.start()
         logger.info(
             "run %s: %d model(s) x %d dataset(s), output=%s",
             self.run_id,
@@ -322,6 +333,10 @@ class EvaluationEngine:
             for client in self._clients.values():
                 await client.aclose()
             result.finished_at = time.time()
+            # One last upload of everything the run produced.  Reports are
+            # written after this returns, so the CLI calls flush_sync() again.
+            sync_stats = self.sync.stop()
+            result.sync_stats = sync_stats.as_dict() if self.engine_cfg.sync.enabled else {}
             self.events.emit(
                 "run_finished",
                 run_id=self.run_id,
@@ -330,6 +345,12 @@ class EvaluationEngine:
                 duration_s=round(result.duration_s, 1),
             )
         return result
+
+    def flush_sync(self) -> dict[str, Any]:
+        """Upload once more, after reports have been written."""
+        if not self.engine_cfg.sync.enabled:
+            return {}
+        return self.sync.flush().as_dict()
 
     # ------------------------------------------------------------------ #
     # endpoint verification

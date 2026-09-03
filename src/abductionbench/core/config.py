@@ -41,6 +41,7 @@ __all__ = [
     "LimitsConfig",
     "LoggingConfig",
     "JudgeConfig",
+    "SyncConfig",
     "EngineConfig",
     "BatchEndpointConfig",
     "EndpointConfig",
@@ -451,6 +452,36 @@ class JudgeConfig(_Base):
     cache: bool = True
 
 
+class SyncConfig(_Base):
+    """Incremental off-box backup of a run's artifacts (see ``core/sync.py``).
+
+    Runs in a background thread that shells out to ``rclone``, so it cannot slow
+    down or break inference.  ``remote_path`` is anything rclone understands --
+    ``gdrive:AbductionBench``, ``s3:bucket/prefix``, or a plain local path.
+    """
+
+    enabled: bool = False
+    #: rclone destination. ``<remote>:<path>`` for a configured remote, or a
+    #: local/mounted path (which is also how this is tested without credentials).
+    remote_path: str = ""
+    #: Upload into ``<remote_path>/<run-id>/`` so runs never overwrite each other.
+    per_run_subdir: bool = True
+    #: Seconds between incremental uploads.  60s keeps the remote within a
+    #: minute of the local state while adding negligible load.
+    interval_s: float = Field(60.0, gt=0)
+    rclone_binary: str = "rclone"
+    transfers: int = Field(4, ge=1)
+    checkers: int = Field(8, ge=1)
+    timeout_s: int = Field(300, ge=10)
+    #: e.g. "8M" to cap upload bandwidth; empty means unlimited.
+    bandwidth_limit: str = ""
+    #: Glob patterns to leave out.  Raw per-batch payloads are the bulky part of
+    #: a run, so a slow link can drop them while still backing up every record,
+    #: metric and log.
+    exclude: list[str] = Field(default_factory=list)
+    extra_args: list[str] = Field(default_factory=list)
+
+
 class ReportingConfig(_Base):
     """Excel/CSV/Markdown outputs."""
 
@@ -482,6 +513,7 @@ class EngineConfig(_Base):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
 
 
 # --------------------------------------------------------------------------- #

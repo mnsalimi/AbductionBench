@@ -496,6 +496,22 @@ def _render_run_report(result: RunResult, summary: pd.DataFrame) -> str:
             f"| {checkpoint.get('bisections', 0)} |"
         )
     lines.append("")
+    if result.sync_stats:
+        stats = result.sync_stats
+        lines.append("## Off-box backup")
+        lines.append("")
+        lines.append(
+            f"* {stats.get('successes', 0)} successful upload(s), "
+            f"{stats.get('failures', 0)} failure(s) over {stats.get('ticks', 0)} tick(s)."
+        )
+        if stats.get("last_error"):
+            lines.append(f"* Last error: `{_clip(stats['last_error'], 300)}`")
+        lines.append(
+            "* A non-zero failure count means the local copy in this directory is the "
+            "authoritative one."
+        )
+        lines.append("")
+
     lines.append("## Artifacts")
     lines.append("")
     lines.append(f"* `reports/{config.engine.reporting.excel_filename}` -- unified result grid.")

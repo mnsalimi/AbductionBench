@@ -65,6 +65,66 @@ line there. One model over the whole suite is 9,882 prompts (~1,270 native batch
 calls at group size 8) and takes roughly 2-3 h on an idle GPU; selection
 datasets cost ~0.02 s/sample, long-form physics ~4 s/sample.
 
+## Backing up a run (incremental, off the hot path)
+
+A long run on a box whose filesystem is not persistent should not keep its only
+copy locally. `engine.sync` mirrors the run directory to any rclone destination
+**while the run proceeds**:
+
+```yaml
+engine:
+  sync:
+    enabled: true
+    remote_path: gdrive:AbductionBench   # or s3:bucket/prefix, or a local path
+    per_run_subdir: true                 # -> <remote_path>/<run-id>/
+    interval_s: 60
+    exclude: []                          # e.g. ["raw/**"] on a slow uplink
+```
+
+How it behaves, and why:
+
+* **It cannot slow inference down.** A daemon thread does nothing but launch
+  `rclone` as a subprocess, so all network I/O happens in a separate process and
+  the asyncio loop driving batch calls is never blocked.
+* **It cannot break a run.** Every failure is caught, counted and retried on the
+  next tick; a bad credential or a dead link degrades the run to "not backed
+  up", never to "crashed", and `RUN_REPORT.md` says which happened.
+* **It is incremental.** `rclone copy --update` sends only the files that
+  changed, so a tick uploads the few `records.jsonl` and log files that grew.
+* **It never deletes remote data** (`copy`, not `sync`), so a fresh run
+  directory cannot wipe results already backed up.
+* A final pass runs after the workbook and run documentation are written.
+
+### One-time Google Drive setup
+
+This machine has no browser, so use rclone's headless flow. On a machine that
+does have one:
+
+```bash
+rclone authorize "drive" '{"scope":"drive"}'      # approve, copy the JSON token
+```
+
+Then here:
+
+```bash
+bash tools/setup_drive_remote.sh '<token-json>'   # pins gdrive: to one folder
+```
+
+The script writes the remote with `root_folder_id` set to the target folder, so
+nothing can be written elsewhere in the Drive, and it verifies read *and* write
+access before declaring success. A service account is an alternative for a
+**Shared** Drive; the script's header explains why it does not work for a folder
+in a personal My Drive.
+
+### A run that is already in progress
+
+A running process cannot grow the feature mid-flight, so attach the sidecar --
+same job, same rclone flags, its own process:
+
+```bash
+nohup bash tools/sync_run.sh runs/<run-id> > /tmp/abench_sync.log 2>&1 &
+```
+
 ## Other commands
 
 ```bash

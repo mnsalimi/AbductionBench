@@ -92,6 +92,29 @@ engine:
     group_size: 8
     cache: true
 
+  # Incremental off-box backup of the run directory. Runs in a background
+  # thread that shells out to rclone, so it cannot slow inference down: all the
+  # network I/O happens in a separate process. Failures are logged and retried
+  # on the next tick and never fail the run. Uses `rclone copy --update`, so
+  # each tick sends only the files that changed and remote data is never
+  # deleted.
+  sync:
+    enabled: false
+    # Anything rclone understands: "gdrive:AbductionBench", "s3:bucket/prefix",
+    # or a plain local/mounted path.
+    remote_path: ""
+    per_run_subdir: true      # upload into <remote_path>/<run-id>/
+    interval_s: 60
+    rclone_binary: rclone
+    transfers: 4
+    checkers: 8
+    timeout_s: 300
+    bandwidth_limit: ""       # e.g. "8M" to leave headroom for other traffic
+    # Patterns to leave out. raw/** is the bulky part of a run (every batch's
+    # request/response); excluding it still backs up every record, metric and log.
+    exclude: []
+    extra_args: []
+
   reporting:
     excel_filename: abductionbench_results.xlsx
     include_sample_sheets: true
