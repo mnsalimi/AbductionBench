@@ -1,0 +1,7 @@
+dataset:
+  id: art
+  impl: abductionbench.adapters.art:ARTAdapter
+  sample_size: 300
+  options:
+    subtask: selection   # selection (alphaNLI, default) | generation (alphaNLG)
+  notes: Official alphaNLI test split with its public label file.

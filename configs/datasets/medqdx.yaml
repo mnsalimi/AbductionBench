@@ -1,0 +1,10 @@
+dataset:
+  id: medqdx
+  impl: abductionbench.adapters.medqdx:MedQDxAdapter
+  sample_size: 300
+  options:
+    mode: information_levels   # information_levels (100 cases x 3 levels = 300) | inquiry_rounds
+    n_options: 5               # gold + 4 distractors from the dataset's own label space
+  notes: >-
+    Closed-set diagnosis selection; distractors drawn from MedQDx's own 29-disease
+    label space with the run seed, so options are identical across models.

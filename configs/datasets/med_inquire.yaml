@@ -1,0 +1,8 @@
+dataset:
+  id: med_inquire
+  impl: abductionbench.adapters.med_inquire:MedInquireAdapter
+  sample_size: 300
+  options:
+    subtask: generation   # generation (default, per the suite's mode) | selection
+    evidence: full        # full | case_and_exam | case_only
+  notes: Official test split (915 case reports); free-text diagnosis.

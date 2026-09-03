@@ -1,0 +1,16 @@
+# Template for a dataset entry.  Copy, rename to <dataset_id>.yaml, fill in.
+#
+# Only these generic fields exist -- anything dataset-specific belongs in
+# `options`, which the engine passes to the adapter untouched.
+dataset:
+  id: my_dataset                 # also the output directory name
+  impl: abductionbench.adapters.my_dataset:MyDatasetAdapter
+  enabled: true
+  sample_size: 300
+  seed: null                     # null -> inherit the run seed
+  input_token_budget: null       # null -> inherit engine.limits.input_token_budget
+  batch_group_size: null         # null -> the model's own group size
+  primary_metric: null           # null -> the adapter's declared primary metric
+  prompt_bindings: {}            # e.g. {generation: gen_structured_v1}
+  options: {}                    # adapter-specific knobs
+  notes: ""

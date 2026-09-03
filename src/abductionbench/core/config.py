@@ -732,6 +732,25 @@ def load_run_config(
         if extra_key not in body and extra_key in raw:
             body[extra_key] = raw[extra_key]
 
+    # `datasets_glob` expands to dataset config files, so a run config does not
+    # have to be edited every time a dataset is added.  Files whose name starts
+    # with "_" are skipped (templates), and the order is sorted for determinism.
+    globs = body.pop("datasets_glob", []) or []
+    if isinstance(globs, (str, Path)):
+        globs = [globs]
+    if globs:
+        discovered: list[str] = []
+        for pattern in globs:
+            pattern_path = Path(str(pattern))
+            root = anchor.parent if not pattern_path.is_absolute() else Path("/")
+            matches = sorted(root.glob(str(pattern_path)))
+            discovered.extend(
+                str(match) for match in matches if not match.name.startswith("_")
+            )
+        if not discovered:
+            raise ConfigError(f"datasets_glob matched no files: {globs}")
+        body["datasets"] = [*(body.get("datasets") or []), *discovered]
+
     body["models"] = _load_referenced_list(body.get("models", []), anchor=anchor, key="model")
     body["datasets"] = _load_referenced_list(
         body.get("datasets", []), anchor=anchor, key="dataset"

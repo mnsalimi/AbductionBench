@@ -1,0 +1,10 @@
+dataset:
+  id: abductionrules
+  impl: abductionbench.adapters.abductionrules:AbductionRulesAdapter
+  sample_size: 300
+  prompt_bindings:
+    # A formal-theory completion task: use the structured-abduction template.
+    knowledge_completion: gen_structured_v1
+  options:
+    subsets: null   # null -> all four (Animal / Person, full and Simple)
+  notes: Official test splits; one sample per (theory, observation) pair.

@@ -1,0 +1,7 @@
+dataset:
+  id: musr
+  impl: abductionbench.adapters.musr:MuSRAdapter
+  sample_size: 300   # 250 murder-mystery items exist; the shortfall is reported
+  options:
+    domain: murder_mystery   # the only abductive MuSR domain
+  notes: Murder-mystery domain only; the other two MuSR domains are not abductive.
