@@ -1,0 +1,30 @@
+dataset:
+  id: open_problems_2024
+  impl: abductionbench.adapters.open_problems:OpenProblemsAdapter
+  # 15 evaluable problems x 2 modes = 30 items; the shortfall against 300 is
+  # inherent to the source (see the adapter's caveats) and is reported.
+  sample_size: 300
+  prompt_bindings:
+    direction_judgment: research_direction_v1
+    solution_strategy: research_strategy_v1
+    full_resolution: research_resolution_v1
+    leakage_probe: research_leakage_probe_v1
+  options:
+    # both = direction + strategy, the two abductive modes.
+    # Also: direction | strategy | resolution | all | leakage_probe
+    subtask: both
+    # Keep only problems resolved AFTER the model under test was trained.
+    # Leave null to run everything, but then read leakage_rate before believing
+    # any score: every resolution here is 2024 or later.
+    model_cutoff: null
+    include_held_out: false
+    # Ask every question this many times. With 15 direction items, one flipped
+    # answer is 0.067 of the score, and answers DO flip between identical
+    # temperature-0 runs (5 of 15 measured) because batched inference is not
+    # numerically batch-invariant. 3 repeats costs 84 calls' worth of prompts
+    # and turns a single sample into an average plus a stability figure.
+    repeats: 3
+  notes: >-
+    Bundled dataset (assets/open_problems_2024/). Direction mode = Stage-2
+    single-hypothesis evaluation; strategy mode = Stage-1 knowledge completion;
+    the resolution mode is deduction and is excluded from abduction_score.

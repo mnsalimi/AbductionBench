@@ -53,7 +53,7 @@ cp .env.example .env    # then fill in ABENCH_API_KEY and the URLs
 set -a; . ./.env; set +a                       # or: export ABENCH_API_KEY=...
 
 abench doctor configs/runs/full.yaml           # 30 s: endpoint + batch route reachable
-abench run    configs/runs/full.yaml           # 300 samples x 39 datasets x every model
+abench run    configs/runs/full.yaml           # 300 samples x 40 datasets x every model
 
 # interrupted? continue exactly where it stopped (per-sample checkpoints):
 abench run configs/runs/full.yaml --resume runs/<run-id>
@@ -278,8 +278,9 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **48 datasets configured,
-39 evaluable, 9 reported as skipped with a reason.**
+decisions cannot drift from the code. Current state: **49 datasets configured,
+40 evaluable, 9 reported as skipped with a reason** — the 48 from the original
+table, plus `open_problems_2024`, built here (see below).
 
 Policies applied uniformly, and recorded per dataset:
 
@@ -302,12 +303,73 @@ Policies applied uniformly, and recorded per dataset:
   `UnavailableAdapter` and appears in every run's `Skipped` sheet with its
   reason.
 
-Two datasets required constructing items from released material rather than
+Three datasets required constructing items from released material rather than
 using a shipped item file; both say so explicitly and are excluded from
 comparison with published numbers: **ProofWriter** (the official abduction files
 are no longer downloadable, so abduction items are rebuilt from the released
 proofs) and **SynPAT** (items assembled from the release's own replacement files
 plus true-system data). **HypoSpace** runs the release's own seeded generator.
+
+### `open_problems_2024` — the one dataset built here
+
+Not from the original table: a scientific-discovery set built in this repository
+from two independent surveys of research problems that were **open at a 2023
+model cutoff and resolved in 2024 or later** (both surveys are committed under
+`assets/open_problems_2024/sources/`, and
+`tools/build_open_problems_dataset.py` rebuilds `problems.json` from them, so
+every field is traceable to a source line). 16 problems, 15 evaluable, 1 held
+out.
+
+It is deliberately split into modes, because only some of them are abduction:
+
+| mode | task | abductive? |
+|---|---|---|
+| `direction` | judge which way an open conjecture resolved, with a confidence | **yes** — Stage 2, single-hypothesis evaluation |
+| `strategy` | say what a solution would have to use, before seeing one | **yes** — Stage 1, knowledge completion |
+| `resolution` | actually resolve the problem | no — deduction; excluded from `abduction_score` |
+| `leakage_probe` | ask what the model knows about the problem's status | not scored as reasoning; it is the contamination control |
+
+The scores are only meaningful if the model has not read the answer, so the
+probe is part of the dataset rather than an afterthought: it reports
+`leakage_rate` per item, and a high value invalidates that item's reasoning
+score. Measured on gemma-4-E4B (15 items, `subtask=leakage_probe`):
+`leakage_rate = 0.00` — not one item where the model both asserts the problem is
+resolved and names the solver or the year.
+
+**Read `direction_answer_stability` before reading any score.** 15 items is
+small enough that server-side nondeterminism dominates the number. What is
+actually going on, measured rather than assumed:
+
+* Under *identical* batching the model is bit-reproducible — two consecutive
+  runs of this dataset alone agreed on **45/45** direction predictions and gave
+  the same `abduction_score` to four decimals.
+* Change the batching and verdicts flip. Within one run, 2 of 15 questions got
+  different answers from their own three repeats. Between a solo run and one
+  sharing the endpoint with three other datasets, **5 of 15** flipped, moving
+  accuracy from 0.33 to 0.60.
+
+The cause is vLLM's batched inference not being numerically batch-invariant: a
+prompt's logits depend on what else is in its batch, so the noise is *worst* in
+a full-suite run, where 39 other datasets share the endpoint. That is not
+fixable from here, so it is measured instead. `options.repeats` (3 by default)
+asks each question k times as k distinct samples; the score is the mean over all
+observations, `direction_answer_stability` is the fraction of questions whose
+repeats all agreed, and `strategy_score_spread` is the mean within-question
+range of `key_ingredient_recall` — a strategy answer is never byte-identical
+twice (1/39 were), so its stability is the spread of its score, not of its text.
+
+gemma-4-E4B, alone, 3 repeats: direction accuracy **0.378** over 45
+observations at stability **0.867**, `key_ingredient_recall` 0.289 at spread
+0.109, Brier 0.278, `overconfident_wrong_rate` 0.179. Treat a difference between
+two runs as noise unless it exceeds that spread.
+
+```bash
+abench run configs/runs/pilot_smoke.yaml -d open_problems_2024                 # direction + strategy
+abench run configs/runs/pilot_smoke.yaml -d open_problems_2024 \
+  -s dataset_force.options.subtask=leakage_probe                               # contamination control
+abench run configs/runs/pilot_smoke.yaml -d open_problems_2024 \
+  -s dataset_force.options.model_cutoff=2025-06-01                             # only post-cutoff items
+```
 
 ### Metrics beyond accuracy
 

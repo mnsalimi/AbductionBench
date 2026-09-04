@@ -1,0 +1,955 @@
+{
+  "dataset": "open_problems_2024",
+  "version": "1.0",
+  "title": "Open problems posed before 2024 and first resolved in 2024 or later",
+  "description": "Frontier research problems that were recognized as unresolved before 1 January 2024 and first resolved on or after that date. Each item carries the problem as a ready-to-send prompt in three modes (direction, resolution, strategy), the resolution date and solvers, and a golden solution detailed enough to grade a model's proposal against.",
+  "abductive_framing": {
+    "direction": "Stage 2 -- single-hypothesis evaluation: judge one proposed hypothesis (the conjecture) against the evidence available before its resolution and output a binary plus graded plausibility.",
+    "strategy": "Stage 1 -- knowledge completion: name the missing intermediate statements and tools that would make the target derivable.",
+    "resolution": "Deduction, not abduction: producing the proof itself. Retained because its hallucinated-proof rate is a useful calibration measure, but it is not scored as an abduction task.",
+    "caveat": "For the direction mode, what is judged is the truth of a proposition rather than the explanatory power of a hypothesis about observations. That places it in the plausible-reasoning family at the edge of abduction rather than at its centre; it is included on the strength of the framework's own single-hypothesis-evaluation definition, and labelled as such."
+  },
+  "contamination_warning": "Every resolution date is 2024 or later. A model whose training cutoff postdates a problem's solved_date may simply recall the answer. Filter by options.model_cutoff to keep only items resolved after the model's cutoff, and run the leakage_probe subtask to measure recall directly.",
+  "sources": [
+    "assets/open_problems_2024/sources/pre2024_cutoff_benchmark.txt (primary; 12 task cards)",
+    "assets/open_problems_2024/sources/undermind_report.docx (independent re-check; 3 additional problems)"
+  ],
+  "known_limitations": [
+    "Small n: 15 evaluable problems plus 1 held out. Far too few for a leaderboard; use as a qualitative probe or one component of a larger suite.",
+    "Field skew: 14 of 16 are mathematics or theoretical computer science. The primary source checked Science's 2025 Breakthrough of the Year, the 2025 Breakthrough Prizes and Physics World's 2025 top ten and found essentially no post-2023 result in chemistry, biology, medicine or the social sciences meeting a strict 'posed before 2024, first resolved after 2023, community-accepted' test: empirical fields rarely have problems crisp enough to close on a datable event.",
+    "Difficulty ceiling: full credit on the resolution mode is realistically unattainable for the extreme-tier items; their value is in the direction and strategy modes and in measuring hallucinated proofs.",
+    "Statement leakage: stating some problems precisely already signals that they are interesting and unresolved, which shifts a model's prior. The primary source suggests mixing in known-true and known-false conjectures from before 2020 as a directional-bias control.",
+    "Ground-truth risk: labels for the Kervaire, Mizohata-Takeuchi and Erdos unit-distance items rest on expert endorsement rather than completed journal peer review.",
+    "Base rates: of the 15 evaluable items, 6 resolved affirmatively, 5 by refutation, and the rest are non-binary, so a model that always answers 'the conjecture is true' scores near chance rather than well."
+  ],
+  "problems": [
+    {
+      "id": "TASK-01",
+      "slug": "kakeya_3d",
+      "title": "Kakeya Set Conjecture In Three Dimensions",
+      "field": "harmonic analysis / geometric measure theory",
+      "difficulty_tier": "extreme",
+      "status_at_cutoff_2023": "open; best results ruled out dimension below about 2.5 (Katz-Laba-Tao 2000, Wolff 1995).",
+      "problem_posed": {
+        "year": 1917,
+        "by": "Sōichi Kakeya",
+        "note": "needle-rotation problem; modern higher-dimensional dimension conjecture from Besicovitch's 1920s constructions"
+      },
+      "prompts": {
+        "a": "A Kakeya set in R^3 is a compact set containing a unit line segment in every direction. Question: must every Kakeya set in R^3 have Hausdorff dimension exactly 3? Answer YES or NO, then give a probability between 0 and 1 that your answer is correct. Do not hedge; commit to one answer.",
+        "b": "Resolve the following question. Either prove it or construct a counterexample, with full rigor. Question: Does every Kakeya set in R^3 (a compact set containing a unit line segment in every direction) have Hausdorff dimension 3? State clearly at the outset which way you are arguing. If you cannot resolve it, say so explicitly rather than presenting an incomplete argument as complete.",
+        "c": "Suppose you had two years and unlimited computational resources to attack the three-dimensional Kakeya set conjecture. Describe the technical strategy you would pursue, naming the specific tools, structural dichotomies, and intermediate statements you would try to establish. Be concrete."
+      },
+      "solved_date": "2025-02-24",
+      "solver": [
+        "Hong Wang",
+        "Joshua Zahl"
+      ],
+      "golden_solution": {
+        "answer": "YES. Every Kakeya set in R^3 has Minkowski and Hausdorff dimension 3.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "a volume estimate for unions of tubes/convex sets; multi-scale induction handling sticky and non-sticky configurations via a quantitative grains/planebrush structure theory. Third paper in a series by the same authors.",
+        "key_ingredients": [
+          "volume estimate for unions of tubes/convex sets",
+          "multi-scale induction",
+          "sticky and non-sticky configurations",
+          "grains/planebrush structure theory"
+        ],
+        "resolution_type": "complete and unconditional, for n = 3 only.",
+        "still_open": "n >= 4; the associated Fourier restriction conjectures.",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2502.17655 Title: \"Volume estimates for unions of convex sets, and the Kakeya set conjecture in three dimensions\"",
+        "origin": "",
+        "independent_verification": "Larry Guth (MIT) wrote an expository walkthrough, https://arxiv.org/abs/2505.07695 ; Terence Tao announced it 25 Feb 2025, https://terrytao.wordpress.com/2025/02/25/the-three-dimensional-kakeya-conjecture-after-wang-and-zahl/",
+        "acceptance": "2026 Fields Medal to Hong Wang (23 July 2026, ICM Philadelphia) specifically for this work. Preceded by Salem, Ostrowski, ICCM Gold Medal (2025), Clay Research Award and New Horizons Prize (2026).",
+        "expert_quote": "Nets Katz, Rice — \"a once-in-a-century kind of result.\"",
+        "independent_verification_task": "ODP-02",
+        "independent_verification_identity": "The three-dimensional Kakeya conjecture, also called the three-dimensional Besicovitch or Kakeya set conjecture."
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "",
+      "provenance": [
+        "pre2024_cutoff_benchmark",
+        "undermind_report"
+      ]
+    },
+    {
+      "id": "TASK-02",
+      "slug": "geometric_langlands",
+      "title": "Geometric Langlands Conjecture",
+      "field": "algebraic geometry / representation theory",
+      "difficulty_tier": "extreme",
+      "status_at_cutoff_2023": "open; GL_2 cases known (Frenkel-Gaitsgory- Vilonen 2002, Gaitsgory 2004); Gaitsgory's 2013 outline of the proof steps existed; Raskin-Faergeman 2022 supplied a key ingredient.",
+      "problem_posed": {
+        "year": 1980,
+        "by": "Beilinson and Drinfeld (categorical form due to Arinkin-Gaitsgory)",
+        "note": "grew out of the Langlands program of the late 1960s; geometric formulations for function fields appeared in the 1980s"
+      },
+      "prompts": {
+        "a": "Consider the categorical unramified geometric Langlands conjecture in characteristic zero (Beilinson-Drinfeld; precise form due to Arinkin-Gaitsgory), asserting an equivalence between D-modules on Bun_G(X) and ind-coherent sheaves with nilpotent singular support on the stack of G-dual local systems. Is the conjecture as stated true? Answer TRUE, FALSE, or NEEDS-MODIFICATION, and give a probability.",
+        "b": "Give the most complete proof you can of the categorical unramified geometric Langlands conjecture in characteristic zero for a reductive group G and a smooth projective curve X. Structure the argument as a sequence of named intermediate theorems, and be explicit about which steps you can prove and which you cannot.",
+        "c": "What are the main remaining obstacles to a proof of the geometric Langlands conjecture, and what would a complete proof architecture look like? Name the specific intermediate results you believe would be required."
+      },
+      "solved_date": "2024-05-06",
+      "solver": [
+        "Dennis Gaitsgory",
+        "Sam Raskin",
+        "D. Arinkin",
+        "D. Beraldo",
+        "J. Campbell",
+        "L. Chen",
+        "J. Faergeman",
+        "K. Lin",
+        "N. Rozenblyum"
+      ],
+      "golden_solution": {
+        "answer": "TRUE. Proved.",
+        "label_set": [
+          "TRUE",
+          "FALSE",
+          "NEEDS-MODIFICATION"
+        ],
+        "gold_label": "TRUE",
+        "partial_labels": [],
+        "key_method": "construction of the Langlands functor from the automorphic to the spectral side; proof that de Rham/Betti, restricted/unrestricted, tempered/non-tempered forms are equivalent; then existence and uniqueness (up to tensoring by a vector space) of the Hecke eigensheaf attached to an irreducible local system, via analysis of the geometry of the stack of local systems.",
+        "key_ingredients": [
+          "construction of the Langlands functor from the automorphic to the spectral side",
+          "equivalence of de Rham/Betti and restricted/unrestricted forms",
+          "existence and uniqueness of the Hecke eigensheaf",
+          "geometry of the stack of local systems"
+        ],
+        "resolution_type": "complete for the unramified categorical conjecture in characteristic 0. Ramified, quantum, and arithmetic versions remain open.",
+        "still_open": "",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "Paper I: https://arxiv.org/abs/2405.03599 Paper II: https://arxiv.org/abs/2405.03648 Paper V: https://arxiv.org/abs/2409.09856 (\"Proof of the geometric Langlands conjecture V: the multiplicity one theorem\")",
+        "origin": "",
+        "independent_verification": "",
+        "acceptance": "2025 Breakthrough Prize in Mathematics to Gaitsgory (April 2025), citation names \"the proof of the geometric Langlands conjecture in characteristic 0\"; 2025 New Horizons Prize to Raskin. https://breakthroughprize.org/Laureates/3/L3985",
+        "expert_quote": "",
+        "independent_verification_task": "ODP-01",
+        "independent_verification_identity": "The categorical unramified geometric Langlands conjecture in characteristic zero."
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "",
+      "provenance": [
+        "pre2024_cutoff_benchmark",
+        "undermind_report"
+      ],
+      "solved_date_note": "Paper I of five; the proof was completed with Paper V on 2024-09-15"
+    },
+    {
+      "id": "TASK-03",
+      "slug": "bourgain_slicing",
+      "title": "Bourgain'S Slicing Problem (Hyperplane Conjecture)",
+      "field": "asymptotic convex geometry / high-dimensional probability",
+      "difficulty_tier": "very high",
+      "status_at_cutoff_2023": "open; best bound L_n <= C sqrt(log n) (Klartag 2023), after Chen 2021, Klartag-Lehec 2022, Jambulapati-Lee-Vempala.",
+      "problem_posed": {
+        "year": 1986,
+        "by": "Jean Bourgain",
+        "note": "Amer. J. Math. 108(6) (1986), 1467-1476"
+      },
+      "prompts": {
+        "a": "Bourgain's slicing problem (1986): given a convex body K in R^n of volume one, must there exist a hyperplane H with Vol_{n-1}(K intersect H) >= c, for a universal constant c > 0 independent of n? Answer YES or NO and give a probability.",
+        "b": "Resolve Bourgain's slicing problem, stated as: for every convex body K in R^n of volume one, does there exist a hyperplane H such that Vol_{n-1}(K intersect H) > c for a universal constant c > 0? Give a complete proof or a counterexample. Equivalently, decide whether the isotropic constant L_K is bounded above by a universal constant.",
+        "c": "Describe in technical detail how you would try to remove the remaining logarithmic factors in the best known bounds on the isotropic constant. Name the specific analytic tools you would use."
+      },
+      "solved_date": "2024-12-19",
+      "solver": [
+        "Bo'az Klartag",
+        "Joseph Lehec",
+        "Qingyang Guan"
+      ],
+      "golden_solution": {
+        "answer": "YES. c <= L_K <= C for universal constants; the slicing conjecture is TRUE.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "Milman's theory of M-ellipsoids + stochastic localization with Guan's bound + Eldan-Mikulincer stability estimates for the Shannon-Stam inequality.",
+        "key_ingredients": [
+          "Milman's theory of M-ellipsoids",
+          "stochastic localization",
+          "Guan's bound",
+          "Eldan-Mikulincer stability estimates for the Shannon-Stam inequality"
+        ],
+        "resolution_type": "complete, unconditional, affirmative.",
+        "still_open": "the KLS isoperimetry conjecture and the thin-shell conjecture (both imply slicing, neither is implied by it).",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2412.15044 Published: Geometric and Functional Analysis (GAFA) 35 (2025), 1147-1168, DOI 10.1007/s00039-025-00718-w",
+        "origin": "J. Bourgain, \"On high dimensional maximal functions associated to convex bodies\", Amer. J. Math. 108(6) (1986), 1467-1476.",
+        "independent_verification": "an alternative proof by Pierre Bizeul via small-ball probability estimates, 12 January 2025, https://arxiv.org/abs/2501.06854 — i.e. a second independent proof within one month. Peer-reviewed publication in a top specialist journal.",
+        "acceptance": "",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "this is arguably the single best task in the suite. The statement is short, the answer is binary, the proof is short enough that a strong Prompt B answer is conceivable, and the publication record is airtight.",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "solved_date_note": "Guan's enabling bound 2024-12-12; Klartag-Lehec final step 2024-12-19"
+    },
+    {
+      "id": "TASK-04",
+      "slug": "hilbert_tenth_rings_of_integers",
+      "title": "Hilbert'S Tenth Problem Over Rings Of Integers",
+      "field": "number theory / logic and computability",
+      "difficulty_tier": "very high",
+      "status_at_cutoff_2023": "open unconditionally; known conditionally on finiteness of Tate-Shafarevich groups (Mazur-Rubin, Invent. Math. 2010); special cases by Denef, Pheidas, Shlapentokh, Poonen.",
+      "problem_posed": {
+        "year": 1975,
+        "by": "Denef (Denef-Lipshitz 1978)",
+        "note": "Hilbert's tenth problem itself posed 1900; the rings-of-integers conjecture is Denef's"
+      },
+      "prompts": {
+        "a": "Let K be an arbitrary number field and O_K its ring of integers. Is there an algorithm that decides, for an arbitrary polynomial equation with coefficients in O_K, whether it has a solution in O_K? Answer DECIDABLE, UNDECIDABLE-FOR-ALL-K, or DEPENDS-ON-K, and give a probability. Note that this is currently known only under unproven hypotheses; state your best unconditional judgment.",
+        "b": "Prove or disprove, unconditionally: for every number field K, Hilbert's tenth problem over the ring of integers O_K has a negative answer. By Eisentraeger's reduction it suffices to show that for every quadratic extension L/K of number fields there exists an elliptic curve (or abelian variety) over K of positive rank whose rank does not grow on base change to L. Give a complete unconditional argument or explain precisely where it fails.",
+        "c": "The general undecidability of Hilbert's tenth problem over rings of integers is known assuming finiteness of Sha. What would it take to remove that hypothesis? Propose a concrete unconditional strategy."
+      },
+      "solved_date": "2024-12-02",
+      "solver": [
+        "Peter Koymans",
+        "Carlo Pagano",
+        "Levent Alpoge",
+        "Manjul Bhargava",
+        "Wei Ho",
+        "Ari Shnidman"
+      ],
+      "golden_solution": {
+        "answer": "UNDECIDABLE FOR ALL K. Unconditionally.",
+        "label_set": [
+          "DECIDABLE",
+          "UNDECIDABLE-FOR-ALL-K",
+          "DEPENDS-ON-K"
+        ],
+        "gold_label": "UNDECIDABLE-FOR-ALL-K",
+        "partial_labels": [],
+        "key_method": "KP: elliptic curves with full rational 2-torsion, combining additive combinatorics with 2-descent to force no rank growth in chosen quadratic extensions. Their result covers ALL infinite rings finitely generated over Z, which is stronger. ABHS: rank stability for abelian varieties in quadratic extensions.",
+        "key_ingredients": [
+          "elliptic curves with full rational 2-torsion",
+          "additive combinatorics",
+          "2-descent",
+          "no rank growth in chosen quadratic extensions"
+        ],
+        "resolution_type": "complete and unconditional (both).",
+        "still_open": "Hilbert's tenth problem over Q.",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2412.01768 \"Hilbert's tenth problem via additive combinatorics\" https://arxiv.org/abs/2501.18774 — published as Invent. Math. 243 (2026), 1129-1139, DOI 10.1007/s00222-025-01392-3",
+        "origin": "Hilbert 1900 (over Z); the rings-of-integers conjecture is Denef (1975) and Denef-Lipshitz (1978).",
+        "independent_verification": "",
+        "acceptance": "two independent proofs by different methods within two months; peer-reviewed publication in Inventiones.",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "solved_date_note": "Koymans-Pagano 2024-12-02; independent Alpoge-Bhargava-Ho-Shnidman 2025-01-30"
+    },
+    {
+      "id": "TASK-05",
+      "slug": "boltzmann_long_time_derivation",
+      "title": "Long-Time Derivation Of The Boltzmann Equation",
+      "field": "mathematical physics / kinetic theory",
+      "difficulty_tier": "extreme",
+      "status_at_cutoff_2023": "open; Lanford (1975) gave the derivation only for a short time (a fraction of the mean free time); fifty years of incremental extensions (Illner-Pulvirenti, Gallagher-Saint-Raymond- Texier, Bodineau et al., Gallagher-Tristani) had not removed it.",
+      "problem_posed": {
+        "year": 1975,
+        "by": "Oscar Lanford (short-time theorem); the long-time problem implicit in Hilbert's sixth problem",
+        "note": "Lanford 1975 covered only short times"
+      },
+      "prompts": {
+        "a": "Can the Boltzmann equation be rigorously derived from Newtonian hard- sphere dynamics in the Boltzmann-Grad limit for the FULL lifespan of the strong solution, rather than only for the short times covered by Lanford's 1975 theorem? Answer YES-ACHIEVABLE-WITH-CURRENT-IDEAS, YES-BUT-REQUIRES-NEW-IDEAS, or NO-OBSTRUCTION-EXISTS, and give a probability that a long-time derivation is possible at all.",
+        "b": "Prove or disprove: for hard spheres in the Boltzmann-Grad limit (N -> infinity, epsilon -> 0, N epsilon^{d-1} fixed), the one-particle marginal converges to the solution of the Boltzmann equation on the entire time interval where a strong solution exists. Give as complete an argument as you can, identifying precisely where the standard cluster-expansion approach breaks down and how you would repair it.",
+        "c": "Lanford's theorem is limited to short times because cluster expansions diverge. Describe the machinery you would build to control recollisions over arbitrarily long times."
+      },
+      "solved_date": "2024-08-14",
+      "solver": [
+        "Yu Deng",
+        "Zaher Hani",
+        "Xiao Ma"
+      ],
+      "golden_solution": {
+        "answer": "YES. Achieved, for the full lifespan of the strong solution.",
+        "label_set": [
+          "YES-ACHIEVABLE-WITH-CURRENT-IDEAS",
+          "YES-BUT-REQUIRES-NEW-IDEAS",
+          "NO-OBSTRUCTION-EXISTS"
+        ],
+        "gold_label": "YES-BUT-REQUIRES-NEW-IDEAS",
+        "partial_labels": [
+          "YES-ACHIEVABLE-WITH-CURRENT-IDEAS"
+        ],
+        "key_method": "(1) time-layering argument; (2) a cumulant ansatz that memorizes the full collision history on [0,t]; (3) analysis of an integral built from that history; (4) a purpose-built combinatorial algorithm to control those integrals. The paradigm was carried over from Deng-Hani's earlier long-time derivation of the wave kinetic equation.",
+        "key_ingredients": [
+          "time-layering argument",
+          "cumulant ansatz that memorizes the full collision history",
+          "purpose-built combinatorial algorithm",
+          "Boltzmann-Grad limit for hard spheres"
+        ],
+        "resolution_type": "complete and unconditional FOR HARD SPHERES.",
+        "still_open": "",
+        "scope": "Euclidean setting in any dimension d >= 2; periodic setting for d in {2,3}.",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2408.07818 \"Long time derivation of the Boltzmann equation from hard sphere dynamics\"",
+        "origin": "",
+        "independent_verification": "",
+        "acceptance": "2026 Fields Medal to Yu Deng (23 July 2026), citation explicitly names \"the rigorous derivation of the Boltzmann equation from hard-sphere dynamics for rarefied gases\". Bourbaki seminar devoted to the result.",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH for the Boltzmann statement; LOW for any \"Hilbert's sixth is closed\" framing.",
+      "evaluator_notes": "the authors also frame this as resolving Hilbert's sixth problem. That broader claim is contested — the result covers only dilute hard-sphere gases; soft potentials and non-cutoff cross-sections are not derived even for short times, and at least one comment (arXiv:2504.06297) disputes whether a vanishing-volume-fraction limit models a true continuum fluid. Grade Prompt B against the BOLTZMANN derivation, not against \"Hilbert's sixth problem\".",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "gold_label_note": "The derivation was achieved, so any YES answer has the direction right; full credit goes to YES-BUT-REQUIRES-NEW-IDEAS because the proof introduced four new ingredients (time-layering, a cumulant ansatz, the associated integral analysis, and a purpose-built combinatorial algorithm)."
+    },
+    {
+      "id": "TASK-06",
+      "slug": "bunkbed",
+      "title": "The Bunkbed Conjecture",
+      "field": "probability / percolation theory",
+      "difficulty_tier": "high (the counterexample, once found, is checkable)",
+      "status_at_cutoff_2023": "open; believed true; proved only in special cases (complete graphs, complete bipartite graphs, p -> 1). DIRECTION-LEAK RISK: HIGH. Frame neutrally.",
+      "problem_posed": {
+        "year": 1985,
+        "by": "Pieter Kasteleyn",
+        "note": "recorded in van den Berg-Kahn (2001), Remark 5"
+      },
+      "prompts": {
+        "a": "Let G be a finite connected graph and form the 'bunkbed' graph G x {0,1}, two copies of G joined by vertical edges ('posts') at a chosen subset of vertices. Run Bernoulli bond percolation. For vertices u, v of G, is it always true that P[u_0 connected to v_0] >= P[u_0 connected to v_1]? Answer ALWAYS-TRUE or NOT-ALWAYS-TRUE, and give a probability.",
+        "b": "Determine whether the bunkbed conjecture holds for all finite graphs. Statement: in Bernoulli bond percolation on G x {0,1} with posts at a subset of vertices, P[u_0 <-> v_0] >= P[u_0 <-> v_1] for all vertices u, v of G. Either give a complete proof, or exhibit an explicit counterexample together with a rigorous verification. Do not assume the statement is true.",
+        "c": "If the bunkbed conjecture were false, what would a counterexample have to look like? Describe the structural features you would search for and the method you would use to verify a candidate rigorously."
+      },
+      "solved_date": "2024-10-01",
+      "solver": [
+        "Nikita Gladkov",
+        "Igor Pak",
+        "Aleksandr Zimin",
+        "Lawrence Hollom"
+      ],
+      "golden_solution": {
+        "answer": "NOT ALWAYS TRUE. The conjecture is FALSE.",
+        "label_set": [
+          "ALWAYS-TRUE",
+          "NOT-ALWAYS-TRUE"
+        ],
+        "gold_label": "NOT-ALWAYS-TRUE",
+        "partial_labels": [],
+        "key_method": "take Hollom's 3-uniform hypergraph counterexample and replace each hyperedge by a carefully engineered gadget graph (n = 1204 per gadget). Result: an explicit PLANAR graph on 7,222 vertices with 14,422 edges on which the upper-path probability exceeds the lower-path probability by about 1/10^6500 — tiny but strictly positive. The final proof is COMPUTER-FREE (an earlier neural-network-assisted approach was abandoned precisely because a 99.99% confident counterexample is not a proof).",
+        "key_ingredients": [
+          "Hollom's 3-uniform hypergraph counterexample",
+          "engineered gadget graph replacing each hyperedge",
+          "explicit planar counterexample",
+          "computer-free proof"
+        ],
+        "resolution_type": "complete unconditional refutation.",
+        "still_open": "",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2410.02545 Published: PNAS 122 (2025), e2420725122, DOI 10.1073/pnas.2420725122. Received 8 Oct 2024, accepted 19 April 2025, edited by Kenneth Ribet.",
+        "origin": "Pieter Kasteleyn, 1985, recorded in van den Berg-Kahn (2001), Remark 5.",
+        "independent_verification": "",
+        "acceptance": "PNAS peer review; subsequent papers open with \"the bunkbed conjecture ... is now resolved\" (e.g. https://arxiv.org/abs/2509.18788).",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "excellent Prompt A task. Nearly the entire community believed the answer was ALWAYS-TRUE. Models that confidently say ALWAYS-TRUE are reproducing the human prior, which is the interesting finding.",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "strategy_prompt_conditions_on_direction": true
+    },
+    {
+      "id": "TASK-07",
+      "slug": "aldous_lyons",
+      "title": "The Aldous-Lyons Conjecture",
+      "field": "probability (unimodular random networks) / group theory / quantum complexity theory",
+      "difficulty_tier": "extreme",
+      "status_at_cutoff_2023": "open for 17 years. DIRECTION-LEAK RISK: HIGH.",
+      "problem_posed": {
+        "year": 2007,
+        "by": "David Aldous and Russell Lyons",
+        "note": "Electron. J. Probab. 12 (2007), 1454-1508"
+      },
+      "prompts": {
+        "a": "The Aldous-Lyons conjecture (2007) asserts that every unimodular random network is a limit of finite graphs; equivalently, that every invariant random subgroup of the free group is co-sofic. Is the conjecture true? Answer TRUE or FALSE and give a probability.",
+        "b": "Determine whether every invariant random subgroup of the free group is co-sofic (equivalently, whether every unimodular random network is a Benjamini-Schramm limit of finite graphs). Give a complete proof or a complete refutation. Note that a positive answer would imply every group is sofic.",
+        "c": "The 2020 result MIP* = RE established undecidability inside quantum interactive proof systems. Are there other areas of mathematics where this style of argument could be imported to refute an approximation or limit conjecture? Be specific about the translation you would attempt."
+      },
+      "solved_date": "2024-07-31",
+      "solver": [
+        "Lewis Bowen",
+        "Michael Chapman",
+        "Alexander Lubotzky",
+        "Thomas Vidick"
+      ],
+      "golden_solution": {
+        "answer": "FALSE. The conjecture is refuted.",
+        "label_set": [
+          "TRUE",
+          "FALSE"
+        ],
+        "gold_label": "FALSE",
+        "partial_labels": [],
+        "key_method": "introduce \"subgroup tests\", an analogue of nonlocal games for invariant random subgroups of the free group, giving a novel interactive proof system such that truth of Aldous-Lyons would make every language in it decidable. Then reduce the HALTING PROBLEM to that proof system. Directly inspired by Ji-Natarajan-Vidick-Wright- Yuen (MIP* = RE, 2020), which refuted the Connes Embedding Problem by the same style of argument.",
+        "key_ingredients": [
+          "subgroup tests as an analogue of nonlocal games",
+          "novel interactive proof system",
+          "reduction of the halting problem to that proof system",
+          "MIP* = RE style argument"
+        ],
+        "resolution_type": "complete unconditional refutation.",
+        "still_open": "no non-sofic GROUP is known; the sofic groups question itself is untouched.",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2408.00110 — \"The Aldous-Lyons Conjecture I: Subgroup Tests\" https://arxiv.org/abs/2501.00173 — \"The Aldous-Lyons Conjecture II: Undecidability\" (Bowen, Chapman, Vidick)",
+        "origin": "D. Aldous and R. Lyons, \"Processes on unimodular random networks\", Electron. J. Probab. 12 (2007), 1454-1508. Acceptance, unusually direct: David Aldous on his own homepage — \"After 17 years, the Aldous-Lyons conjecture has been announced false ... I was the only person to still think it might be true.\" https://www.stat.berkeley.edu/~aldous/ Russell Lyons calls it \"the recent celebrated work of Bowen, Chapman, Lubotzky, and Vidick, which refutes the Aldous-Lyons conjecture\", Bull. LMS (2026), DOI 10.1112/blms.70176.",
+        "independent_verification": "",
+        "acceptance": "",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "strategy_prompt_conditions_on_direction": true,
+      "solved_date_note": "Part I 2024-07-31/08-01; Part II 2024-12-31"
+    },
+    {
+      "id": "TASK-08",
+      "slug": "kervaire_126",
+      "title": "Kervaire Invariant One In Dimension 126",
+      "field": "algebraic topology / stable homotopy theory",
+      "difficulty_tier": "extreme (and heavily computational)",
+      "status_at_cutoff_2023": "the ONLY remaining open dimension, explicitly flagged in Hill-Hopkins-Ravenel (Annals 2016): \"...exist only in dimensions 2, 6, 14, 30, 62, and possibly 126.\"",
+      "problem_posed": {
+        "year": 1960,
+        "by": "Michel Kervaire (Kervaire-Milnor)",
+        "note": "Adams-spectral-sequence reformulation by Browder (1969)"
+      },
+      "prompts": {
+        "a": "Do smooth framed manifolds of Kervaire invariant one exist in dimension 126? Equivalently (Browder 1969), does the element h_6^2 survive as a permanent cycle in the classical Adams spectral sequence at the prime 2? Answer YES or NO and give a probability.",
+        "b": "Determine whether h_6^2 is a permanent cycle in the 2-primary Adams spectral sequence, and hence whether smooth framed manifolds of Kervaire invariant one exist in dimension 126. Give a complete argument. There are on the order of 100 hypothetical differentials that could kill the class; account for them.",
+        "c": "What computational and theoretical machinery would be required to settle the 126-dimensional case of the Kervaire invariant problem? Describe the pipeline you would build."
+      },
+      "solved_date": "2024-12-14",
+      "solver": [
+        "Weinan Lin",
+        "Guozhen Wang",
+        "Zhouli Xu"
+      ],
+      "golden_solution": {
+        "answer": "YES. They exist. h_6^2 is a permanent cycle.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "a new \"extension spectral sequence\" for a map of spectra, developed in the HF_2-synthetic context, allowing rigorous handling of jump-of-filtration phenomena; plus large-scale machine computation. Lin's program eliminated 101 of the 105 hypothetical differentials; the final four took roughly another year.",
+        "key_ingredients": [
+          "extension spectral sequence for a map of spectra",
+          "HF_2-synthetic context",
+          "jump-of-filtration phenomena",
+          "large-scale machine computation"
+        ],
+        "resolution_type": "complete, with essential machine computation.",
+        "still_open": "",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2412.10879 \"On the Last Kervaire Invariant Problem\"",
+        "origin": "Kervaire (1960), Kervaire-Milnor; Adams-spectral-sequence reformulation by Browder (1969).",
+        "independent_verification": "",
+        "acceptance": "Michael Hopkins (co-author of the theorem that reduced the problem to this case) called the proof \"jaw-dropping\" and noted that such a \"heroically computational\" achievement had been thought out of reach. Quanta, 5 May 2025.",
+        "expert_quote": "",
+        "independent_verification_task": "ODP-03",
+        "independent_verification_identity": "The last Kervaire invariant problem."
+      },
+      "golden_label_confidence": "MEDIUM-HIGH",
+      "evaluator_notes": "as of mid-2025 the paper had not completed peer review; I could not confirm subsequent journal publication. Verification requires reproducing machine computations.",
+      "provenance": [
+        "pre2024_cutoff_benchmark",
+        "undermind_report"
+      ]
+    },
+    {
+      "id": "TASK-09",
+      "slug": "thorium229_clock",
+      "title": "Laser Excitation Of The Thorium-229 Nuclear Clock Transition",
+      "field": "nuclear physics / precision metrology (EXPERIMENTAL)",
+      "difficulty_tier": "extreme (experimental, not derivable by reasoning)",
+      "status_at_cutoff_2023": "not achieved; radiative decay photons had only just been observed at CERN/ISOLDE in 2023, giving 8.338(24) eV. NOTE: this task cannot be \"solved\" by a language model. Include it only as a FORECASTING task (Prompt A / Prompt D). Do not run Prompt B.",
+      "problem_posed": {
+        "year": 2003,
+        "by": "Ekkehard Peik and Christian Tamm",
+        "note": "Europhys. Lett. 61, 181 (2003); isomer inferred earlier by Kroger and Reich"
+      },
+      "prompts": {
+        "a": "Will direct laser excitation of the thorium-229 nuclear isomeric transition (~8.3 eV) be achieved, and its frequency measured against an optical atomic clock at the 10^-12 level? Give a probability that this is achieved within 24 months of your knowledge cutoff, and name the groups most likely to do it first.",
+        "d": "State the current best experimental value and uncertainty for the thorium-229 isomeric transition energy as of your knowledge cutoff, and your predicted final value. Also predict the wavelength in nm to three decimal places."
+      },
+      "solved_date": "2024-04-29",
+      "solver": [
+        "J. Tiedau",
+        "E. Peik",
+        "T. Schumm"
+      ],
+      "golden_solution": {
+        "answer": "ACHIEVED, and independently replicated by three groups.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "",
+        "key_ingredients": [],
+        "resolution_type": "experimental/empirical.",
+        "still_open": "a fully operational nuclear clock. Solid-state reproducibility work continued into 2026 (Nature, 2026).",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "",
+        "origin": "E. Peik and C. Tamm, \"Nuclear laser spectroscopy of the 3.5 eV transition in Th-229\", Europhys. Lett. 61, 181 (2003). Isomer inferred by Kroger and Reich, Nucl. Phys. A 259, 29 (1976).",
+        "independent_verification": "",
+        "acceptance": "cross-validated in two different crystal hosts by independent teams, ruling out host-specific artifacts; described in review literature as having reached field-wide consensus. NIST institutional announcement, Sept 2024. https://www.nist.gov/news-events/news/2024/09/major-leap-nuclear-clock-paves-way-ultraprecise-timekeeping",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH on the facts; this is a long-sought experimental GOAL rather than a conjecture with a truth value, so some evaluators will prefer to exclude it.",
+      "evaluator_notes": "",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "solved_date_note": "PTB Braunschweig with TU Wien, Phys. Rev. Lett. 132, 182501 (April 2024); replicated by two further groups",
+      "gold_label_note": "Forecasting item: the source's Prompt A asks for a probability that direct laser excitation is achieved within 24 months of the model's cutoff, plus the groups most likely to do it first. It was achieved (2024) and independently replicated by three groups, so the gold direction is YES.",
+      "numeric_target": {
+        "value": 8.35574,
+        "unit": "eV",
+        "tolerance_rel": 0.001,
+        "secondary": {
+          "value": 148.3821,
+          "unit": "nm"
+        }
+      },
+      "expected_groups": [
+        "PTB",
+        "Braunschweig",
+        "Peik",
+        "Schumm",
+        "TU Wien",
+        "JILA",
+        "Ye"
+      ],
+      "no_strategy_prompt": true,
+      "empirical": true
+    },
+    {
+      "id": "TASK-10",
+      "slug": "busy_beaver_5",
+      "title": "The Fifth Busy Beaver Value, Bb(5)",
+      "field": "computability theory / formal verification",
+      "difficulty_tier": "high (conjectured value known; the PROOF was open)",
+      "status_at_cutoff_2023": "47,176,870 was a 35-year-old CONJECTURE, not a theorem. Listed as Conjecture 10 in Aaronson's 2020 survey \"The Busy Beaver Frontier\".",
+      "problem_posed": {
+        "year": 1962,
+        "by": "Tibor Radó",
+        "note": "Bell System Technical Journal 41 (1962), 877-884"
+      },
+      "prompts": {
+        "a": "What is S(5), the maximum number of steps a halting 5-state, 2-symbol Turing machine can take starting from a blank tape? Give your best value, and give a probability that this exact value is correct. Also state whether, to your knowledge, this has been PROVED or is only conjectured.",
+        "b": "Outline a complete and formally verifiable proof strategy establishing S(5) = 47,176,870, i.e. that every 5-state 2-symbol Turing machine running more than 47,176,870 steps from a blank tape never halts. Specify the enumeration scheme, the family of deciders you would need, and how you would handle machines with Collatz-like behaviour."
+      },
+      "solved_date": "2024-07-02",
+      "solver": [
+        "Busy Beaver Challenge collaboration (coordinated by Tristan Sterin)"
+      ],
+      "golden_solution": {
+        "answer": "S(5) = 47,176,870. PROVED (previously only conjectured).",
+        "label_set": [],
+        "gold_label": "47176870",
+        "partial_labels": [],
+        "key_method": "enumerate all 181,385,789 five-state machines in Tree Normal Form; run each through a pipeline of deciders/verifiers; 13 \"Sporadic Machines\" receive individual hand-written Coq non-halting proofs. The proof relies only on Coq's standard-library functional_extensionality_dep axiom and compiles in about 45 minutes on 13 cores.",
+        "key_ingredients": [
+          "enumerate all five-state machines in Tree Normal Form",
+          "pipeline of deciders/verifiers",
+          "hand-written Coq non-halting proofs for the Sporadic Machines",
+          "formal verification in Coq/Rocq"
+        ],
+        "resolution_type": "complete, unconditional, FORMALLY VERIFIED — the strongest available form of verification in this suite.",
+        "still_open": "",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "Announcement: https://discuss.bbchallenge.org/t/237 Formal proof: https://github.com/ccz181078/Coq-BB5 Paper: https://arxiv.org/abs/2509.12337 (\"Determination of the fifth Busy Beaver value\", September 2025)",
+        "origin": "Tibor Rado, \"On non-computable functions\", Bell System Technical Journal 41 (1962), 877-884. Lower bound machine found by Heiner Marxen and Juergen Buntrock, September 1989, published Bull. EATCS 40 (1990), 247-251.",
+        "independent_verification": "",
+        "acceptance": "Scott Aaronson (who had posed it as Conjecture 10) — \"huge congratulations to the bbchallenge team on their accomplishment\", https://scottaaronson.blog/?p=8088 ; OEIS A060843 updated 2 July 2024.",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "HIGH",
+      "evaluator_notes": "the numeric value was widely published pre-2024, so Prompt A's value question tests memory, not discovery. The DISCOVERY question is the second half: does the model correctly report that this was only conjectured? Models that assert it as a known theorem pre-2024 are exhibiting exactly the failure mode this suite is for.",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "gold_label_note": "The value 47,176,870 was already conjectured before 2024 (Marxen-Buntrock lower bound), so a pre-2024 model can legitimately state it; what changed in July 2024 is that it became PROVED. The numeric answer and the proof-status claim are therefore scored separately.",
+      "answer_kind": "numeric",
+      "numeric_target": {
+        "value": 47176870,
+        "unit": "steps",
+        "tolerance_rel": 0.0
+      },
+      "proof_status_gold": "PROVED"
+    },
+    {
+      "id": "TASK-11",
+      "slug": "mizohata_takeuchi",
+      "title": "The Mizohata-Takeuchi Conjecture",
+      "field": "harmonic analysis (Fourier restriction theory), originated in PDE",
+      "difficulty_tier": "high",
+      "status_at_cutoff_2023": "open, roughly 40 years; a dedicated survey existed (A. Carbery, \"The Mizohata-Takeuchi conjecture: an overview\", 2022); it was a hoped-for route to sharpening endpoint multilinear restriction estimates. DIRECTION-LEAK RISK: HIGH.",
+      "problem_posed": {
+        "year": 1974,
+        "by": "Jiro Takeuchi (1974, 1980) and Sigeru Mizohata (1985)",
+        "note": "from work on well-posedness for perturbed linear Schrödinger equations"
+      },
+      "prompts": {
+        "a": "Let Sigma be a compact C^2 hypersurface in R^d with surface measure ds, and let E be the associated extension operator. The Mizohata-Takeuchi conjecture asserts || E g ||^2_{L^2(w)} <= C || X w ||_infinity || g ||^2_{L^2(Sigma)} where X w is the X-ray transform of the non-negative weight w. Is this conjecture true? Answer TRUE or FALSE and give a probability.",
+        "b": "Determine whether the Mizohata-Takeuchi conjecture holds. Either prove the weighted extension estimate, or construct an explicit weight and function witnessing its failure, with rigorous verification. State which direction you are arguing before you begin.",
+        "c": "Suppose one wanted to construct a counterexample to a weighted Fourier extension estimate controlled by the X-ray transform of the weight. What construction would you attempt, and what auxiliary estimates on the X-ray transform would you need?"
+      },
+      "solved_date": "2025-02-10",
+      "solver": [
+        "Hannah Mira Cairo",
+        "Ruixiang Zhang"
+      ],
+      "golden_solution": {
+        "answer": "FALSE. The conjecture is refuted.",
+        "label_set": [
+          "TRUE",
+          "FALSE"
+        ],
+        "gold_label": "FALSE",
+        "partial_labels": [],
+        "key_method": "derive a family of L^p estimates for the X-ray transform of positive measures in R^d, and use them to construct a log R-loss counterexample. The construction works for EVERY C^2 hypersurface in R^d not lying in a hyperplane. Cairo initially set out to PROVE the conjecture; the counterexample emerged from the failed proof attempt.",
+        "key_ingredients": [
+          "L^p estimates for the X-ray transform of positive measures",
+          "log R-loss counterexample construction",
+          "works for every C^2 hypersurface not lying in a hyperplane"
+        ],
+        "resolution_type": "complete unconditional refutation.",
+        "still_open": "what the correct sharp inequality is (the counterexample only produces a logarithmic loss).",
+        "scope": "",
+        "consequence": "endpoint multilinear restriction estimates cannot be sharpened directly via Mizohata-Takeuchi; related conjectures including Stein's conjecture are also false under the stated conditions."
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2502.06137 \"A Counterexample to the Mizohata-Takeuchi Conjecture\"",
+        "origin": "Jiro Takeuchi (1974, 1980) and Sigeru Mizohata (1985), from work on well-posedness for perturbed linear Schroedinger equations.",
+        "independent_verification": "",
+        "acceptance": "recorded as disproved in reference sources; taken as settled in follow-up literature (e.g. https://arxiv.org/abs/2506.05624, \"Random Constructions for Sharp Estimates of Mizohata-Takeuchi Type\"); presented at the 12th International Congress on Harmonic Analysis and PDE, El Escorial, 2025.",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "MEDIUM-HIGH",
+      "evaluator_notes": "journal publication status not confirmed.",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ],
+      "strategy_prompt_conditions_on_direction": true
+    },
+    {
+      "id": "TASK-12",
+      "slug": "erdos_unit_distance",
+      "title": "The Erdos Unit Distance Conjecture",
+      "field": "discrete/combinatorial geometry + algebraic number theory",
+      "difficulty_tier": "extreme",
+      "status_at_cutoff_2023": "open for 78 years. Lower bound U(n) >= n^{1+Omega(1/log log n)} (Erdos 1946); upper bound O(n^{4/3}) (Spencer-Szemeredi-Trotter 1984), exponent never improved since. DIRECTION-LEAK RISK: VERY HIGH. Essentially the whole community believed the conjecture was true.",
+      "problem_posed": {
+        "year": 1946,
+        "by": "Paul Erdős",
+        "note": "Amer. Math. Monthly 53 (1946), 248-250; Erdős offered $500 for a matching upper bound"
+      },
+      "prompts": {
+        "a": "Let U(n) be the maximum number of unit distances determined by n points in the Euclidean plane. Erdos (1946) conjectured that U(n) = n^{1+o(1)}, i.e. that the square-grid construction is essentially optimal. Is this conjecture true? Answer TRUE or FALSE and give a probability.",
+        "b": "Resolve the Erdos unit distance conjecture: determine whether U(n) = n^{1+o(1)}, where U(n) is the maximum number of unit distances among n points in the plane. Give a complete proof of the upper bound, or construct an infinite family of point sets refuting it, with proof. Do not assume the conjecture is true.",
+        "c": "Erdos's lower bound for the unit distance problem comes from a lattice construction understood via the Gaussian integers. Could that construction be generalized using deeper algebraic number theory to produce asymptotically more unit distances? Describe concretely what you would try."
+      },
+      "solved_date": "2026-05-20",
+      "solver": [
+        "Noga Alon",
+        "Thomas Bloom",
+        "and co-authors (original counterexample produced by an unreleased internal OpenAI model)"
+      ],
+      "golden_solution": {
+        "answer": "FALSE. The conjecture is refuted.",
+        "label_set": [
+          "TRUE",
+          "FALSE"
+        ],
+        "gold_label": "FALSE",
+        "partial_labels": [],
+        "key_method": "a geometry-of-numbers \"window\" lemma converting high-dimensional lattice structure into planar unit distances; a pigeonhole/class-group lemma producing many algebraic numbers of modulus 1 with bounded denominators in CM fields; a scalable construction via Golod-Shafarevich class field towers with bounded root discriminant and plentiful split primes. Retrospectively connected to ideas of Ellenberg-Venkatesh and Hajir-Maire-Ramakrishna.",
+        "key_ingredients": [
+          "geometry-of-numbers window lemma",
+          "pigeonhole/class-group lemma",
+          "algebraic numbers of modulus 1 in CM fields",
+          "Golod-Shafarevich class field towers"
+        ],
+        "resolution_type": "complete unconditional refutation OF THE CONJECTURE. The unit distance PROBLEM remains open: the true exponent lies in (1+epsilon, 4/3].",
+        "still_open": "",
+        "scope": "",
+        "consequence": ""
+      },
+      "sources": {
+        "primary": "https://arxiv.org/abs/2605.20695 — \"Remarks on the disproof of the unit distance conjecture\" https://openai.com/index/model-disproves-discrete-geometry-conjecture/ https://arxiv.org/abs/2605.20579 — Sawin, explicit lower bound (subsequent quantitative improvement)",
+        "origin": "P. Erdos, \"On sets of distances of n points\", Amer. Math. Monthly 53 (1946), 248-250. Erdos offered $500 for a matching upper bound.",
+        "independent_verification": "",
+        "acceptance": "proof checked by the nine external mathematicians above, who wrote the companion paper; MathWorld updated.",
+        "expert_quote": ""
+      },
+      "golden_label_confidence": "MEDIUM-HIGH",
+      "evaluator_notes": "this is the single most valuable Prompt A item in the suite, because the documented human prior was strongly wrong. It is also the only task where the reference solution was itself produced by an AI system — which makes it a natural upper-bound calibration point for what a frontier model can do. =====================================================================",
+      "provenance": [
+        "pre2024_cutoff_benchmark"
+      ]
+    },
+    {
+      "id": "ODP-U1",
+      "slug": "maximally_entangled_mixed_states",
+      "title": "UNIVERSAL MAXIMALLY ENTANGLED MIXED STATE AT FIXED SPECTRUM",
+      "field": "quantum information theory",
+      "difficulty_tier": "high",
+      "status_at_cutoff_2023": "open; a canonical family was known to maximize several important measures, including entanglement of formation, relative entropy of entanglement and negativity, which suggested the same state might maximize every monotone",
+      "solved_date": "2024-02-08",
+      "solved_date_note": "preprint 2024-02-08; Physical Review Letters 2024-07-30",
+      "sources": {
+        "primary": "de Vicente, Phys. Rev. Lett. (2024)",
+        "problem_source": "IQOQI Open Quantum Problems",
+        "independent": [
+          "APS Physics"
+        ]
+      },
+      "golden_label_confidence": "HIGH",
+      "problem_posed": {
+        "year": 2001,
+        "by": "Frank Verstraete, Koenraad Audenaert and Bart De Moor",
+        "note": "maintained as Problem 3, 'Maximally entangled mixed states', on the IQOQI Open Quantum Problems list"
+      },
+      "solver": [
+        "Julio I. de Vicente"
+      ],
+      "prompts": {
+        "a": "Consider two-qubit mixed quantum states with a fixed spectrum. A canonical family is known to maximize several standard entanglement measures simultaneously, including entanglement of formation, relative entropy of entanglement and negativity. Question: for every fixed spectrum, does there exist a single state that maximizes every entanglement monotone at once, i.e. a universal maximally entangled mixed state? Answer YES or NO, then give a probability between 0 and 1 that your answer is correct. Do not hedge; commit to one answer.",
+        "b": "Resolve the following question with full rigor, either by proof or by counterexample. Question: for two-qubit mixed states of fixed spectrum, does a single state maximize every entanglement monotone simultaneously? State clearly at the outset which way you are arguing. If you cannot resolve it, say so explicitly rather than presenting an incomplete argument as complete.",
+        "c": "Suppose you had to settle whether a universal maximally entangled mixed state exists for every fixed two-qubit spectrum. Describe the technical strategy you would pursue, naming the specific state families, operation classes, and intermediate statements you would try to establish. Be concrete."
+      },
+      "golden_solution": {
+        "answer": "NO. No universal maximally entangled mixed state exists. For particular rank-2 two-qubit spectra, no state can be transformed into all other isospectral states even under the larger class of non-entangling operations, so no single state can maximize every entanglement monotone. One valid counterexample settles the universal question.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "NO",
+        "partial_labels": [],
+        "key_method": "rank-2 two-qubit spectra; non-entangling operations; state transformation between isospectral states; counterexample to the universal claim",
+        "key_ingredients": [
+          "rank-2 two-qubit spectra",
+          "non-entangling operations",
+          "state transformation between isospectral states",
+          "counterexample to the universal claim"
+        ],
+        "resolution_type": "complete unconditional refutation of the universal statement",
+        "still_open": "classification for every spectrum, and higher-dimensional variants"
+      },
+      "provenance": [
+        "undermind_report"
+      ],
+      "prompt_authorship": "direction/resolution/strategy prompts authored for this dataset following the primary source's neutral-framing rules; the source supplied only an identification-style prompt"
+    },
+    {
+      "id": "ODP-U2",
+      "slug": "minor_free_linear_separators",
+      "title": "LINEAR-TIME BALANCED SEPARATORS IN MINOR-FREE GRAPHS",
+      "field": "graph algorithms / structural graph theory",
+      "difficulty_tier": "high",
+      "status_at_cutoff_2023": "open; Alon-Seymour-Thomas (1990) gave the O(sqrt(n)) separator-size bound for minor-free graphs but only an O(n^{3/2})-time algorithm. Known algorithms had either a larger separator, superlinear running time, or both",
+      "solved_date": "2025-12-01",
+      "solved_date_note": "preprint 2025-12-01; STOC 2026, online 2026-06-09",
+      "sources": {
+        "primary": "Bonnet, Korhonen, Le, Li, Masařík (STOC 2026)",
+        "independent": [
+          "STOC 2026 proceedings"
+        ]
+      },
+      "golden_label_confidence": "HIGH",
+      "problem_posed": {
+        "year": 1990,
+        "by": "Noga Alon, Paul Seymour and Robin Thomas",
+        "note": "descends from the Lipton-Tarjan planar separator theorem of the late 1970s; the open gap was the running time"
+      },
+      "solver": [
+        "Édouard Bonnet",
+        "Tuukka Korhonen",
+        "Hung Le",
+        "Jason Li",
+        "Tomáš Masařík"
+      ],
+      "prompts": {
+        "a": "For every fixed graph H, an H-minor-free graph on n vertices is known to admit a balanced vertex separator of size O(sqrt(n)). Question: can such a separator be computed in time linear in the size of the graph, that is O(n + m), for every fixed H? Answer YES or NO, then give a probability between 0 and 1 that your answer is correct. Do not hedge; commit to one answer.",
+        "b": "Resolve the following question with full rigor. Question: for every fixed graph H, can a balanced separator of size O(sqrt(n)) in an H-minor-free graph be computed in linear time? Give an algorithm with a correctness and running-time proof, or prove that no such algorithm exists. If you cannot resolve it, say so explicitly.",
+        "c": "Suppose you had to obtain a linear-time algorithm computing balanced O(sqrt(n)) separators in H-minor-free graphs. Describe the technical strategy you would pursue, naming the specific search procedures, weighting schemes, structural theorems and intermediate statements you would try to establish. Be concrete."
+      },
+      "golden_solution": {
+        "answer": "YES. A linear-time algorithm finds a balanced separator of size O(sqrt(n)) in every fixed-minor-free graph class, preserving the optimal asymptotic separator size and achieving the previously missing linear running time. The method uses a vertex-weighted breadth-first search with a weighting scheme connected to clique-minor structure.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "vertex-weighted breadth-first search; weighting scheme connected to clique-minor structure; preserving the O(sqrt(n)) separator size",
+        "key_ingredients": [
+          "vertex-weighted breadth-first search",
+          "weighting scheme connected to clique-minor structure",
+          "preserving the O(sqrt(n)) separator size"
+        ],
+        "resolution_type": "complete; the excluded minor H is fixed and hidden constants depend on H",
+        "still_open": "a linear-time separator theorem for arbitrary graphs"
+      },
+      "provenance": [
+        "undermind_report"
+      ],
+      "prompt_authorship": "direction/resolution/strategy prompts authored for this dataset following the primary source's neutral-framing rules; the source supplied only an identification-style prompt"
+    },
+    {
+      "id": "ODP-U3",
+      "slug": "k_edge_connected_components_linear_time",
+      "title": "LINEAR-TIME k-EDGE-CONNECTED COMPONENTS FOR EVERY FIXED k",
+      "field": "graph algorithms",
+      "difficulty_tier": "high",
+      "status_at_cutoff_2023": "open; linear-time algorithms were known for special low-connectivity cases, but the general fixed-k problem was not solved. Existing methods were superlinear, almost linear, or had unfavourable dependence on k",
+      "solved_date": "2024-11-04",
+      "solved_date_note": "preprint 2024-11-04; STOC 2025, presented 2025-06-23/27",
+      "sources": {
+        "primary": "Korhonen (STOC 2025)",
+        "independent": [
+          "University of Copenhagen research record",
+          "ICALP 2026 follow-up"
+        ]
+      },
+      "golden_label_confidence": "HIGH",
+      "problem_posed": {
+        "year": 1990,
+        "by": "the graph-algorithms literature on small-cut decompositions",
+        "note": "linear-time results existed for small k; the fixed-k general case remained the open question"
+      },
+      "solver": [
+        "Tuukka Korhonen"
+      ],
+      "prompts": {
+        "a": "Given an undirected graph and a fixed positive integer k, consider computing the decomposition of the graph into its k-edge-connected components. Question: for every fixed k, can this decomposition be computed in time linear in the number of vertices and edges? Answer YES or NO, then give a probability between 0 and 1 that your answer is correct. Do not hedge; commit to one answer.",
+        "b": "Resolve the following question with full rigor. Question: for every fixed positive integer k, can the k-edge-connected component decomposition of an undirected graph be computed in linear time? Give an algorithm with correctness and running-time proofs, or prove that no such algorithm exists. If you cannot resolve it, say so explicitly.",
+        "c": "Suppose you had to compute k-edge-connected components in linear time for every fixed k. Describe the technical strategy you would pursue, naming the specific decompositions, data structures and intermediate statements you would try to establish. Be concrete."
+      },
+      "golden_solution": {
+        "answer": "YES. For every fixed k the k-edge-connected components can be computed in time linear in the number of edges. The same work gives algorithms for k-lean tree decompositions, fixed-k vertex connectivity and certain k-Gomory-Hu trees.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "k-lean tree decompositions; fixed-k vertex connectivity; k-Gomory-Hu trees; linear dependence on graph size for every fixed k",
+        "key_ingredients": [
+          "k-lean tree decompositions",
+          "fixed-k vertex connectivity",
+          "k-Gomory-Hu trees",
+          "linear dependence on graph size for every fixed k"
+        ],
+        "resolution_type": "complete for fixed k; the dependence on k is large, and directed or non-constant-k variants remain open",
+        "still_open": "directed variants and non-constant k"
+      },
+      "provenance": [
+        "undermind_report"
+      ],
+      "prompt_authorship": "direction/resolution/strategy prompts authored for this dataset following the primary source's neutral-framing rules; the source supplied only an identification-style prompt"
+    },
+    {
+      "id": "ODP-H1",
+      "slug": "moving_sofa",
+      "title": "MOVING SOFA PROBLEM",
+      "field": "discrete/optimal geometry",
+      "difficulty_tier": "high",
+      "status_at_cutoff_2023": "open; Gerver's 1992 shape (area ~2.2195) was the conjectured optimum, with upper bounds proved but no matching optimality proof",
+      "solved_date": "2024-11-29",
+      "sources": {
+        "primary": "https://arxiv.org/abs/2411.19826"
+      },
+      "golden_label_confidence": "MEDIUM",
+      "held_out": true,
+      "held_out_reason": "Meets the significance bar but not the community-acceptance bar: as of March 2026 reported under review at Annals of Mathematics, peer review not complete. The primary source recommends keeping such items in a separate frontier split.",
+      "problem_posed": {
+        "year": 1966,
+        "by": "Leo Moser",
+        "note": "Gerver's candidate shape 1992"
+      },
+      "solver": [
+        "Jineon Baek"
+      ],
+      "prompts": {
+        "a": "Consider the largest area of a shape that can be maneuvered through a unit-width L-shaped corridor. Gerver's 1992 shape has area approximately 2.2195. Question: is Gerver's shape optimal? Answer YES or NO, then give a probability between 0 and 1 that your answer is correct. Do not hedge; commit to one answer.",
+        "c": "Suppose you had to determine whether Gerver's sofa is the area-maximizing shape for the unit-width L-shaped corridor. Describe the technical strategy you would pursue, naming the specific variational arguments, structural characterizations and intermediate statements you would try to establish. Be concrete."
+      },
+      "golden_solution": {
+        "answer": "YES (claimed). Gerver's sofa is optimal, per a 119-page preprint that is notable for being computer-free, which had not been expected.",
+        "label_set": [
+          "YES",
+          "NO"
+        ],
+        "gold_label": "YES",
+        "partial_labels": [],
+        "key_method": "computer-free variational argument; optimality of Gerver's shape",
+        "key_ingredients": [
+          "computer-free variational argument",
+          "optimality of Gerver's shape"
+        ],
+        "resolution_type": "claimed complete proof; peer review not complete",
+        "still_open": ""
+      },
+      "provenance": [
+        "pre2024_cutoff_benchmark:held_out"
+      ],
+      "prompt_authorship": "direction/resolution/strategy prompts authored for this dataset following the primary source's neutral-framing rules; the source supplied only an identification-style prompt"
+    }
+  ]
+}

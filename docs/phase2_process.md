@@ -91,6 +91,10 @@ results:
 * **HypoSpace** — the release ships generators, not data. The causal generator
   is pure Python and seeded, so the adapter runs it once and caches its JSON.
 
+A fourth dataset, `open_problems_2024`, is not from the specification's table at
+all: it was assembled here from two independent surveys of research problems
+open at a 2023 cutoff and resolved in 2024 or later. It is covered in section 6.
+
 ## 4. Skipped datasets
 
 Nine datasets are declared with `UnavailableAdapter` and appear in every run's
@@ -118,10 +122,82 @@ evidence level: DiagnosisArena shows the full work-up (its own protocol), while
 Med-Inquire withholds it (EvoClinician's premise is that an agent must ask).
 Read together, the pair measures the value of the diagnostic work-up.
 
-## 6. Verification performed
+## 6. The one dataset built from scratch: `open_problems_2024`
 
-* `abench prepare configs/runs/pilot.yaml` materializes all 48 configured
-  datasets: 39 build their samples, 9 report their skip reason. No dataset
+Requested separately, after the other 48, as a scientific-discovery probe. It is
+documented here because it is the only dataset whose *items* originate in this
+repository rather than in a release.
+
+**Whether it is abduction — decided per mode, not per dataset.** The sources
+supply up to four prompts per problem, and they are not the same task:
+
+| mode | what the model is asked | classification |
+|---|---|---|
+| `direction` | which way an open conjecture resolved, plus a probability | Stage 2, single-hypothesis evaluation — **abductive** |
+| `strategy` | what a solution would have to use, before seeing one | Stage 1, knowledge completion — **abductive** |
+| `resolution` | resolve the problem | deduction — **not** abductive; excluded from `abduction_score` |
+| `leakage_probe` | what the model knows about the problem's status | not reasoning at all; a contamination control |
+
+The honest caveat, recorded in the adapter's own caveats and therefore in
+`docs/datasets.md`: in `direction` mode the object being judged is a
+proposition's truth, not a hypothesis's explanatory power over observations.
+That is plausible reasoning at the edge of abduction rather than at its centre.
+It is included on the strength of the framework's single-hypothesis-evaluation
+definition, and labelled as such rather than quietly counted.
+
+**Provenance is mechanical.** Both sources are committed under
+`assets/open_problems_2024/sources/`, and
+`tools/build_open_problems_dataset.py` regenerates `problems.json` from them.
+All judgement lives in one auditable `NORMALIZATION` table keyed by task id —
+label sets, gold labels, partial-credit labels, posing year, solve date,
+solvers, and key ingredients quoted verbatim from each card's "Key method"
+field. Prompts are the sources' own wording, unedited; the three problems that
+exist only in the independent report had no direction prompt, so theirs were
+written here under the primary source's neutral-framing rules and carry
+`prompt_authorship` in the output. The corroboration between the two surveys is
+matched at build time against the report's own words, so if the report changes
+the build fails rather than asserting a verification that no longer holds.
+
+**Contamination is the real threat, so it is measured, not assumed.** Every
+resolution is 2024 or later. `options.model_cutoff` drops problems resolved
+before a model's training cutoff, and the `leakage_probe` subtask asks directly
+what the model knows, scoring `leakage_rate` per item — a model that both
+asserts the problem is resolved and names the solver or the year has read the
+answer, and that item's reasoning score means nothing. On gemma-4-E4B:
+`leakage_rate = 0.00` over 15 items.
+
+**Nondeterminism, which on a dataset this small is a first-order problem.** Two
+temperature-0, fixed-seed runs of the 15 direction items disagreed on 5 of them.
+The cause is not the adapter and not the sampler: vLLM's batched inference is not
+numerically batch-invariant, so a prompt's logits depend on what shares its
+batch. The evidence is clean in both directions — two consecutive runs of this
+dataset *alone* agreed on 45/45 direction predictions and reproduced
+`abduction_score` to four decimals, while the run that disagreed on 5 items had
+three other 300-item datasets in flight. Even inside a single run, 2 of 15
+questions got different verdicts from their own three repeats, which sit at
+different positions in different batches. One run of 15 items is therefore not a
+measurement. `options.repeats`
+(3 by default here) asks each question k times as k distinct samples; the score
+is the mean over all observations, and two metrics report how much of it is
+noise — `direction_answer_stability` (fraction of questions whose repeats all
+returned the same verdict; 0.87 running alone) and `strategy_score_spread` (mean
+within-question range of `key_ingredient_recall`, since a strategy answer is
+never byte-identical twice and its text stability is meaningless). Averaged over
+3 repeats, gemma-4-E4B scores direction accuracy 0.38 and
+`key_ingredient_recall` 0.29.
+
+**What it cannot be.** 15 evaluable problems (plus one held out pending peer
+review) is a qualitative probe, not a leaderboard, and the shortfall against the
+300-sample target is reported rather than padded. 14 of 16 are mathematics or
+theoretical computer science: the primary source searched empirical fields and
+found essentially nothing meeting a strict "posed before 2024, first resolved
+after 2023, community-accepted" test, because empirical fields rarely close a
+problem on a datable event.
+
+## 7. Verification performed
+
+* `abench prepare configs/runs/pilot.yaml` materializes all 49 configured
+  datasets: 40 build their samples, 9 report their skip reason. No dataset
   errors out.
 * `tools/preview.py` was run per adapter to check the rendered prompt, the
   reference payload, per-sample `max_tokens` and input-token statistics.
@@ -132,3 +208,12 @@ Read together, the pair measures the value of the diagnostic work-up.
 * A live run against `openai/gpt-oss-120b` exercised every task kind
   (selection, generation, knowledge completion, multi-answer selection) through
   the real batch endpoint.
+* `tests/test_open_problems.py` checks the bundled dataset itself, not just the
+  code: every item gradeable against its own label set, every problem posed
+  before 2024 and resolved after it, no strategy item without ingredients to
+  grade against, and gold labels balanced enough that always answering "the
+  conjecture holds" cannot score well.
+* `open_problems_2024` was run live beside `ecare`, `abductionrules` and
+  `medcasereasoning` in one invocation, to confirm a 28-item dataset with four
+  prompt templates and its own primary metric does not disturb the 300-item
+  tasks sharing the batch endpoint with it.
