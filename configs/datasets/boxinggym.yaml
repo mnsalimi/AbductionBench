@@ -1,12 +1,18 @@
 dataset:
   id: boxinggym
-  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  impl: abductionbench.adapters.boxinggym:BoxingGymAdapter
   sample_size: 300
   options:
-    name: "BoxingGym"
-    domain: "Scientific Discovery: Experimental Design"
-    processing_mode: "Generation"
-    source_url: "https://github.com/kanishkg/boxing-gym"
-    reason: "interactive simulation environment, no static dataset"
-    detail: "BoxingGym's tasks are simulated environments in which an agent designs experiments and updates a model over many turns; the repository contains environment code and configs but no static observation/hypothesis pairs to evaluate single-turn."
-  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
+    # One episode per (environment, goal, seed). The release ships ~8 usable
+    # environment modules with 2-5 goals each, so this is the knob that sets
+    # how many episodes the dataset contributes.
+    episodes_per_goal: 3
+    # Experiments the model may run before it has to predict, and how many of
+    # the goal's own evaluation questions it is then asked.
+    experiments: 10
+    questions: 5
+    # environments: [death_process, irt]   # subset, for a quick check
+  notes: >-
+    Runs the benchmark's real simulators (BoxingGym ships no item file). Each
+    episode is experimentation followed by prediction, scored by the release's
+    own evaluate_predictions. Its primary metric is an ERROR: lower is better.

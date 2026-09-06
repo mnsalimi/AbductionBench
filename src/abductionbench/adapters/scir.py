@@ -37,6 +37,16 @@ class SciRAdapter(PooledDatasetAdapter):
     """Choose the hidden causal edge that explains the observed data."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given observational data "
+        "and candidate causal edges. Choose the hidden edge whose presence explains the "
+        "pattern in the data."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

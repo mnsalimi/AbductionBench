@@ -44,6 +44,16 @@ class ProofWriterAdapter(PooledDatasetAdapter):
     """Abduce the fact removed from a ProofWriter theory."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a rule base and a "
+        "statement it can almost prove. State the single fact that is missing from the theory "
+        "and would complete the proof."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "exact_match"
 
     def load_items(self) -> list[dict[str, Any]]:

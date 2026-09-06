@@ -1,12 +1,15 @@
 dataset:
   id: scilab
-  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  impl: abductionbench.adapters.scilab:SciLabAdapter
   sample_size: 300
   options:
-    name: "SciLab (LLM-AutoSciLab)"
-    domain: "Scientific Discovery: Closed-Loop Experimentation"
-    processing_mode: "Generation & Selection"
-    source_url: "https://github.com/scientific-discovery/LLM-AutoSciLab"
-    reason: "closed-loop experimentation framework, no static dataset"
-    detail: "The repository provides the autonomous-lab loop plus NewtonBench configuration files (configs/noise_studies/*.json); the evaluation items are produced by running the loop against a simulator, so there is no released set of abductive items."
-  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
+    # Twelve vendored NewtonBench domains x three difficulty tiers = 36
+    # laboratories; each tier hides a differently modified law.
+    # domains: [m0_gravity, m4_snell_law]   # subset, for a quick check
+    difficulties: [easy, medium, hard]
+    experiments: 12          # measurements the model may take before predicting
+    questions: 5             # held-out settings it is then asked to predict
+  notes: >-
+    Runs the release's own NewtonBench oracles (SciLab ships laboratories, not
+    items). Scored by prediction on held-out settings, so its primary metric is
+    an ERROR: lower is better. The laws are deliberately not the textbook ones.

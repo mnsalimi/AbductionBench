@@ -26,7 +26,10 @@
 #     record, metric, checkpoint, log and report is still backed up.
 #
 # It runs until stopped (Ctrl-C / kill) and does one final pass on exit, so the
-# reports written at the very end are included.
+# reports written at the very end are included. The final pass then VERIFIES the
+# remote and re-sends anything missing, because a failed transfer still leaves
+# the destination directory behind: without the check, a run can end with a
+# complete Excel report next to empty task directories.
 #
 # Environment:
 #   SYNC_REMOTE    rclone destination        (default: gdrive:AbductionBench)
@@ -97,9 +100,46 @@ one_pass() {
   rclone "${rclone_args[@]}"
 }
 
+# Ask the remote what it is missing rather than trusting the exit code.
+# rclone creates a destination directory before uploading into it, so a pass
+# that dies part-way (rate limit, killed process, dropped connection) leaves
+# empty datasets/<dataset>/<model>/<template>/ directories behind -- which is
+# exactly the "report uploaded, records missing" symptom.
+missing_files() {
+  rclone check "$STAGE" "$DEST" --one-way --missing-on-dst - \
+    --fast-list --stats=0 --tpslimit "$TPSLIMIT" 2>/dev/null
+}
+
+verify_and_repair() {
+  local attempt missing listing
+  listing="$STAGE_ROOT/.${RUN_ID}.missing"
+  for attempt in 1 2 3; do
+    missing="$(missing_files)"
+    if [[ -z "$missing" ]]; then
+      echo "[$(date -Is)] verified: remote has every file"
+      rm -f "$listing"
+      return 0
+    fi
+    echo "[$(date -Is)] $(wc -l <<< "$missing") file(s) missing on the remote; re-sending (attempt $attempt)" >&2
+    printf '%s\n' "$missing" > "$listing"
+    rclone copy "$STAGE" "$DEST" --files-from="$listing" --transfers=4 \
+      --timeout=300s --retries=5 --low-level-retries=20 --stats=0 \
+      --tpslimit "$TPSLIMIT" --drive-pacer-min-sleep 100ms
+  done
+  missing="$(missing_files)"
+  if [[ -n "$missing" ]]; then
+    echo "[$(date -Is)] STILL MISSING after 3 repair attempts:" >&2
+    printf '%s\n' "$missing" | head -20 >&2
+    rm -f "$listing"
+    return 1
+  fi
+  rm -f "$listing"
+}
+
 final_pass() {
   echo "[$(date -Is)] final pass"
   one_pass
+  verify_and_repair
   echo "[$(date -Is)] stopped"
   exit 0
 }

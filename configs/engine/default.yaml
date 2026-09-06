@@ -33,13 +33,9 @@ engine:
     jitter: 0.3
     rate_limit_backoff_s: 20.0
     retry_error_classes: [transient, rate_limit, unknown, protocol]
-    # Reasoning models can spend a whole max_tokens budget on hidden
-    # chain-of-thought and return content: null (finish_reason=length). That is
-    # an under-budgeted request, not a wrong answer: re-ask just those samples
-    # with a bigger budget instead of raising the budget for every sample.
-    escalate_empty_responses: true
-    empty_budget_multiplier: 2.0
-    max_empty_escalations: 1
+    # There is no budget-exhaustion retry. Every request already asks for the
+    # whole remaining context window, so a response that stops at the budget
+    # cannot be re-issued with a bigger one; it is reported as truncated.
     recovery:
       enabled: true
       probe_path: /v1/models

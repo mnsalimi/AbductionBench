@@ -35,10 +35,30 @@ class FakeAdapter(DatasetAdapter):
 
     adapter_version = "test-1.0"
     primary_metric = "accuracy"
+    # Prompts belong to the adapter now, so even the fake owns one.
+    system_prompt = "You are a test adapter. Answer with the observation number."
+    objective_metrics = True
 
     def __init__(self, context: AdapterContext):
         super().__init__(context)
         self._pool: list[SampleSpec] = []
+
+    # -- prompts (owned here, as every adapter's are) -------------------- #
+
+    def build_messages(self, sample):
+        from abductionbench.adapters._prompting import PromptParts
+        from abductionbench.adapters._prompting import build_messages as compose
+
+        return compose(
+            PromptParts(
+                system=self.system_prompt_for(sample),
+                observation=str(sample.fields.get("observation", "")),
+                question=str(sample.fields.get("question", "")),
+                options=[str(o) for o in (sample.fields.get("options") or [])],
+                option_labels=[str(o) for o in (sample.fields.get("option_labels") or [])],
+            ),
+            self.context.modes,
+        )
 
     # -- lifecycle ------------------------------------------------------ #
 

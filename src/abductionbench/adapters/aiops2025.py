@@ -37,6 +37,17 @@ class AIOps2025Adapter(PooledDatasetAdapter):
     """Name the root-cause entity of an incident from its alert and topology."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the alerts, metrics "
+        "and service topology of a microservice incident. Name the entity that is the root "
+        "cause: the component whose failure explains the whole alert pattern, not every "
+        "component that reported an anomaly downstream of it."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "root_cause_match"
 
     def load_items(self) -> list[dict[str, Any]]:

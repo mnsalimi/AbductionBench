@@ -29,6 +29,16 @@ class HypoGenAdapter(PooledDatasetAdapter):
     """Given the conventional-wisdom 'bit', abduce the paper's 'flip'."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the conventional "
+        "wisdom in a research area (the 'bit'). Propose the 'flip': the hypothesis that "
+        "overturns it and would explain the results the paper reports."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "flip_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

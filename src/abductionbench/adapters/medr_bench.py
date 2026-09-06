@@ -36,6 +36,16 @@ class MedRBenchAdapter(PooledDatasetAdapter):
     """Diagnosis-collection abduction from MedR-Bench case summaries."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a case summary. "
+        "State the diagnosis that accounts for the findings; where the case is of a rare "
+        "disease, the common look-alike is not the answer."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "diagnosis_match"
 
     def load_items(self) -> list[dict[str, Any]]:

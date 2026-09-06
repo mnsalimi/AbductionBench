@@ -52,7 +52,13 @@ from ..core.metrics import (
     mean,
     rouge_l,
 )
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
 
@@ -90,6 +96,17 @@ class OpenProblemsAdapter(PooledDatasetAdapter):
     """Frontier open problems, judged for direction and for solution strategy."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a research problem "
+        "that was open as of your knowledge cutoff. Judge it on the evidence available at the "
+        "time and say how confident you are; a calibrated 'probably not' is worth more than a "
+        "confident guess."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     _repeats = 1
 
     @property
@@ -106,6 +123,97 @@ class OpenProblemsAdapter(PooledDatasetAdapter):
             "leakage_probe": "leakage_rate",
             "resolution": "hallucinated_proof_rate",
         }.get(subtask, "abduction_score")
+
+    # ------------------------------------------------------------------ #
+    # prompts -- this dataset's own, one per mode
+    # ------------------------------------------------------------------ #
+
+    #: A different instruction per mode, because the four modes are four
+    #: different jobs.  These were previously YAML templates bound by the
+    #: engine; they live here now, with the adapter that knows what they mean.
+    SYSTEM_PROMPTS = {
+        "direction": (
+            "You are a research mathematician and scientist assessing whether a stated "
+            "conjecture holds, using only the evidence available to you: known partial "
+            "results, heuristics, analogous cases, and the structure of the problem. You "
+            "will not be able to prove your answer. Commit to the most plausible verdict "
+            "anyway, and report how confident you actually are -- a well-judged 0.55 is "
+            "more useful than a reflexive 0.95."
+        ),
+        "strategy": (
+            "You are a research mathematician and scientist planning an attack on an open "
+            "problem. Name specific machinery, not general advice: the theorems you would "
+            "invoke, the structural dichotomies you would set up, the intermediate "
+            "statements you would try to establish first, and where you expect the "
+            "difficulty to concentrate. \"Use induction\" or \"try a computer search\" is "
+            "not an answer."
+        ),
+        "resolution": (
+            "You are a research mathematician and scientist asked to resolve an open "
+            "problem outright. Give a complete argument if you have one. If you do not, "
+            "say so plainly: an honest statement that you cannot resolve the problem is "
+            "worth more than a proof-shaped answer with a gap in it."
+        ),
+        "leakage_probe": (
+            "Report what you know about the status of a research problem as of your "
+            "knowledge cutoff. If it is unresolved, say so. If you believe it has been "
+            "resolved, say by whom and when."
+        ),
+    }
+
+    def system_prompt_for(self, sample: SampleSpec) -> str:
+        mode = (sample.reference or {}).get("mode", "direction")
+        if mode == "numeric_forecast":
+            mode = "direction"
+        return self.SYSTEM_PROMPTS.get(mode, self.system_prompt)
+
+    def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        """The dataset's own wording, kept verbatim; the modes add only a contract.
+
+        The problem statements are the sources' own and are deliberately neutral
+        about which way each conjecture resolved, so nothing here rephrases them:
+        the observation goes in as written, and only the answer format is added.
+        """
+        mode = (sample.reference or {}).get("mode", "direction")
+        body = [str(sample.fields.get("observation", ""))]
+        contract: dict[str, Any] = {"answer_prefix": "Answer:", "strip_markdown": True}
+        answer_format = str(sample.fields.get("answer_format", "your answer"))
+
+        if mode in ("direction", "numeric_forecast"):
+            body.append(
+                "Finish with exactly these two lines and nothing after them:\n"
+                f"Answer: <{answer_format}>\n"
+                "Confidence: <a probability between 0 and 1>"
+            )
+            contract.update(
+                {"confidence_prefix": "Confidence:", "style": "single_label_with_confidence"}
+            )
+        elif mode == "strategy":
+            body.append(
+                "Then close with a single line listing the ingredients your route "
+                f"depends on:\nAnswer: <{answer_format}>"
+            )
+            contract["style"] = "free_form"
+        elif mode == "resolution":
+            body.append(
+                "If you can resolve the problem, give the argument and then state your "
+                f"conclusion as:\nAnswer: <{answer_format}>\n"
+                "If you cannot, say so explicitly instead of producing an incomplete proof."
+            )
+            contract["style"] = "free_form"
+        else:  # leakage_probe
+            contract["style"] = "free_form"
+
+        labels = sample.fields.get("option_labels") or []
+        if labels:
+            contract["option_labels"] = list(labels)
+        return (
+            [
+                ChatMessage(role="system", content=self.system_prompt_for(sample)),
+                ChatMessage(role="user", content="\n\n".join(part for part in body if part)),
+            ],
+            contract,
+        )
 
     # ------------------------------------------------------------------ #
     # data

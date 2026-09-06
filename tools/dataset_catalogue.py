@@ -29,8 +29,17 @@ def main() -> int:
     engine = EvaluationEngine(config, dry_run=True)
     bundles = engine._build_bundles()  # noqa: SLF001 - stage A reuse is intentional
 
-    evaluated = [b for b in bundles if not b.skipped]
-    skipped = [b for b in bundles if b.skipped]
+    # One dataset can produce several bundles -- a benchmark that poses
+    # generation and selection as separate tasks is prepared once per task -- so
+    # the catalogue is keyed by dataset and counts datasets, not bundles.
+    evaluated: list = []
+    skipped: list = []
+    seen: set[str] = set()
+    for bundle in bundles:
+        if bundle.config.id in seen:
+            continue
+        seen.add(bundle.config.id)
+        (skipped if bundle.skipped else evaluated).append(bundle)
 
     lines: list[str] = []
     lines.append("# Dataset catalogue")
@@ -42,8 +51,10 @@ def main() -> int:
     )
     lines.append("")
     lines.append(
-        f"**{len(bundles)} datasets configured**: {len(evaluated)} evaluable, "
-        f"{len(skipped)} reported as skipped."
+        f"**{len(evaluated) + len(skipped)} datasets configured**: {len(evaluated)} "
+        f"evaluable, {len(skipped)} reported as skipped. A dataset that poses generation and "
+        f"selection as separate tasks is run as two, so a run plans more tasks than there are "
+        f"datasets here."
     )
     lines.append("")
 

@@ -38,6 +38,17 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
     """Recover the missing premise of an incomplete entailment step."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the premises of an "
+        "entailment step and its conclusion, with one premise missing. State the missing "
+        "premise: the single statement that, together with those given, entails the "
+        "conclusion."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "exact_match"
 
     def load_items(self) -> list[dict[str, Any]]:

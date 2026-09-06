@@ -34,6 +34,16 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
     """Identify the faulty component and fault type from telemetry."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given operational "
+        "telemetry from a running system. Identify the faulty component and the kind of fault "
+        "that together explain the observed symptoms."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "component_match"
 
     def load_items(self) -> list[dict[str, Any]]:

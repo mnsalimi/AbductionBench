@@ -8,25 +8,44 @@ a ``difficulty`` label, and the ground truth: ``fault_taxonomy``,
 the diagnostic tools an agent would have called (pod listings, describes, logs,
 events).
 
-**Evidence budget.** ``tool_cache.json`` runs to hundreds of thousands of
-characters per case (and the raw log dumps to tens of megabytes), far beyond the
-16,000-token input budget.  The adapter therefore includes a bounded slice of
-the cached evidence -- the resource listings and describe/event outputs first,
-each clipped to a word budget -- and reports how much was included.  With
-``options.evidence = symptom_only`` the task becomes symptom-to-root-cause
-abduction with no telemetry, which is a useful contrast.
+**How it is run.** The tool cache is what makes this benchmark interactive
+without a cluster: it is a recording of the diagnostic calls an agent would
+make, so the episode replays it.  The model is given the symptom and the tool
+list, issues one call per turn (``Action`` / ``Action Input``, the release's own
+syntax), and receives that call's recorded output -- or a miss, when it asks for
+something the recording does not hold.  It ends by finalising a diagnosis.
+
+That is also the only way this dataset *fits*: one case's cache runs to hundreds
+of thousands of characters, far beyond any input budget, so a single-turn form
+could only ever show an arbitrary slice of the evidence.  Letting the model
+choose which slice to look at is both the benchmark's task and the thing that
+makes it tractable.  ``options.delivery = static`` keeps the old bounded-slice
+form for comparison.
+
+The system prompt and the tool vocabulary are the release's own
+(``cloudops_agent/prompts/RCA_candidate.py``), read from the cloned repository.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, contains_match, extract_answer_span, token_f1
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
+from ._interactive import InteractiveMixin
 
 REPO_URL = "https://github.com/LLM4Ops/Cloud-OpsBench"
 #: Tool-cache keys are of the form ``ToolName:{json args}``; these come first
@@ -34,11 +53,152 @@ REPO_URL = "https://github.com/LLM4Ops/Cloud-OpsBench"
 _PREFERRED_TOOLS = ("GetResources", "DescribeResource", "GetEvents", "GetLogs")
 
 
-class CloudOpsBenchAdapter(PooledDatasetAdapter):
+def _parse_tool_call(text: str) -> tuple[str | None, dict[str, Any]]:
+    """Read the release's ``Action`` / ``Action Input`` pair out of a turn."""
+    action = re.search(r"Action\s*:\s*([A-Za-z_]+)", text or "")
+    if not action:
+        return None, {}
+    arguments: dict[str, Any] = {}
+    blob = re.search(r"Action\s*Input\s*:\s*(\{.*?\})", text or "", re.S)
+    if blob:
+        try:
+            parsed = json.loads(blob.group(1))
+            if isinstance(parsed, dict):
+                arguments = parsed
+        except json.JSONDecodeError:
+            arguments = {}
+    return action.group(1), arguments
+
+
+def _lookup(cache: dict[str, Any], action: str, arguments: dict[str, Any]) -> tuple[Any, bool]:
+    """Find a recorded call, exactly if possible and by closest arguments if not.
+
+    Exact first, because the cache is keyed by the precise argument JSON the
+    reference agent used. Then the same tool with the most argument values in
+    common, so a model that asks for the right pod with one extra flag still
+    gets the recording rather than a miss it cannot learn anything from.
+    """
+    exact = f"{action}:{json.dumps(arguments, separators=(',', ':'), sort_keys=False)}"
+    if exact in cache:
+        return cache[exact], True
+    wanted = {str(value).lower() for value in arguments.values() if value not in (None, "")}
+    best: tuple[int, str] | None = None
+    for key in cache:
+        name, _, raw = key.partition(":")
+        if name != action:
+            continue
+        try:
+            recorded = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            continue
+        values = {str(value).lower() for value in recorded.values() if value not in (None, "")}
+        if wanted and not (wanted & values):
+            continue
+        overlap = len(wanted & values) - abs(len(values) - len(wanted)) * 0.01
+        if best is None or overlap > best[0]:
+            best = (overlap, key)
+    if best is not None:
+        return cache[best[1]], True
+    return None, False
+
+
+class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     """Name the root cause of a Kubernetes incident from symptom + evidence."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the symptom of a "
+        "Kubernetes incident and the evidence collected from the cluster. Name the root "
+        "cause: the misconfiguration, resource limit or failure that accounts for the "
+        "symptom."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "root_cause_match"
+
+    # ------------------------------------------------------------------ #
+    # the investigation -- replayed from the release's own tool cache
+    # ------------------------------------------------------------------ #
+
+    max_turns = 15
+    category_limits = {"tool": 12}
+
+    def _release_prompt(self) -> str:
+        """The published agent prompt, read from the cloned repository."""
+        if getattr(self, "_agent_prompt", None):
+            return self._agent_prompt
+        path = (
+            self.context.data_dir / "repo" / "cloudops_agent" / "prompts" / "RCA_candidate.py"
+        )
+        prompt = ""
+        if path.exists():
+            source = path.read_text(encoding="utf-8", errors="replace")
+            match = re.search(r'agent_prompt = """(.*?)"""', source, re.S)
+            if match:
+                prompt = match.group(1).strip()
+        self._agent_prompt = prompt or self.system_prompt
+        return self._agent_prompt
+
+    @staticmethod
+    def _tool_signature(key: str) -> tuple[str, str]:
+        name, _, arguments = key.partition(":")
+        return name, arguments
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        cache = sample.metadata.get("_tool_cache") or {}
+        tools = sorted({self._tool_signature(key)[0] for key in cache if ":" in key})
+        opening = (
+            f"Reported symptom: {sample.metadata.get('query', '')}\n"
+            f"Namespace: {sample.metadata.get('namespace', '')}\n\n"
+            "Available tools: " + ", ".join(tools) + "\n\n"
+            "Issue one tool call per turn, in exactly this form:\n"
+            "Action: <ToolName>\n"
+            'Action Input: {"key": "value"}\n\n'
+            "When you have the evidence you need, finalise instead:\n"
+            "Action: Finalize\n"
+            "Action Input: {\"root_cause\": \"...\", \"fault_object\": \"kind/name\"}"
+        )
+        return (
+            [
+                ChatMessage(role="system", content=self._release_prompt()),
+                ChatMessage(role="user", content=opening),
+            ],
+            {"cache": cache, "counts": {}, "calls": []},
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action, arguments = _parse_tool_call(assistant_text)
+        if action is None:
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return (
+                "Could not read a tool call. Reply with:\nAction: <ToolName>\n"
+                'Action Input: {"key": "value"}'
+            )
+        if action.lower() in ("finalize", "finalise", "final_answer", "answer"):
+            return None
+
+        self.bump(state, "tool")
+        if self.over_limit(state, "tool"):
+            return "Tool budget exhausted. Finalise your diagnosis now."
+        cache = state["cache"]
+        output, matched = _lookup(cache, action, arguments)
+        state["calls"].append({"action": action, "arguments": arguments, "hit": matched})
+        if not matched:
+            # The recording holds only the calls the reference agent made. Saying
+            # so is honest: inventing a plausible kubectl output would be
+            # fabricating cluster state, and the model would reason from it.
+            return (
+                f"{action}: no recorded output for those arguments in this case. "
+                "Try a different call."
+            )
+        return C.clip_words(str(output), int(self.context.option("words_per_tool", 400)))
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -102,6 +262,19 @@ class CloudOpsBenchAdapter(PooledDatasetAdapter):
             )
         return "\n\n".join(blocks)
 
+    def _tool_cache(self, case_dir) -> dict[str, Any]:
+        """The case's recorded tool calls, or an empty recording."""
+        if self.context.modes.data_delivery_mode != "interactive":
+            return {}
+        path = Path(case_dir) / "tool_cache.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = C.read_json(path)
+        except Exception:  # noqa: BLE001 - a corrupt cache means a static episode
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         metadata = item["metadata"]
         result = metadata.get("result") or {}
@@ -134,7 +307,12 @@ class CloudOpsBenchAdapter(PooledDatasetAdapter):
                 "case_id": item["case_id"],
                 "namespace": metadata.get("namespace"),
                 "difficulty": metadata.get("difficulty"),
+                "query": symptom,
                 "evidence_included": bool(evidence),
+                # The recorded cluster, for the interactive episode. Loaded
+                # lazily: the caches are large and only the episodes that run
+                # need them.
+                "_tool_cache": self._tool_cache(item["case_dir"]),
             },
         )
 

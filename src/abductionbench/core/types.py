@@ -288,17 +288,34 @@ class SampleScore:
 
 @dataclass(frozen=True, slots=True)
 class TaskIdentity:
-    """Identifies one (dataset, model, prompt-template) evaluation unit."""
+    """Identifies one (dataset, model, execution-mode) evaluation unit.
+
+    ``template_id`` is the mode slug (``io_SCS_static``) rather than the name of
+    a YAML template: prompts belong to the adapter now, so what distinguishes
+    two runs of the same dataset against the same model is which modes they were
+    run in.  ``template_mode`` is the full identity, including the task kind.
+    """
 
     run_id: str
     dataset_id: str
     model_id: str
     template_id: str
     template_version: str
+    prompt_mode: str = "io"
+    selection_mode: str = "n/a"
+    task_kind: str = "generation"
+    data_delivery_mode: str = "static"
 
     @property
     def slug(self) -> str:
         return f"{self.dataset_id}__{self.model_id}__{self.template_id}"
+
+    @property
+    def template_mode(self) -> str:
+        """Run-version identity: prompt x selection x task kind x delivery."""
+        return "|".join(
+            (self.prompt_mode, self.selection_mode, self.task_kind, self.data_delivery_mode)
+        )
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -307,6 +324,10 @@ class TaskIdentity:
             "model_id": self.model_id,
             "template_id": self.template_id,
             "template_version": self.template_version,
+            "prompt_mode": self.prompt_mode,
+            "selection_mode": self.selection_mode,
+            "data_delivery_mode": self.data_delivery_mode,
+            "template_mode": self.template_mode,
         }
 
 
@@ -338,6 +359,16 @@ class EvalRecord:
     def to_json_dict(self) -> dict[str, Any]:
         payload = {
             **self.task.as_dict(),
+            # Derived per record: a dataset may mix task kinds inside one task,
+            # and the identity of a row has to name the kind of *that* row.
+            "template_mode": "|".join(
+                (
+                    self.task.prompt_mode,
+                    self.task.selection_mode,
+                    self.task_kind or self.task.task_kind,
+                    self.task.data_delivery_mode,
+                )
+            ),
             "sample_id": self.sample_id,
             "group_id": self.group_id,
             "status": self.status.value,

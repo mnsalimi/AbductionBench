@@ -28,7 +28,7 @@ from rich.table import Table
 from .core.config import RunConfig, load_run_config
 from .core.engine import EvaluationEngine, RunResult
 from .core.errors import AbenchError
-from .core.prompts import PromptRegistry, PromptRenderer
+from .core.prompts import PromptRegistry
 from .core.telemetry import setup_logging
 
 app = typer.Typer(
@@ -80,34 +80,44 @@ def validate(
         True, help="Import each dataset's adapter class (does not download data)."
     ),
 ) -> None:
-    """Validate a run config: schema, prompt templates, bindings, adapter imports."""
+    """Validate a run config: schema, modes, judge templates, adapter imports."""
     setup_logging(level="WARNING")
     run_config = _load(config, set_, _split_csv(datasets), _split_csv(models))
     registry = PromptRegistry(list(run_config.prompts.template_dirs))
-    renderer = PromptRenderer(registry, run_config.prompts)
 
     table = Table(title=f"run '{run_config.name}' validates")
     table.add_column("check")
     table.add_column("detail")
     table.add_row("models", ", ".join(m.id for m in run_config.models))
     table.add_row("datasets", str(len(run_config.enabled_datasets())))
-    table.add_row("templates found", f"{len(registry)}: {', '.join(registry.ids())}")
+    table.add_row("judge templates", f"{len(registry)}: {', '.join(registry.ids())}")
+    table.add_row("prompt modes", ", ".join(run_config.modes.prompt_modes))
+    table.add_row(
+        "selection modes",
+        ", ".join(run_config.modes.selection_modes) or "as each benchmark defines",
+    )
 
     problems: list[str] = []
     for dataset in run_config.enabled_datasets():
-        for binding in renderer.bindings_for_dataset(dataset.id, dataset.prompt_bindings):
-            for task_kind, template_id in binding.mapping.items():
-                try:
-                    registry.get(template_id)
-                except AbenchError as exc:
-                    problems.append(f"{dataset.id}/{binding.variant}/{task_kind}: {exc}")
+        # Dataset prompts are the adapter's own, so what is checked here is that
+        # the adapter exists and declares modes the run can actually execute.
         if check_adapters:
             from .core.registry import resolve_adapter
 
             try:
-                resolve_adapter(dataset.impl)
+                adapter_cls = resolve_adapter(dataset.impl)
             except AbenchError as exc:
                 problems.append(f"{dataset.id}: {exc}")
+            else:
+                if not (
+                    adapter_cls.always_skips
+                    or adapter_cls.system_prompt
+                    or hasattr(adapter_cls, "SYSTEM_PROMPTS")
+                ):
+                    problems.append(
+                        f"{dataset.id}: adapter declares no system prompt; each dataset owns "
+                        "its own (see adapters/_prompting.py)"
+                    )
     table.add_row("binding/adapter problems", str(len(problems)))
     console.print(table)
     for problem in problems:

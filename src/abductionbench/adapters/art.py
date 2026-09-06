@@ -34,6 +34,23 @@ class ARTAdapter(PooledDatasetAdapter):
     """alphaNLI selection (default) or alphaNLG generation over ART."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the first and last "
+        "observation of a short everyday story. The hypothesis you want is the event in "
+        "between that makes the ending unsurprising given the beginning -- the most plausible "
+        "thing to have happened, not the most dramatic."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'generation'},
+        "selection": {'subtask': 'selection'},
+    }
+    table_hypothesis_mode = "Generation / Selection (separate tasks)"
     primary_metric = "accuracy"
 
     @property

@@ -35,6 +35,17 @@ class CrossTraceAdapter(PooledDatasetAdapter):
     """Generate the hypothesis that challenges a field's conventional assumption."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a field's "
+        "conventional assumption and the observation that strains it. Propose the hypothesis "
+        "that would explain the observation while contradicting the assumption -- state the "
+        "mechanism, not a call for further research."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "hypothesis_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

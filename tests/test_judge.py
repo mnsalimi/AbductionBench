@@ -24,6 +24,18 @@ from abductionbench.core.types import AdapterDocumentation, SampleScore, SampleS
 
 class JudgedAdapter(DatasetAdapter):
     primary_metric = "judged_accuracy"
+    system_prompt = "You explain observations."
+
+    def build_messages(self, sample):
+        from abductionbench.core.types import ChatMessage
+
+        return (
+            [
+                ChatMessage(role="system", content=self.system_prompt),
+                ChatMessage(role="user", content=str(sample.fields["observation"])),
+            ],
+            {"answer_prefix": "Answer:"},
+        )
 
     def build_samples(self):
         return [

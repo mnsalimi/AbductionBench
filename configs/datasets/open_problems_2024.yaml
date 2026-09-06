@@ -4,11 +4,6 @@ dataset:
   # 15 evaluable problems x 2 modes = 30 items; the shortfall against 300 is
   # inherent to the source (see the adapter's caveats) and is reported.
   sample_size: 300
-  prompt_bindings:
-    direction_judgment: research_direction_v1
-    solution_strategy: research_strategy_v1
-    full_resolution: research_resolution_v1
-    leakage_probe: research_leakage_probe_v1
   options:
     # both = direction + strategy, the two abductive modes.
     # Also: direction | strategy | resolution | all | leakage_probe

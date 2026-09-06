@@ -42,6 +42,18 @@ class HypoSpaceAdapter(PooledDatasetAdapter):
     """Propose several causal graphs compatible with perturbation observations."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given perturbation "
+        "observations over a set of variables. Several distinct causal graphs can be "
+        "compatible with them, and the task is to cover that space: propose the distinct "
+        "hypotheses that are all consistent with the observations, rather than committing to "
+        "one."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "distinct_valid_rate"
 
     def load_items(self) -> list[dict[str, Any]]:

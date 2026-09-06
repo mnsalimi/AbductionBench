@@ -289,12 +289,14 @@ class BatchingConfig(_Base):
 
     vLLM's ``/v1/chat/completions/batch`` shares one sampling-parameter set
     across the whole call, so only samples with an identical sampling signature
-    can travel together.  ``max_tokens_quantum`` rounds adapter-supplied output
-    budgets up to a common grid so per-sample budgets do not shatter batches
-    into singletons.
+    can travel together.  Every request now asks for the whole remaining
+    context window, which varies with prompt length, so ``max_tokens_quantum``
+    rounds that budget **down** onto a common grid: down, because rounding up
+    would ask for more than the context can hold, and onto a grid, because
+    otherwise every prompt length would be its own batch of one.
     """
 
-    max_tokens_quantum: int = Field(256, ge=1)
+    max_tokens_quantum: int = Field(512, ge=1)
     #: Group samples of similar input length together (shorter head-of-line
     #: blocking within a batch call, since a batch returns only when its
     #: slowest conversation finishes).
@@ -345,20 +347,12 @@ class RetryConfig(_Base):
         default_factory=lambda: ["transient", "rate_limit", "unknown", "protocol"]
     )
     recovery: EndpointRecoveryConfig = Field(default_factory=EndpointRecoveryConfig)
-    #: Re-issue a sample whose response came back empty *because the token
-    #: budget ran out* (a reasoning model can spend its whole ``max_tokens`` on
-    #: hidden chain-of-thought and return ``content: null``).  Only that sample
-    #: is retried, with a multiplied budget -- far cheaper than raising the
-    #: budget for every sample in the dataset.
-    escalate_empty_responses: bool = True
-    empty_budget_multiplier: float = Field(2.0, gt=1.0)
-    max_empty_escalations: int = Field(1, ge=0)
-    #: Also re-issue a sample whose answer was *cut off* at the budget
-    #: (``finish_reason="length"`` with partial content).  Off by default: a
-    #: verbose model would double the cost of every long-form dataset.  Turn it
-    #: on for datasets where a truncated answer is unscorable (a symbolic
-    #: equation, a label list) rather than merely shorter.
-    escalate_truncated_responses: bool = False
+    # There is deliberately no budget-exhaustion retry here. A response that
+    # stops at ``max_tokens`` is now a result, not a failure to be re-rolled:
+    # the budget is the whole remaining context window (see
+    # ``batching.resolve_sampling``), so re-issuing the same request with a
+    # bigger budget is impossible rather than merely expensive, and reporting a
+    # truncated answer as truncated is what makes the truncation rate readable.
 
 
 class TimeoutConfig(_Base):
@@ -472,7 +466,22 @@ class SyncConfig(_Base):
     rclone_binary: str = "rclone"
     transfers: int = Field(4, ge=1)
     checkers: int = Field(8, ge=1)
+    #: rclone's *per-operation* timeout: how long one transfer may stall before
+    #: it is retried.  Not a budget for the whole pass -- see ``pass_timeout_s``.
     timeout_s: int = Field(300, ge=10)
+    #: Wall-clock budget for one whole upload pass, in seconds.  0 means no
+    #: limit, which is the default because killing a pass part-way is how a run
+    #: ends up with an uploaded report and empty task directories next to it:
+    #: rclone creates a destination directory before it puts files in it, so a
+    #: pass killed mid-transfer leaves the directory behind without its records.
+    #: A pass that overruns is skipped by the next tick's lock anyway.
+    pass_timeout_s: float = Field(0.0, ge=0)
+    #: After the final pass, list what is on the remote and re-upload anything
+    #: missing, repeating until nothing is missing or the attempts run out.
+    #: This is the guarantee that "the report is there" implies "the records
+    #: behind it are there too".
+    verify_after_final: bool = True
+    verify_attempts: int = Field(3, ge=1)
     #: e.g. "8M" to cap upload bandwidth; empty means unlimited.
     bandwidth_limit: str = ""
     #: Patterns to leave out (rsync syntax when snapshotting, rclone otherwise).
@@ -514,8 +523,12 @@ class ReportingConfig(_Base):
     write_csv: bool = True
     #: Per-task markdown run documentation.
     write_run_documentation: bool = True
-    #: Clip response text stored in the workbook.
-    response_clip_chars: int = Field(2000, ge=0)
+    #: Longest response text kept in the workbook and in the sample-level log.
+    #: 32,000 is Excel's own per-cell ceiling, so this preserves the complete
+    #: model output up to the limit of what a cell can physically hold rather
+    #: than storing a preview of it.  0 means no limit (Excel will still refuse
+    #: a longer cell, so the writer clamps to 32,000 when it writes).
+    response_clip_chars: int = Field(32_000, ge=0)
 
 
 class EngineConfig(_Base):
@@ -609,9 +622,11 @@ class ModelSamplingConfig(_Base):
     temperature: float = 0.0
     top_p: float = 1.0
     seed: int | None = None
-    max_tokens_default: int = Field(512, ge=1)
-    #: Upper bound applied to adapter-requested budgets.
-    max_tokens_cap: int = Field(4096, ge=1)
+    max_tokens_default: int = Field(32_000, ge=1)
+    #: Hard ceiling on the output budget of any request, for every dataset.
+    #: The effective budget is the smaller of this and what is left of the
+    #: context window once the prompt is in it.
+    max_tokens_cap: int = Field(32_000, ge=1)
     #: Lower bound; reasoning models need headroom or ``content`` comes back
     #: ``null`` because the hidden chain-of-thought consumed the budget.
     max_tokens_floor: int = Field(64, ge=1)
@@ -659,11 +674,14 @@ class ModelConfig(_Base):
 class PromptConfig(_Base):
     """Where prompt templates come from and which one each task kind uses.
 
-    ``bindings`` maps a ``task_kind`` (declared by the adapter, e.g.
-    ``"generation"``) to a template id.  ``dataset_overrides`` lets one dataset
-    use a different template without touching the adapter, and
-    ``template_variants`` lets a single run evaluate several templates against
-    the same data (each becomes its own task and its own row in the grid).
+    Dataset prompts are **not** configured here any more: each adapter owns its
+    own system prompt and wording (specification item 4), and which modes a run
+    evaluates is ``modes``.  What is left is the judge: an LLM judge is a model
+    being prompted by the harness rather than a dataset being evaluated, so its
+    templates stay versioned configuration.
+
+    ``bindings`` is therefore optional and, where present, is only consulted by
+    the judge stage.
     """
 
     template_dirs: list[Path] = Field(default_factory=lambda: [Path("configs/prompts")])
@@ -677,10 +695,6 @@ class PromptConfig(_Base):
 
     @model_validator(mode="after")
     def _require_bindings(self) -> PromptConfig:
-        if not self.bindings:
-            raise ConfigError(
-                "prompts.bindings must map at least one task_kind to a template id"
-            )
         return self
 
 
@@ -719,6 +733,56 @@ class DatasetConfig(_Base):
     notes: str = ""
 
 
+class ModesConfig(_Base):
+    """Which execution modes the run evaluates (see ``core/modes.py``).
+
+    Every listed prompt mode is crossed with every listed selection mode, and
+    each surviving combination becomes its own task with its own
+    ``template_mode`` identity.  Combinations a dataset does not admit are
+    reported as skipped modes rather than run: ``cot`` against a dataset with no
+    objective metric, or ``SCS`` against one whose task is to select several
+    hypotheses, would produce a number that does not mean what its column says.
+    """
+
+    #: io | cot | self-consistency.  Applied only to datasets whose metrics are
+    #: objectively verifiable; everything else runs ``io``.
+    prompt_modes: list[str] = Field(default_factory=lambda: ["io"])
+    #: SCS | MCS | BOV.  Empty means "whatever each selection dataset's task
+    #: definition calls for", which is the safe default.
+    selection_modes: list[str] = Field(default_factory=list)
+    #: generation | selection.  Empty means "every task the benchmark poses as
+    #: an independent evaluation", which is what the dataset table's
+    #: "Generation / Selection (separate tasks)" asks for.
+    hypothesis_modes: list[str] = Field(default_factory=list)
+    #: Samples per self-consistency vote, and the temperature they are drawn at.
+    #: A vote at temperature 0 would be k identical samples.
+    self_consistency_n: int = Field(5, ge=2)
+    self_consistency_temperature: float = Field(0.7, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_modes(self) -> ModesConfig:
+        from .modes import PROMPT_MODES, SELECTION_MODES
+
+        for mode in self.prompt_modes:
+            if mode not in PROMPT_MODES:
+                raise ConfigError(
+                    f"unknown prompt mode {mode!r}; expected one of {list(PROMPT_MODES)}"
+                )
+        for mode in self.hypothesis_modes:
+            if mode not in ("generation", "selection"):
+                raise ConfigError(
+                    f"unknown hypothesis mode {mode!r}; expected 'generation' or 'selection'"
+                )
+        for mode in self.selection_modes:
+            if mode not in SELECTION_MODES:
+                raise ConfigError(
+                    f"unknown selection mode {mode!r}; expected one of {list(SELECTION_MODES)}"
+                )
+        if not self.prompt_modes:
+            raise ConfigError("modes.prompt_modes must list at least one mode")
+        return self
+
+
 class RunConfig(_Base):
     """A complete, self-contained description of one evaluation run."""
 
@@ -727,6 +791,7 @@ class RunConfig(_Base):
     #: Global determinism seed; datasets inherit it unless they override.
     seed: int = 20260903
     engine: EngineConfig = Field(default_factory=EngineConfig)
+    modes: ModesConfig = Field(default_factory=ModesConfig)
     prompts: PromptConfig
     models: list[ModelConfig] = Field(default_factory=list)
     datasets: list[DatasetConfig] = Field(default_factory=list)

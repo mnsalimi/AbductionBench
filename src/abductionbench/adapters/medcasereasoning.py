@@ -30,6 +30,16 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
     """Diagnose a case report; also measure recovery of the clinician's reasoning."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a clinical case "
+        "report. State the final diagnosis, and let your reasoning follow the diagnostic "
+        "evidence in the case rather than prior probability alone."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "diagnosis_match"
 
     def load_items(self) -> list[dict[str, Any]]:

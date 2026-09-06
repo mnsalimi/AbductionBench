@@ -53,17 +53,21 @@ cp .env.example .env    # then fill in ABENCH_API_KEY and the URLs
 set -a; . ./.env; set +a                       # or: export ABENCH_API_KEY=...
 
 abench doctor configs/runs/full.yaml           # 30 s: endpoint + batch route reachable
-abench run    configs/runs/full.yaml           # 300 samples x 40 datasets x every model
+abench run    configs/runs/full.yaml           # 300 samples x 42 datasets x every model
 
 # interrupted? continue exactly where it stopped (per-sample checkpoints):
 abench run configs/runs/full.yaml --resume runs/<run-id>
 ```
 
 `configs/runs/full.yaml` is the single place that decides scope: it picks up
-every dataset config automatically and lists the models. Adding a model is one
-line there. One model over the whole suite is 9,882 prompts (~1,270 native batch
-calls at group size 8) and takes roughly 2-3 h on an idle GPU; selection
-datasets cost ~0.02 s/sample, long-form physics ~4 s/sample.
+every dataset config automatically, lists the models, and sets the execution
+modes. Adding a model is one line there; adding a prompt mode is one entry under
+`modes:` and doubles the tasks rather than replacing them.
+
+The dataset table's "Generation / Selection (separate tasks)" datasets each plan
+two tasks, and interactive benchmarks plan one episode per item rather than one
+prompt, so a full run is more than one task per dataset — `abench run ...
+--dry-run` prints the exact plan before anything is sent.
 
 ## Backing up a run (incremental, off the hot path)
 
@@ -103,6 +107,17 @@ How it behaves, and why:
   Google Drive's per-minute quota for rclone's shared OAuth client (HTTP 403)
   and starves the files that matter. `raw/` is excluded by default and API calls
   are throttled (`exclude: []` backs up everything).
+* **It checks what actually arrived.** A pass can fail per file — Drive answers
+  a burst of small uploads with HTTP 403 — and because rclone creates a
+  destination directory before it puts files in it, a failed pass leaves an
+  *empty* `datasets/<dataset>/<model>/<mode>/` next to a report that uploaded
+  fine. So the final pass does not trust the exit code: it asks the remote what
+  it is missing (`rclone check --one-way`), re-sends exactly those files, and
+  asks again, up to `verify_attempts` times. What is still missing after that is
+  named in the log rather than left to be discovered later.
+* **A pass is never killed part-way.** `timeout_s` is rclone's per-transfer
+  timeout; the whole pass is unbounded by default (`pass_timeout_s: 0`), because
+  a killed pass is exactly what produces those empty directories.
 * A final pass runs after the workbook and run documentation are written.
 
 The Drive layout mirrors the local one, one folder per run:
@@ -116,7 +131,7 @@ AbductionBench/                        <- the folder you shared
     ├── reports/
     │   ├── abductionbench_results.xlsx
     │   └── summary.csv · metrics_long.csv
-    └── datasets/<dataset>/<model>/<template@version>/
+    └── datasets/<dataset>/<model>/<mode-slug@version>/
         ├── records.jsonl              <- one JSON object per sample
         ├── metrics.json · checkpoint.json
         └── run_documentation.md
@@ -156,10 +171,14 @@ same job, same rclone flags, its own process:
 nohup bash tools/sync_run.sh runs/<run-id> > /tmp/abench_sync.log 2>&1 &
 ```
 
+It verifies and repairs the same way the engine's own sync does: on exit it asks
+the remote what it is missing and re-sends it, and prints what is still absent.
+Run it again after a finished run to repair a backup that ended up incomplete.
+
 ## Other commands
 
 ```bash
-abench validate configs/runs/pilot.yaml        # config, templates, adapter imports
+abench validate configs/runs/pilot.yaml        # config, modes, adapter imports
 abench doctor   configs/runs/pilot.yaml        # probe endpoints incl. the batch route
 abench prepare  configs/runs/pilot.yaml        # materialize datasets, no inference
 abench run      configs/runs/pilot.yaml        # the evaluation
@@ -167,7 +186,8 @@ abench run      configs/runs/pilot.yaml --dry-run          # plan + render promp
 abench run      configs/runs/pilot.yaml -d ecare -m gpt-oss-120b
 abench run      configs/runs/pilot.yaml --resume runs/<run-id>   # continue after a drop
 abench report   runs/<run-id>                  # rebuild the workbook from records
-abench templates configs/runs/pilot.yaml --show gen_cot_v1
+abench templates configs/runs/pilot.yaml        # the judge templates
+abench run      configs/runs/pilot.yaml -s modes.prompt_modes='[io,cot]'   # compare modes
 ```
 
 Any setting can be overridden per invocation:
@@ -178,24 +198,101 @@ abench run configs/runs/pilot.yaml \
   -s prompts.bindings.generation=gen_cot_v1
 ```
 
-## Swapping prompt templates
+## Execution modes
 
-Templates are versioned YAML in `configs/prompts/` (see its README). To compare
-several against the same data in one run:
+What used to be "which prompt template is bound" is now four independent axes.
+Each combination a dataset admits becomes its own task, its own output
+directory and its own row, identified by `template_mode`.
+
+| axis | values | who decides |
+|---|---|---|
+| `prompt_mode` | `io`, `cot`, `self-consistency` | the run config |
+| `selection_mode` | `SCS`, `MCS`, `BOV` | the run config, within what the benchmark allows |
+| `hypothesis_mode` | `generation`, `selection` | the benchmark's task definition |
+| `data_delivery_mode` | `static`, `interactive`, `sequential` | the benchmark — not a choice |
 
 ```yaml
-prompts:
-  bindings:            {generation: gen_freeform_v1, selection: sel_mcq_letter_v1}
-  template_variants:
-    cot:               {generation: gen_cot_v1, selection: sel_mcq_cot_v1}
-  dataset_overrides:
-    proof_writer:      {generation: gen_structured_v1}
+modes:
+  prompt_modes:     [io, cot]          # crossed with:
+  selection_modes:  [SCS, BOV]         # ... for datasets whose task permits each
+  hypothesis_modes: [generation, selection]
+  self_consistency_n: 5
+  self_consistency_temperature: 0.7
 ```
 
-Each variant becomes its own task, its own output directory
-(`datasets/<ds>/<model>/<template@version>/`) and its own row in the result
-grid. Because a stored record's resume key includes the prompt fingerprint,
-results from two different templates can never be silently mixed.
+**`io` / `cot` / `self-consistency`.** `io` asks for the answer and nothing
+else; `cot` asks the model to work through the evidence first; `self-consistency`
+sends the `cot` prompt *k* times at a non-zero temperature and takes the
+plurality answer, reporting `self_consistency_agreement` alongside the score.
+These are offered **only for datasets whose metrics are objectively verifiable**
+— exact match, label accuracy, set or graph F1, symbolic equivalence. A dataset
+scored by text overlap against one reference answer declines them, with a
+reason in the run's skipped-modes list, because a reasoning mode's effect
+cannot be read off a similarity score.
+
+**`SCS` / `MCS` / `BOV`.** Single-choice asks for exactly one hypothesis;
+multi-choice asks for every one that applies; **binary option verification**
+presents the hypotheses *one at a time* and asks whether each is the best
+explanation, then rebuilds the selected set from the answers that were a direct
+yes. A dataset whose task definition requires several selections (AER, DeFAb)
+never offers `SCS`; one whose items have exactly one correct answer never offers
+`MCS`. BOV is graded by the dataset's own scorer on the reconstructed set, so a
+BOV score and an MCS score are comparable, and `bov_yes_rate` reports how choosy
+the model was.
+
+**`generation` / `selection`.** Where the dataset table says "Generation /
+Selection (separate tasks)", the two run as independent evaluations with
+independent scores. Where a benchmark ships the material for both but the table
+lists one, the extra mode still runs — and the run log records that it was
+introduced and quotes the benchmark's own formulation that justifies it
+(`RUN_REPORT.md`, "Additional hypothesis modes"). Where the table says
+"Generation **&** Selection", the ampersand is a pipeline, not two tasks, and it
+stays one.
+
+**Prompts belong to the dataset.** There is no universal system prompt: the core
+does not have one to impose. Each adapter owns its `system_prompt` and the
+wording of its task; `adapters/_prompting.py` supplies only the mode
+scaffolding, so two datasets in `cot` mode differ in what they ask, never in how
+the reasoning is elicited. Interactive benchmarks go further and use the prompts
+their own release publishes, read from the cloned repository — VivaBench's
+examiner prompt, EvoClinician's actor prompt, Cloud-OpsBench's RCA prompt.
+
+`configs/prompts/` now holds only the **judge** templates: an LLM judge is the
+harness prompting a model of its own, not a dataset being evaluated, so its
+wording stays swappable configuration.
+
+## Interactive and sequential benchmarks
+
+A benchmark marked `interactive` in the dataset table is executed as a loop, not
+squeezed into one prompt. The engine drives episodes turn by turn and batches
+**turn *t* of every still-live episode into one batch call**, so a multi-turn
+benchmark costs turns × episodes conversations but only a handful of requests.
+An episode ends when the adapter's environment says it is done, when the model
+commits to an answer, or at the adapter's `max_turns`. `turns_used` is recorded
+per sample, because two systems with the same accuracy are not equivalent if one
+needed four times as many investigations.
+
+| dataset | what the model does | where the environment comes from |
+|---|---|---|
+| VivaBench | asks for history, examination, investigations, imaging; commits to a diagnosis | the case's own structured findings; release's action vocabulary and limits |
+| DDXPlus | interviews the patient one symptom at a time | the patient record's evidence set, keyed by the release's own question text |
+| Med-Inquire | asks the patient, orders tests, submits a diagnosis | the case file's sections; `NOT AVAILABLE` for tests it does not record |
+| MedQDx | asks about symptoms, then names the condition | the case's symptom list |
+| Cloud-OpsBench | issues `kubectl`-style tool calls, then finalises a root cause | the release's recorded `tool_cache.json` — a real cluster, replayed |
+| PhysGym | sets the inputs, reads the output, states the law | the release's own `env_function`, executed |
+| CausaLab | intervenes on controllable variables, observes the rest | the released structural model, simulated under intervention |
+| BoxingGym | designs experiments, then predicts what the system will do | the release's own simulators, run; scored by its own `evaluate_predictions` |
+| SciLab | runs a laboratory whose law is hidden and *not* the textbook one | the release's vendored NewtonBench oracles, run |
+
+Requests are matched to findings **lexically**, not by a second model. Several
+of these benchmarks resolve a free-text request with an LLM mapper; doing that
+here would put a second model inside the evaluation of the first, so two runs of
+the same system could disagree because the examiner did. A deterministic matcher
+is reproducible and its misses are visible in the transcript. Each adapter says
+so in its own caveats.
+
+`options.delivery: static` runs an interactive benchmark in its single-turn form
+as an ablation — useful for asking what the interaction actually buys.
 
 ## Models and batching
 
@@ -234,21 +331,178 @@ on and how failures are handled.
 
 ```
 runs/<run-id>/
-├── reports/abductionbench_results.xlsx   Summary · Metrics · Tasks · Datasets · Skipped · Models · per-dataset samples
+├── reports/abductionbench_results.xlsx   Summary · Summary_Long · Metrics · Tasks · Datasets · Skipped · Models · Samples:<ds>
 ├── reports/summary.csv · metrics_long.csv
-├── RUN_REPORT.md                         headline table, failures, skipped datasets, reliability
-├── datasets/<dataset>/<model>/<template@version>/
+├── RUN_REPORT.md                         headline table, failures, skipped datasets and modes, reliability
+├── datasets/<dataset>/<model>/<mode-slug@version>/
 │   ├── records.jsonl                     one JSON object per sample, appended atomically
 │   ├── metrics.json · checkpoint.json · run_documentation.md · raw/
 └── run_config.resolved.yaml · engine.log · engine.jsonl · events.jsonl
 ```
 
-Reliability is reported next to every score: `coverage`,
-`parse_failure_rate`, `truncation_rate`, `empty_response_rate`,
-`output_budget_clamped_rate`, and `<primary>_strict` (the primary metric with
-unscored samples counted as zero), so a number produced under endpoint trouble,
-a squeezed token budget or a model that never answered cannot look like a clean
-result.
+The task directory is named for the **execution mode**, not a template:
+`io_SCS_selection_static@1.0` is io prompting, single-choice selection, the
+selection task, static delivery, adapter version 1.0.
+
+---
+
+# Field reference
+
+Every metric in a result, every column in a sample-level log, every column in an
+evaluation sheet. Each field is defined once; later sections point back rather
+than repeat.
+
+## 1. Identity columns
+
+These name *what was run*, and appear in the sample log and in every aggregate
+sheet.
+
+| column | meaning |
+|---|---|
+| `run_id` | the run this row belongs to (`<timestamp>_<run name>`) |
+| `dataset_id` | dataset key from `configs/datasets/` |
+| `model_id` | model key from `configs/models/` |
+| `prompt_mode` | `io`, `cot` or `self-consistency` — see [Execution modes](#execution-modes) |
+| `selection_mode` | `SCS`, `MCS`, `BOV`, or `n/a` for a task that is not a selection |
+| `data_delivery_mode` | `static`, `interactive` or `sequential`, from the benchmark |
+| `task_kind` | what the item asks for, in the adapter's own vocabulary (`generation`, `selection`, `knowledge_completion`, `multi_selection`, `direction_judgment`, ...); `mixed` on a task whose samples span kinds |
+| `template_mode` | **the run-version identity**, and nothing else: `prompt_mode\|selection_mode\|task_kind\|data_delivery_mode`, e.g. `cot\|BOV\|selection\|static`. Two rows with the same `template_mode` were produced the same way |
+
+## 2. Sample-level run log
+
+`records.jsonl` per task, and the `Samples:<dataset>` sheets. One row per
+request, plus one reduced row per item in modes that ask an item more than once.
+
+**Identity** — every column from [§1](#1-identity-columns), plus:
+
+| column | meaning |
+|---|---|
+| `sample_id` | stable id derived from the data, not from iteration order; the resume key |
+| `group_id` | the evaluation item a request belongs to. Set when one item is asked as several requests: `#bov0`, `#bov1`, ... for BOV, `#sc0`, `#sc1`, ... for self-consistency |
+| `reduced` | `True` on the single folded row that carries the item's score; the member rows are kept for inspection but are not counted twice |
+
+**Request and response**
+
+| column | meaning |
+|---|---|
+| `status` | `ok`, `empty` (server returned no content), `truncated` (stopped at the token budget), `error` (failed after retries), `skipped` (never sent — e.g. over the input-token budget) |
+| `parse_ok` | whether a prediction could be extracted at all. Distinguishes *wrong* from *unreadable* |
+| `input_tokens_est` | prompt tokens as counted by the configured tokenizer |
+| `max_tokens` | the output budget this request was given: `min(32000, context_window - input_tokens_est)`, rounded down onto the batching grid |
+| `finish_reason` | the server's own reason for stopping (`stop`, `length`, ...) |
+| `prediction` | what the scorer parsed out of the response |
+| `reference` | the gold payload the adapter scored against |
+| `response` | the model's output, **complete** up to 32,000 characters (Excel's per-cell ceiling); a value that reaches it is marked `...[truncated at cell limit]` |
+| `reasoning` | separate reasoning content, where the server returns it |
+| `error` | error text for a failed request |
+| `batch_id`, `batch_size` | which batch call carried this request, and how many conversations it held |
+| `latency_s` | wall-clock for the batch call this request was part of |
+| `metric.<name>` | one column per per-sample metric — see [§4](#4-metrics) |
+
+**Interactive rows** additionally carry `metadata.turns_used` (model turns the
+episode took) and `response.usage.turns`; the full transcript is in the record's
+metadata.
+
+## 3. Evaluation sheets
+
+All share the identity columns of [§1](#1-identity-columns).
+
+**`Summary`** — the headline matrix: datasets down, `model (mode)` across, each
+cell the dataset's primary metric.
+
+**`Summary_Long` / `summary.csv`** — one row per task:
+
+| column | meaning |
+|---|---|
+| `primary_metric` | which metric heads this dataset (the adapter decides) |
+| `value` | that metric's value |
+| `value_strict` | the same metric with unscored samples counted as zero |
+| `coverage`, `n_scored`, `n_planned` | see [§4](#4-reliability-metrics) |
+| `failure` | why the task produced nothing, when it did |
+
+**`Metrics` / `metrics_long.csv`** — one row per (task, metric): `metric`,
+`value`, `is_primary`, plus the counts.
+
+**`Tasks`** — one row per task, for reading a run's health:
+`n_error`, `n_skipped`, `n_reused` (records reused from a checkpoint),
+`batch_mode`, `group_size`, `batches_submitted`, `batches_failed`, `bisections`
+(batches split to isolate a bad conversation), `prompt_tokens_total`,
+`completion_tokens_total`, `duration_s`, `endpoint`, `output_dir`.
+
+**`Datasets`** — each adapter's self-documentation: source, split used,
+abductive subset, sampling procedure, decisions, caveats, statistics.
+
+**`Skipped`** — datasets not evaluated, with the reason; and mode combinations a
+dataset declined, with the reason.
+
+**`Models`** — endpoint, batch route, verification result per model.
+
+## 4. Metrics
+
+### Reliability metrics (every dataset)
+
+Reported next to every score, so a number produced under endpoint trouble or a
+squeezed budget cannot look like a clean result.
+
+| metric | meaning |
+|---|---|
+| `coverage` | scored samples ÷ planned samples |
+| `n_planned`, `n_scored`, `n_error`, `n_skipped` | request counts behind the score |
+| `parse_failure_rate` | fraction whose response yielded no prediction |
+| `truncation_rate` | fraction that stopped at the token budget. **Not retried** — a truncated answer is a result, and the budget is already the whole remaining context window |
+| `empty_response_rate` | fraction that returned no content at all |
+| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the 32,000-token ceiling — i.e. where the prompt crowded out the answer |
+| `batch_latency_s_mean`, `completion_tokens_mean` | cost and length, per sample |
+| `<primary>_strict` | the primary metric with unscored samples counted as zero |
+
+### Mode metrics
+
+| metric | meaning |
+|---|---|
+| `self_consistency_agreement` | fraction of the *k* votes that agreed with the winning answer. 1.0 is unanimous; 1/k means every sample differed |
+| `bov_yes_rate` | fraction of hypotheses a BOV run said yes to. A model that says yes to everything scores well on recall alone, so this sits next to the score rather than inside it |
+| `turns_used` | model turns an interactive episode took |
+| `repeats` | how many times each question was asked (`options.repeats`) |
+
+### Answer-shape metrics
+
+The general shapes almost every dataset reduces to. A dataset's own metric names
+are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
+`hypothesis_rouge_l`, `flip_token_f1`, ...), and mean the same thing about that
+dataset's answer.
+
+| metric | meaning |
+|---|---|
+| `accuracy` | fraction of selection items where the chosen label was the gold label |
+| `exact_match` | normalized string equality with the gold answer |
+| `match` | equality *or* containment of an accepted gold form — the lenient view |
+| `token_f1` | bag-of-tokens F1 against the gold answer |
+| `rouge_l` | longest-common-subsequence F-measure against the gold answer |
+| `set_f1`, `set_precision`, `set_recall` | for answers that are a *set* (multi-selection, causal edge sets) |
+| `exact_set_match` | the whole set exactly right |
+| `symbolic_match` | SymPy proves the answer equivalent to the reference expression; `symbolic_match_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest |
+| `<metric>_judged` | the same judgement made by an LLM judge, only when `engine.judge.enabled` |
+
+### Dataset-specific metrics
+
+Where a single accuracy number would mislead, the adapter reports what the task
+actually measures. Each is defined in that dataset's entry in
+[`docs/datasets.md`](docs/datasets.md), which is generated from the adapters
+themselves; the ones worth knowing about here:
+
+| dataset | metric | why |
+|---|---|---|
+| `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; covering the space is the point |
+| `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
+| `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
+| `true_detective` | `human_agreement_spearman`, `human_solve_rate` | do models find the same puzzles hard that people do |
+| `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
+| `commonwhy` | `popularity_gap` | head vs long-tail entities |
+| `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
+| `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
+| `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
+| `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
+| `open_problems_2024` | `direction_accuracy`, `brier_score`, `leakage_rate`, `direction_answer_stability` | a calibrated verdict, and whether the model had simply read the answer |
 
 ## Adding a dataset
 
@@ -279,8 +533,19 @@ python tools/dataset_catalogue.py                               # regenerate doc
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
 decisions cannot drift from the code. Current state: **49 datasets configured,
-40 evaluable, 9 reported as skipped with a reason** — the 48 from the original
-table, plus `open_problems_2024`, built here (see below).
+42 evaluable, 6 declared unavailable with a reason, 1 (`researchbench`) waiting
+on a Hugging Face gate** — the 48 from the original table plus
+`open_problems_2024`, built here.
+
+Nine of the interactive benchmarks run their real environment; see
+[Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
+Interactivity is no longer a reason to skip anything. What is still skipped is
+skipped for reasons that have nothing to do with it: **CausalGame**'s
+environment is not distributed (its harness plays against the authors' server),
+**NIKA** records no telemetry to replay and needs privileged networking to
+generate any, **BioVerge** ships its items only inside an 11.9 GB corpus
+archive, and **DiReCT**, **DiscoveryBench** and **RLF-KG** are blocked on
+credentialed access, withheld gold, and an unreachable download respectively.
 
 Policies applied uniformly, and recorded per dataset:
 
@@ -293,15 +558,16 @@ Policies applied uniformly, and recorded per dataset:
 * **Answer leakage**: fields that contain the answer (worked solutions,
   reasoning traces, inspirations, model-generated columns) are withheld from
   prompts and listed in each adapter's decisions.
-* **Per-sample `max_tokens`** from that item's complexity — proof depth, node
-  count, reasoning-step count, or output shape — never one flat value.
+* **Output budget** is not guessed per item: every request gets
+  `min(32000, context_window - input_tokens_est)`, so a truncated answer means
+  the model used the whole window rather than an estimate that was too small.
 * **300 samples** per dataset by a seeded shuffle; oversize prompts are replaced
   from the same shuffle rather than dropped, and shortfalls (e.g. HypoGen's 50
   test items) are reported.
-* **Skipped, never guessed**: a dataset whose data is unobtainable, whose gold is
-  withheld, or that only exists as an interactive environment is declared with
-  `UnavailableAdapter` and appears in every run's `Skipped` sheet with its
-  reason.
+* **Skipped, never guessed**: a dataset whose data is unobtainable or whose gold
+  is withheld is declared with `UnavailableAdapter` and appears in every run's
+  `Skipped` sheet with its reason. "Interactive" is no longer a reason to skip:
+  a benchmark whose environment ships with it is executed.
 
 Three datasets required constructing items from released material rather than
 using a shipped item file; both say so explicitly and are excluded from
@@ -309,6 +575,27 @@ comparison with published numbers: **ProofWriter** (the official abduction files
 are no longer downloadable, so abduction items are rebuilt from the released
 proofs) and **SynPAT** (items assembled from the release's own replacement files
 plus true-system data). **HypoSpace** runs the release's own seeded generator.
+
+### ResearchBench: one manual step
+
+`researchbench` is fully implemented — both of its tasks, generation from
+`generation/generation.jsonl` and selection from `ranking/ranking.jsonl` — but
+its Hugging Face repository is **gated**. `gated: auto` means access is granted
+the moment an account accepts the dataset's terms, and a token alone is not
+enough: repository *metadata* reads for anyone, while every file returns HTTP
+403 until the account behind the token has accepted.
+
+```bash
+# 1. sign in as the account whose token you will use, open
+#    https://huggingface.co/datasets/ankilok/ResearchBench
+#    and accept the terms (name, affiliation, intended use, two checkboxes)
+# 2. then simply:
+export HF_TOKEN=hf_...
+abench run configs/runs/full.yaml -d researchbench
+```
+
+Until then the adapter reports itself skipped with that URL and the account name
+in the reason, rather than failing obscurely. Nothing else needs changing.
 
 ### `open_problems_2024` — the one dataset built here
 
@@ -373,19 +660,8 @@ abench run configs/runs/pilot_smoke.yaml -d open_problems_2024 \
 
 ### Metrics beyond accuracy
 
-Where a dataset's task makes a single accuracy number misleading, the adapter
-reports what the task actually measures:
+Where a dataset's task makes a single accuracy number misleading, its adapter
+reports what the task actually measures. Those metrics are defined in
+[Field reference §4](#4-metrics) and, per dataset, in
+[`docs/datasets.md`](docs/datasets.md).
 
-| dataset | metric | why |
-|---|---|---|
-| `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; coverage of the hypothesis space is the point |
-| `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
-| `physgym`, `synpat` | `symbolic_match` (SymPy) | physical laws have many algebraically equal forms |
-| `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
-| `aer`, `defab` | `set_f1`, `exact_set_match` | the gold answer is a set |
-| `true_detective` | `human_agreement_spearman` | do models find the same puzzles hard that people do |
-| `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
-| `commonwhy` | `popularity_gap` | head vs long-tail entities |
-| `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
-| `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
-| `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |

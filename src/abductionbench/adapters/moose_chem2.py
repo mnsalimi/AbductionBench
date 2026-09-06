@@ -34,6 +34,19 @@ class MooseChem2Adapter(PooledDatasetAdapter):
     """Propose the paper's hypothesis from its background and question."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the background and "
+        "research question of a chemistry paper. Propose the hypothesis it went on to "
+        "confirm: a specific mechanism or relationship, stated so that an experiment could "
+        "test it."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
+    hypothesis_modes = ("generation",)
+    table_hypothesis_mode = "Generation & Selection (separate tasks)"
     primary_metric = "hypothesis_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

@@ -64,6 +64,8 @@ class SyncStats:
     total_seconds: float = 0.0
     bytes_transferred: int = 0
     files_transferred: int = 0
+    #: Files the remote was missing after a pass and that were re-sent.
+    repaired: int = 0
     extra: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -305,6 +307,8 @@ class ArtifactSync:
         if final:
             logger.info("artifact sync: final upload of %s", self.run_dir)
             self._tick(reason="final")
+            if self.config.verify_after_final:
+                self.verify_and_repair()
         return self.stats
 
     def flush(self) -> SyncStats:
@@ -332,7 +336,12 @@ class ArtifactSync:
                 self._command(source),
                 capture_output=True,
                 text=True,
-                timeout=self.config.timeout_s + 60,
+                # No wall-clock kill by default. rclone creates a destination
+                # directory before it uploads into it, so a pass killed part-way
+                # leaves an empty remote directory that later passes, seeing the
+                # directory already there, never fill in. rclone's own
+                # --timeout still bounds an individual stalled transfer.
+                timeout=self.config.pass_timeout_s or None,
                 check=False,
             )
             elapsed = time.monotonic() - started
@@ -368,6 +377,124 @@ class ArtifactSync:
             self._emit("sync_failed", reason=reason, error=str(exc)[:300])
         finally:
             self._lock.release()
+
+    # ------------------------------------------------------------------ #
+    # verification
+    # ------------------------------------------------------------------ #
+
+    def verify_and_repair(self) -> list[str]:
+        """Re-upload anything the remote is missing.  Returns what is still absent.
+
+        A pass can fail per file and still exit non-zero only once, and Drive
+        answers a burst of small uploads with HTTP 403 rate-limit errors that
+        rclone reports at the end.  Either way the visible symptom is the same:
+        a run whose report uploaded fine sitting next to
+        ``datasets/<dataset>/<model>/<template>/`` directories that are empty,
+        because the directory is created before the files land in it.
+
+        So the end of a run does not trust the exit code.  It asks the remote
+        what it actually has, re-sends what is missing, and asks again --
+        because the second attempt is usually enough, and because a backup that
+        cannot say what it holds is not a backup.
+        """
+        if not self.config.enabled or self._degraded:
+            return []
+        missing: list[str] = []
+        for attempt in range(1, self.config.verify_attempts + 1):
+            missing = self._missing_files()
+            if not missing:
+                if attempt > 1:
+                    logger.info("artifact sync: remote complete after %d repair pass(es)", attempt - 1)
+                self._emit("sync_verified", destination=self.destination, missing=0)
+                return []
+            logger.warning(
+                "artifact sync: %d file(s) missing on %s after upload (%s%s); re-sending",
+                len(missing),
+                self.destination,
+                ", ".join(missing[:3]),
+                ", ..." if len(missing) > 3 else "",
+            )
+            self.stats.repaired += len(missing)
+            self._repair(missing)
+        remaining = self._missing_files()
+        if remaining:
+            self.stats.last_error = f"{len(remaining)} file(s) never uploaded"
+            logger.error(
+                "artifact sync: %d file(s) are still missing from %s after %d repair attempt(s). "
+                "They are on local disk; re-run tools/sync_run.sh to finish the upload. "
+                "First few: %s",
+                len(remaining),
+                self.destination,
+                self.config.verify_attempts,
+                ", ".join(remaining[:5]),
+            )
+            self._emit("sync_incomplete", destination=self.destination,
+                       missing=len(remaining), examples=remaining[:5])
+        return remaining
+
+    def _missing_files(self) -> list[str]:
+        """Paths present locally but not on the remote, via ``rclone check``."""
+        source = self.stage_dir if self.stage_dir.exists() else self.run_dir
+        command = [
+            self.config.rclone_binary,
+            "check",
+            str(source),
+            self.destination,
+            # One-way: extra files on the remote (an older run's leftovers) are
+            # not our problem; files we hold and the remote does not are.
+            "--one-way",
+            "--missing-on-dst",
+            "-",
+            "--fast-list",
+            "--stats=0",
+        ]
+        if self.config.tps_limit:
+            command.extend(["--tpslimit", str(self.config.tps_limit)])
+        for pattern in self.config.exclude:
+            command.extend(["--exclude", pattern])
+        try:
+            completed = subprocess.run(  # noqa: S603 - binary and args come from config
+                command, capture_output=True, text=True, timeout=self.config.timeout_s * 4,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("artifact sync: cannot verify the remote: %s", exc)
+            return []
+        # rclone writes the missing paths to the file named by --missing-on-dst,
+        # which is stdout here; its own progress goes to stderr.
+        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+    def _repair(self, missing: list[str]) -> None:
+        """Re-upload exactly the named files."""
+        source = self.stage_dir if self.stage_dir.exists() else self.run_dir
+        listing = source.parent / f".{self.run_id}.missing"
+        try:
+            listing.write_text("\n".join(missing), encoding="utf-8")
+            command = [
+                self.config.rclone_binary,
+                "copy",
+                str(source),
+                self.destination,
+                f"--files-from={listing}",
+                f"--transfers={self.config.transfers}",
+                f"--timeout={self.config.timeout_s}s",
+                # More patience than a normal pass: this is the last chance, and
+                # what is being retried is what already failed once.
+                "--retries=5",
+                "--low-level-retries=20",
+                "--stats=0",
+            ]
+            if self.config.tps_limit:
+                command.extend(["--tpslimit", str(self.config.tps_limit)])
+                command.extend(["--drive-pacer-min-sleep", "100ms"])
+            subprocess.run(  # noqa: S603 - binary and args come from config
+                command, capture_output=True, text=True,
+                timeout=self.config.pass_timeout_s or None, check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("artifact sync: repair pass failed: %s", exc)
+        finally:
+            listing.unlink(missing_ok=True)
 
     def _emit(self, event: str, **fields: object) -> None:
         if self._on_event is None:

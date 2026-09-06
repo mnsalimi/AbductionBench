@@ -78,12 +78,19 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                 metrics_blob = _read_json(template_dir / "metrics.json")
                 checkpoint_blob = _read_json(template_dir / "checkpoint.json")
                 template_id, _, template_version = template_dir.name.partition("@")
+                # Modes are recovered from the records rather than re-derived,
+                # so a rebuild reproduces the identity the run actually used.
+                first = records[0]
                 identity = TaskIdentity(
                     run_id=result.run_id,
                     dataset_id=dataset_id,
                     model_id=model_dir.name,
                     template_id=template_id,
                     template_version=template_version or "1.0",
+                    prompt_mode=str(first.get("prompt_mode", "io")),
+                    selection_mode=str(first.get("selection_mode", "n/a")),
+                    task_kind=str(first.get("task_kind", "generation")),
+                    data_delivery_mode=str(first.get("data_delivery_mode", "static")),
                 )
 
                 # Recompute aggregates from stored per-sample metrics so a

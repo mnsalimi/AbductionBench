@@ -37,6 +37,16 @@ class HypoBenchAdapter(PooledDatasetAdapter):
     """State the hypothesis that explains a labelled sample of examples."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a labelled sample "
+        "of examples. State the hypothesis that explains the labelling: the rule that "
+        "separates the classes and would generalise to unseen examples of the same kind."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "best_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

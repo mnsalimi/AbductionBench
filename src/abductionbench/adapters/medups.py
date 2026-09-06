@@ -37,6 +37,28 @@ class MedUPSAdapter(PooledDatasetAdapter):
     """Diagnose an uncommon published case; free text (default) or 6-way choice."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given an uncommon "
+        "published case, delivered as a sequence of clinical steps in the order the "
+        "clinicians received them. State the diagnosis that explains the case given "
+        "everything disclosed so far."
+    )
+    data_delivery_mode = "sequential"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'generation'},
+        "selection": {'subtask': 'selection'},
+    }
+    table_hypothesis_mode = "Generation"
+    hypothesis_mode_justification = (
+        "MedUPS ships a six-option multiple-choice item per case alongside the free-text "
+        "diagnosis, so selection among the released candidates is a task the benchmark "
+        "defines rather than one imposed here."
+    )
     primary_metric = "diagnosis_match"
 
     @property

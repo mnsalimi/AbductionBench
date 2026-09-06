@@ -51,7 +51,8 @@ from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
 from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
 from .judge import JudgeStage
 from .metrics import mean
-from .prompts import PromptRegistry, PromptRenderer, PromptTemplate, TemplateBinding
+from .modes import SELF_CONSISTENCY, TaskModes
+from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
 from .sync import ArtifactSync
@@ -66,6 +67,7 @@ from .types import (
     ResponseStatus,
     SampleScore,
     SampleSpec,
+    SamplingParams,
     TaskIdentity,
 )
 
@@ -85,10 +87,15 @@ class DatasetBundle:
 
     config: DatasetConfig
     adapter: DatasetAdapter | None
+    modes: TaskModes = field(default_factory=TaskModes)
     samples: list[SampleSpec] = field(default_factory=list)
     documentation: AdapterDocumentation | None = None
     skipped_reason: str | None = None
     prepare_seconds: float = 0.0
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.config.id, self.modes.slug)
 
     @property
     def skipped(self) -> bool:
@@ -101,6 +108,7 @@ class PromptSet:
 
     dataset_id: str
     variant: str
+    modes: TaskModes
     template: PromptTemplate
     entries: list[tuple[SampleSpec, list[ChatMessage], int]] = field(default_factory=list)
     output_contract: dict[str, Any] = field(default_factory=dict)
@@ -142,6 +150,11 @@ class RunResult:
     config: RunConfig
     tasks: list[TaskResult] = field(default_factory=list)
     skipped_datasets: list[dict[str, str]] = field(default_factory=list)
+    #: (dataset, mode, reason) for every requested mode a dataset does not admit.
+    skipped_modes: list[dict[str, str]] = field(default_factory=list)
+    #: Additional generation/selection tasks introduced beyond the dataset
+    #: table, each with the benchmark formulation that justifies it.
+    introduced_modes: list[dict[str, str]] = field(default_factory=list)
     endpoint_reports: list[dict[str, Any]] = field(default_factory=list)
     sync_stats: dict[str, Any] = field(default_factory=dict)
     started_at: float = 0.0
@@ -202,6 +215,11 @@ class EvaluationEngine:
         self._model_sems: dict[str, asyncio.Semaphore] = {}
         self._scoring_sem = asyncio.Semaphore(self.engine_cfg.concurrency.scoring_workers)
         self._batch_disabled: set[str] = set()
+        #: Mode combinations a dataset declined, reported rather than dropped.
+        self._skipped_modes: list[dict[str, str]] = []
+        #: Hypothesis modes run beyond what the dataset table lists, with the
+        #: benchmark formulation that justifies each (specification item 15).
+        self._introduced_modes: list[dict[str, str]] = []
 
     @staticmethod
     def _default_run_id(name: str) -> str:
@@ -262,26 +280,26 @@ class EvaluationEngine:
             for bundle in bundles:
                 if bundle.skipped or bundle.adapter is None:
                     continue
-                for binding in self.renderer.bindings_for_dataset(
-                    bundle.config.id, bundle.config.prompt_bindings
-                ):
-                    try:
-                        prompt_set = self._build_prompt_set(bundle, binding)
-                    except (TemplateError, AdapterError) as exc:
-                        logger.error(
-                            "dataset %s variant %s: prompt rendering failed: %s",
-                            bundle.config.id,
-                            binding.variant,
-                            exc,
-                        )
-                        result.skipped_datasets.append(
-                            {
-                                "dataset_id": bundle.config.id,
-                                "reason": f"prompt rendering failed ({binding.variant}): {exc}",
-                            }
-                        )
-                        continue
-                    prompt_sets[(bundle.config.id, binding.variant)] = prompt_set
+                try:
+                    prompt_set = self._build_prompt_set(bundle)
+                except (TemplateError, AdapterError) as exc:
+                    logger.error(
+                        "dataset %s [%s]: prompt rendering failed: %s",
+                        bundle.config.id,
+                        bundle.modes.slug,
+                        exc,
+                    )
+                    result.skipped_datasets.append(
+                        {
+                            "dataset_id": bundle.config.id,
+                            "reason": f"prompt rendering failed ({bundle.modes.slug}): {exc}",
+                        }
+                    )
+                    continue
+                prompt_sets[bundle.key] = prompt_set
+
+            result.skipped_modes = list(self._skipped_modes)
+            result.introduced_modes = list(self._introduced_modes)
 
             # --- Stage C: tasks ------------------------------------------- #
             tasks = self._plan_tasks(bundles, prompt_sets)
@@ -421,86 +439,217 @@ class EvaluationEngine:
     # Stage A
     # ------------------------------------------------------------------ #
 
+    def _modes_for(self, dataset_cfg: DatasetConfig) -> list[TaskModes]:
+        """Every mode combination this dataset will be evaluated in.
+
+        The prompt modes come from the run config; the selection modes come from
+        the run config *intersected with what the dataset's task definition
+        admits*, so a benchmark whose items have several correct hypotheses is
+        never asked to pick one.  A dataset that is not a selection task gets a
+        single mode with no selection axis.  Delivery is read from the adapter:
+        it is a property of the benchmark, not a choice.
+
+        Combinations the adapter rejects are logged once, with the reason, and
+        recorded on the run so the report can say which modes were not run.
+        """
+        cfg = self.config.modes
+        try:
+            adapter_cls = resolve_adapter(dataset_cfg.impl)
+        except Exception:  # noqa: BLE001 - a bad impl is reported when it is instantiated
+            return [TaskModes()]
+
+        requested_selection: list[str | None]
+        offered = adapter_cls.selection_modes_offered()
+        if not offered:
+            requested_selection = [None]
+        elif cfg.selection_modes:
+            requested_selection = [m for m in cfg.selection_modes] or [None]
+        else:
+            # No explicit request: run the mode the benchmark itself defines.
+            requested_selection = [offered[0]]
+
+        # "Generation / Selection (separate tasks)" in the dataset table means two
+        # independent evaluations, so they are crossed here rather than mixed
+        # inside one task.
+        hypothesis_modes: list[str | None] = list(adapter_cls.hypothesis_modes) or [None]
+        if cfg.hypothesis_modes:
+            wanted = [m for m in hypothesis_modes if m in cfg.hypothesis_modes]
+            hypothesis_modes = wanted or hypothesis_modes[:1]
+        if len(hypothesis_modes) == 1 and not adapter_cls.hypothesis_mode_options:
+            # Only one task and no option to switch: leave the axis unset so the
+            # slug and the columns stay uncluttered for single-task datasets.
+            hypothesis_modes = [None]
+
+        out: list[TaskModes] = []
+        for prompt_mode in cfg.prompt_modes:
+            for hypothesis_mode in hypothesis_modes:
+                for selection_mode in requested_selection:
+                    if hypothesis_mode == "generation" and selection_mode is not None:
+                        # Generating a hypothesis has no candidate list to pick from.
+                        selection_mode = None
+                    modes = TaskModes(
+                        prompt_mode=prompt_mode,
+                        selection_mode=selection_mode,
+                        hypothesis_mode=hypothesis_mode,
+                        # A dataset config may run an interactive benchmark in
+                        # its static form as an ablation ("how much does the
+                        # interaction actually buy?"); the benchmark's own mode
+                        # is the default.
+                        data_delivery_mode=str(
+                            dataset_cfg.options.get("delivery")
+                            or adapter_cls.data_delivery_mode
+                        ),
+                        self_consistency_n=cfg.self_consistency_n,
+                        self_consistency_temperature=cfg.self_consistency_temperature,
+                    )
+                    if any(m.slug == modes.slug for m in out):
+                        continue
+                    introduced = (
+                        adapter_cls.introduced_hypothesis_mode(hypothesis_mode)
+                        if hypothesis_mode else None
+                    )
+                    if introduced:
+                        logger.info(
+                            "dataset %s: running an additional hypothesis mode (%s) that the "
+                            "dataset table does not list. Justification from the benchmark: %s",
+                            dataset_cfg.id, hypothesis_mode, introduced,
+                        )
+                        self._introduced_modes.append(
+                            {
+                                "dataset_id": dataset_cfg.id,
+                                "mode": modes.slug,
+                                "hypothesis_mode": hypothesis_mode,
+                                "table_says": adapter_cls.table_hypothesis_mode,
+                                "justification": introduced,
+                            }
+                        )
+                    problem = adapter_cls.supports_modes(modes)
+                    if problem:
+                        logger.info("dataset %s: mode %s not run -- %s",
+                                    dataset_cfg.id, modes.slug, problem)
+                        self._skipped_modes.append(
+                            {"dataset_id": dataset_cfg.id, "mode": modes.slug, "reason": problem}
+                        )
+                        continue
+                    out.append(modes)
+        if not out:
+            # Everything requested was inadmissible; fall back to the plain mode
+            # so the dataset is still evaluated rather than silently dropped.
+            out.append(TaskModes(data_delivery_mode=adapter_cls.data_delivery_mode))
+        return out
+
     def _build_bundles(self) -> list[DatasetBundle]:
         bundles: list[DatasetBundle] = []
         for dataset_cfg in self.config.enabled_datasets():
-            started = time.time()
-            bundle = DatasetBundle(config=dataset_cfg, adapter=None)
-            try:
-                adapter = self._instantiate_adapter(dataset_cfg)
-                adapter.prepare()
-                samples = list(adapter.build_samples())
-                if not samples:
-                    raise SkippedDataset("adapter produced no samples")
-                if len(samples) > dataset_cfg.sample_size:
-                    logger.warning(
-                        "dataset %s: adapter returned %d samples for a requested size of %d; "
-                        "truncating to the requested size",
-                        dataset_cfg.id,
-                        len(samples),
-                        dataset_cfg.sample_size,
-                    )
-                    samples = samples[: dataset_cfg.sample_size]
-                seen: set[str] = set()
-                unique: list[SampleSpec] = []
-                for sample in samples:
-                    if sample.sample_id in seen:
-                        logger.warning(
-                            "dataset %s: duplicate sample_id %r dropped",
-                            dataset_cfg.id,
-                            sample.sample_id,
-                        )
-                        continue
-                    seen.add(sample.sample_id)
-                    unique.append(sample)
-                bundle.adapter = adapter
-                bundle.samples = unique
-                bundle.documentation = adapter.documentation()
-                bundle.documentation.statistics.setdefault("n_samples_built", len(unique))
-                bundle.documentation.statistics.setdefault(
-                    "requested_sample_size", dataset_cfg.sample_size
-                )
-                if len(unique) < dataset_cfg.sample_size:
-                    bundle.documentation.caveats.append(
-                        f"Only {len(unique)} samples were available in the chosen split "
-                        f"(requested {dataset_cfg.sample_size})."
-                    )
-                logger.info(
-                    "dataset %s: prepared %d sample(s) in %.1fs",
-                    dataset_cfg.id,
-                    len(unique),
-                    time.time() - started,
-                )
-                self.events.emit(
-                    "dataset_prepared",
-                    dataset_id=dataset_cfg.id,
-                    n_samples=len(unique),
-                    seconds=round(time.time() - started, 2),
-                )
-            except SkippedDataset as exc:
-                bundle.skipped_reason = exc.reason
-                logger.warning("dataset %s skipped: %s", dataset_cfg.id, exc.reason)
-                self.events.emit("dataset_skipped", dataset_id=dataset_cfg.id, reason=exc.reason)
-            except Exception as exc:  # noqa: BLE001 - one bad dataset must not stop the run
-                bundle.skipped_reason = f"{type(exc).__name__}: {exc}"
-                logger.exception("dataset %s failed during preparation", dataset_cfg.id)
-                self.events.emit(
-                    "dataset_skipped", dataset_id=dataset_cfg.id, reason=bundle.skipped_reason
-                )
-            bundle.prepare_seconds = time.time() - started
-            bundles.append(bundle)
+            for modes in self._modes_for(dataset_cfg):
+                bundles.append(self._prepare_bundle(dataset_cfg, modes))
         return bundles
 
-    def _instantiate_adapter(self, dataset_cfg: DatasetConfig) -> DatasetAdapter:
+    def _prepare_bundle(self, dataset_cfg: DatasetConfig, modes: TaskModes) -> DatasetBundle:
+        """Prepare, sample and document one dataset in one mode combination."""
+        started = time.time()
+        bundle = DatasetBundle(config=dataset_cfg, adapter=None, modes=modes)
+        try:
+            adapter = self._instantiate_adapter(dataset_cfg, modes)
+            adapter.prepare()
+            samples = list(adapter.build_samples())
+            if not samples:
+                raise SkippedDataset("adapter produced no samples")
+            # One evaluation item can need several requests: BOV asks about each
+            # hypothesis separately, self-consistency asks k times. Expanding
+            # here rather than inside a base class means every adapter gets the
+            # modes, including one that builds its samples its own way.
+            samples = adapter.expand_for_modes(samples)
+            # A mode may derive several requests per item (BOV asks one
+            # question per hypothesis, self-consistency asks k times), so
+            # the size guard counts items, not requests.
+            items = len({s.group_id or s.sample_id for s in samples})
+            if items > dataset_cfg.sample_size:
+                logger.warning(
+                    "dataset %s: adapter returned %d samples for a requested size of %d; "
+                    "truncating to the requested size",
+                    dataset_cfg.id,
+                    items,
+                    dataset_cfg.sample_size,
+                )
+                keep = list(dict.fromkeys(
+                    s.group_id or s.sample_id for s in samples
+                ))[: dataset_cfg.sample_size]
+                allowed = set(keep)
+                samples = [s for s in samples if (s.group_id or s.sample_id) in allowed]
+            seen: set[str] = set()
+            unique: list[SampleSpec] = []
+            for sample in samples:
+                if sample.sample_id in seen:
+                    logger.warning(
+                        "dataset %s: duplicate sample_id %r dropped",
+                        dataset_cfg.id,
+                        sample.sample_id,
+                    )
+                    continue
+                seen.add(sample.sample_id)
+                unique.append(sample)
+            bundle.adapter = adapter
+            bundle.samples = unique
+            bundle.documentation = adapter.documentation()
+            bundle.documentation.statistics.setdefault("n_samples_built", len(unique))
+            bundle.documentation.statistics.setdefault(
+                "requested_sample_size", dataset_cfg.sample_size
+            )
+            if len(unique) < dataset_cfg.sample_size:
+                bundle.documentation.caveats.append(
+                    f"Only {len(unique)} samples were available in the chosen split "
+                    f"(requested {dataset_cfg.sample_size})."
+                )
+            logger.info(
+                "dataset %s: prepared %d sample(s) in %.1fs",
+                dataset_cfg.id,
+                len(unique),
+                time.time() - started,
+            )
+            self.events.emit(
+                "dataset_prepared",
+                dataset_id=dataset_cfg.id,
+                n_samples=len(unique),
+                seconds=round(time.time() - started, 2),
+            )
+        except SkippedDataset as exc:
+            bundle.skipped_reason = exc.reason
+            logger.warning("dataset %s skipped: %s", dataset_cfg.id, exc.reason)
+            self.events.emit("dataset_skipped", dataset_id=dataset_cfg.id, reason=exc.reason)
+        except Exception as exc:  # noqa: BLE001 - one bad dataset must not stop the run
+            bundle.skipped_reason = f"{type(exc).__name__}: {exc}"
+            logger.exception("dataset %s failed during preparation", dataset_cfg.id)
+            self.events.emit(
+                "dataset_skipped", dataset_id=dataset_cfg.id, reason=bundle.skipped_reason
+            )
+        bundle.prepare_seconds = time.time() - started
+        return bundle
+
+    def _instantiate_adapter(
+        self, dataset_cfg: DatasetConfig, modes: TaskModes
+    ) -> DatasetAdapter:
         adapter_cls = resolve_adapter(dataset_cfg.impl)
         data_dir = Path(self.engine_cfg.data_root) / dataset_cfg.id
         data_dir.mkdir(parents=True, exist_ok=True)
         context = AdapterContext(
             dataset_id=dataset_cfg.id,
             data_dir=data_dir,
+            modes=modes,
             sample_size=dataset_cfg.sample_size,
             seed=dataset_cfg.seed if dataset_cfg.seed is not None else self.config.seed,
-            options=dict(dataset_cfg.options),
+            options={
+                **dict(dataset_cfg.options),
+                # The adapter's own mapping from hypothesis mode to whatever
+                # option its dataset uses to switch task.
+                **(
+                    resolve_adapter(dataset_cfg.impl).hypothesis_mode_options.get(
+                        modes.hypothesis_mode or "", {}
+                    )
+                    if modes.hypothesis_mode
+                    else {}
+                ),
+            },
             input_token_budget=dataset_cfg.input_token_budget
             or self.engine_cfg.limits.input_token_budget,
             offline=self.offline,
@@ -513,10 +662,14 @@ class EvaluationEngine:
     # Stage B
     # ------------------------------------------------------------------ #
 
-    def _build_prompt_set(self, bundle: DatasetBundle, binding: TemplateBinding) -> PromptSet:
-        """Render a dataset's samples and enforce the input-token budget.
+    def _build_prompt_set(self, bundle: DatasetBundle) -> PromptSet:
+        """Ask the adapter to render its samples, and enforce the input-token budget.
 
-        Oversize samples are replaced with fresh draws from the same split
+        The engine no longer owns prompt wording: it calls the adapter's
+        ``build_messages`` for every sample and takes back both the conversation
+        and the contract its scorer will parse.  What is still the engine's job
+        is what it can do generically -- counting input tokens and replacing
+        oversize samples with fresh draws from the same split
         (``engine.limits.on_oversize == "resample"``) so the evaluation set keeps
         its configured size instead of silently shrinking.
         """
@@ -526,20 +679,22 @@ class EvaluationEngine:
         budget = dataset_cfg.input_token_budget or self.engine_cfg.limits.input_token_budget
         policy = self.engine_cfg.limits.on_oversize
         target = len(bundle.samples)
+        modes = bundle.modes
 
-        template_ids = {sample.task_kind: binding.template_for(sample.task_kind)
-                        for sample in bundle.samples}
-        distinct = set(template_ids.values())
-        primary_template_id = (
-            next(iter(distinct))
-            if len(distinct) == 1
-            else binding.template_for(bundle.samples[0].task_kind)
-        )
         prompt_set = PromptSet(
             dataset_id=dataset_cfg.id,
-            variant=binding.variant,
-            template=self.registry.get(primary_template_id),
-            output_contract=dict(self.registry.get(primary_template_id).output_contract),
+            variant=modes.slug,
+            modes=modes,
+            template=PromptTemplate(
+                # The "template" is now the mode identity plus the adapter that
+                # owns the wording, so a record still names what produced it.
+                id=modes.slug,
+                version=adapter.adapter_version,
+                messages=[{"role": "system", "content": "(owned by the dataset adapter)"}],
+                description=f"{dataset_cfg.id}: {modes.describe()}",
+                task_kinds=sorted({sample.task_kind for sample in bundle.samples}),
+            ),
+            output_contract={},
         )
 
         queue: list[SampleSpec] = list(bundle.samples)
@@ -549,14 +704,11 @@ class EvaluationEngine:
 
         while queue:
             sample = queue.pop(0)
-            template = self.registry.get(binding.template_for(sample.task_kind))
-            messages, contract = self.renderer.render(sample, template)
+            messages, contract = adapter.build_messages(sample)
             tokens = self.token_counter.count_messages(messages)
             if tokens <= budget:
                 prompt_set.entries.append((sample, messages, tokens))
-                if len(distinct) > 1:
-                    # Mixed-kind datasets: remember the per-sample contract.
-                    sample.metadata.setdefault("_output_contract", contract)
+                sample.metadata["_output_contract"] = contract
                 continue
 
             oversize_seen += 1
@@ -624,25 +776,25 @@ class EvaluationEngine:
 
         if bundle.documentation is not None:
             stats = bundle.documentation.statistics
-            stats[f"oversize_dropped[{binding.variant}]"] = len(prompt_set.oversize_dropped)
-            stats[f"replacements_used[{binding.variant}]"] = prompt_set.replacements_used
-            stats[f"prompts_kept[{binding.variant}]"] = prompt_set.size
-            stats[f"input_tokens_mean[{binding.variant}]"] = round(
+            stats[f"oversize_dropped[{modes.slug}]"] = len(prompt_set.oversize_dropped)
+            stats[f"replacements_used[{modes.slug}]"] = prompt_set.replacements_used
+            stats[f"prompts_kept[{modes.slug}]"] = prompt_set.size
+            stats[f"input_tokens_mean[{modes.slug}]"] = round(
                 mean([t for _, _, t in prompt_set.entries]), 1
             )
-            stats[f"input_tokens_max[{binding.variant}]"] = max(
+            stats[f"input_tokens_max[{modes.slug}]"] = max(
                 [t for _, _, t in prompt_set.entries] or [0]
             )
             stats["input_token_budget"] = budget
             stats["token_counter_backend"] = self.token_counter.backend
 
         logger.info(
-            "dataset %s variant %s: %d prompt(s) ready (template=%s, %d oversize, "
+            "dataset %s [%s]: %d prompt(s) ready (%s, %d oversize, "
             "%d replacement(s))",
             dataset_cfg.id,
-            binding.variant,
+            modes.slug,
             prompt_set.size,
-            prompt_set.template.ref,
+            modes.describe(),
             len(prompt_set.oversize_dropped),
             prompt_set.replacements_used,
         )
@@ -658,16 +810,24 @@ class EvaluationEngine:
         prompt_sets: dict[tuple[str, str], PromptSet],
     ) -> list[tuple[TaskIdentity, PromptSet, ModelConfig, DatasetBundle]]:
         tasks: list[tuple[TaskIdentity, PromptSet, ModelConfig, DatasetBundle]] = []
-        by_id = {bundle.config.id: bundle for bundle in bundles}
-        for (dataset_id, _variant), prompt_set in prompt_sets.items():
-            bundle = by_id[dataset_id]
+        by_key = {bundle.key: bundle for bundle in bundles}
+        for key, prompt_set in prompt_sets.items():
+            bundle = by_key[key]
+            modes = bundle.modes
+            kinds = sorted({sample.task_kind for sample in bundle.samples})
             for model in self.config.models:
                 identity = TaskIdentity(
                     run_id=self.run_id,
-                    dataset_id=dataset_id,
+                    dataset_id=bundle.config.id,
                     model_id=model.id,
                     template_id=prompt_set.template.id,
                     template_version=prompt_set.template.version,
+                    prompt_mode=modes.prompt_mode,
+                    selection_mode=modes.selection_mode or "n/a",
+                    # A task whose samples mix kinds names the kind it is built
+                    # around; each record still carries its own.
+                    task_kind=kinds[0] if len(kinds) == 1 else "mixed",
+                    data_delivery_mode=modes.data_delivery_mode,
                 )
                 tasks.append((identity, prompt_set, model, bundle))
         return tasks
@@ -728,7 +888,6 @@ class EvaluationEngine:
         for sample, messages, tokens in prompt_set.entries:
             contract = sample.metadata.get("_output_contract", prompt_set.output_contract)
             sampling = batching_mod.resolve_sampling(
-                requested_max_tokens=sample.max_tokens,
                 per_sample_overrides=sample.sampling_overrides,
                 model_sampling=model.sampling,
                 template_sampling=prompt_set.template.sampling,
@@ -736,20 +895,26 @@ class EvaluationEngine:
                 context_window=model.limits.context_window,
                 input_tokens=tokens,
             )
-            # A model with a small context window (e.g. 16k) can leave less room
-            # than the adapter asked for. That silently shortens answers, so it
-            # is counted and reported rather than absorbed.
-            unclamped = batching_mod.resolve_sampling(
-                requested_max_tokens=sample.max_tokens,
-                per_sample_overrides=sample.sampling_overrides,
-                model_sampling=model.sampling,
-                template_sampling=prompt_set.template.sampling,
-                batching=self.engine_cfg.batching,
-                context_window=None,
-                input_tokens=tokens,
-            )
-            if sampling.max_tokens < unclamped.max_tokens:
-                clamped.append((sample.sample_id, unclamped.max_tokens, sampling.max_tokens))
+            if prompt_set.modes.prompt_mode == SELF_CONSISTENCY:
+                # A vote needs the k samples to be able to differ, so the
+                # temperature comes from the mode and the fixed seed is dropped.
+                sampling = sampling.merged(
+                    temperature=prompt_set.modes.self_consistency_temperature
+                )
+                sampling = SamplingParams(
+                    max_tokens=sampling.max_tokens,
+                    temperature=sampling.temperature,
+                    top_p=sampling.top_p,
+                    seed=None,
+                    stop=sampling.stop,
+                    extra=sampling.extra,
+                )
+            if sampling.max_tokens < model.sampling.max_tokens_cap:
+                # The window, not the cap, is what limits this request. Counted
+                # so a dataset whose prompts crowd out the answer is visible.
+                clamped.append(
+                    (sample.sample_id, model.sampling.max_tokens_cap, sampling.max_tokens)
+                )
             rendered.append(
                 RenderedPrompt(
                     sample=sample,
@@ -852,6 +1017,37 @@ class EvaluationEngine:
         fatal: BaseException | None = None
         model_sem = self._model_sems[model.id]
 
+        # An interactive or sequential benchmark is not a list of prompts but a
+        # set of episodes, so it is driven turn by turn instead of batch by
+        # batch. Everything after this -- scoring, records, metrics -- is the
+        # same, because an episode still produces one response per sample.
+        interactive = prompt_set.modes.data_delivery_mode in ("interactive", "sequential")
+        if interactive and pending:
+            logger.info(
+                "task %s: %d episode(s), up to %d turn(s) each (%s delivery)",
+                identity.slug, len(pending), getattr(adapter, "max_turns", 8),
+                prompt_set.modes.data_delivery_mode,
+            )
+            async with self._global_batch_sem, model_sem:
+                pairs = await self._run_episodes(
+                    adapter, pending, client=client, store=store, use_batch=use_batch,
+                    checkpoint=checkpoint, model=model, group_size=group_size,
+                )
+            records: list[EvalRecord] = []
+            for prompt, response in pairs:
+                score = await self._score(adapter, prompt, response)
+                records.append(self._make_record(identity, prompt, response, score))
+                if response.status is ResponseStatus.ERROR:
+                    checkpoint.failed += 1
+                elif response.status is ResponseStatus.SKIPPED:
+                    checkpoint.skipped += 1
+                else:
+                    checkpoint.completed += 1
+                    scores.append((prompt.sample, response, score))
+            store.append_many(records)
+            store.save_checkpoint(checkpoint)
+            batches = []
+
         async def _process(batch: batching_mod.Batch) -> None:
             nonlocal fatal
             if fatal is not None:
@@ -883,11 +1079,6 @@ class EvaluationEngine:
                         )
                         for prompt in batch.prompts
                     ]
-
-            pairs = await self._escalate_empty(
-                pairs, client=client, store=store, use_batch=use_batch,
-                checkpoint=checkpoint, model=model,
-            )
 
             records: list[EvalRecord] = []
             for prompt, response in pairs:
@@ -942,6 +1133,14 @@ class EvaluationEngine:
             1 for rec in reused_records if rec.get("status") == ResponseStatus.SKIPPED.value
         )
 
+        # Modes that ask one item as several requests are folded back here, so
+        # everything downstream -- metrics, coverage, the sample sheet -- counts
+        # evaluation items rather than the requests they were split into.
+        if prompt_set.modes.needs_group_reduction and scores:
+            scores, reduced_records = self._reduce_groups(adapter, identity, scores)
+            if reduced_records:
+                store.append_many(reduced_records)
+
         all_scores = [score for _, _, score in scores] + reused_scores
         result.n_scored = len(all_scores)
         result.n_error = checkpoint.failed + reused_errors
@@ -959,7 +1158,6 @@ class EvaluationEngine:
             "batches_submitted": checkpoint.batches_submitted,
             "batches_failed": checkpoint.batches_failed,
             "bisections": checkpoint.bisections,
-            "empty_escalations": checkpoint.empty_escalations,
             "output_budgets_clamped": getattr(self, "_clamped_output_budgets", 0),
             "endpoint": client.batch_url if use_batch else client.base_url,
             "template": f"{prompt_set.template.id}@{prompt_set.template.version}",
@@ -1009,6 +1207,152 @@ class EvaluationEngine:
     # ------------------------------------------------------------------ #
     # batch execution with retry + bisect
     # ------------------------------------------------------------------ #
+
+    async def _run_episodes(
+        self,
+        adapter: DatasetAdapter,
+        prompts: list[RenderedPrompt],
+        *,
+        client: ModelClient,
+        store: RecordStore,
+        use_batch: bool,
+        checkpoint: TaskCheckpoint,
+        model: ModelConfig,
+        group_size: int,
+    ) -> list[tuple[RenderedPrompt, ModelResponse]]:
+        """Drive an interactive benchmark to completion, one turn at a time.
+
+        Every live episode's *current* conversation is submitted together, so a
+        multi-turn benchmark still uses the batch endpoint: turn 1 of all 300
+        cases is one set of batch calls, then turn 2 of whatever is still live,
+        and so on.  Episodes finish independently -- a model that commits after
+        two questions stops costing anything while its neighbours keep asking.
+
+        What ends an episode: the adapter's environment returning ``None``, the
+        adapter's ``max_turns``, or a failed request (kept as the episode's
+        result rather than retried forever).  The whole transcript is attached
+        to the response, so a scorer or a reader can see what was asked.
+        """
+        episodes: list[dict[str, Any]] = []
+        for prompt in prompts:
+            try:
+                messages, state = adapter.interactive_start(prompt.sample)
+            except Exception as exc:  # noqa: BLE001 - one bad episode must not stop the task
+                logger.warning("episode %s could not start: %s", prompt.sample_id, exc)
+                messages, state = list(prompt.messages), {}
+            episodes.append(
+                {
+                    "prompt": prompt,
+                    "messages": list(messages),
+                    "state": state,
+                    "turn": 0,
+                    "response": None,
+                    "transcript": [m.to_dict() for m in messages],
+                }
+            )
+
+        limit = max(1, int(getattr(adapter, "max_turns", 8)))
+        live = list(episodes)
+        turn = 0
+        while live and turn < limit:
+            turn += 1
+            turn_prompts: list[RenderedPrompt] = []
+            for episode in live:
+                base = episode["prompt"]
+                tokens = self.token_counter.count_messages(episode["messages"])
+                sampling = batching_mod.resolve_sampling(
+                    per_sample_overrides=base.sample.sampling_overrides,
+                    model_sampling=model.sampling,
+                    template_sampling={},
+                    batching=self.engine_cfg.batching,
+                    context_window=model.limits.context_window,
+                    input_tokens=tokens,
+                )
+                turn_prompts.append(
+                    RenderedPrompt(
+                        sample=base.sample,
+                        messages=list(episode["messages"]),
+                        template_id=base.template_id,
+                        template_version=base.template_version,
+                        sampling=sampling,
+                        input_tokens_est=tokens,
+                        output_contract=base.output_contract,
+                    )
+                )
+
+            by_id = {id(p): episode for p, episode in zip(turn_prompts, live, strict=True)}
+            index = {p.sample_id: by_id[id(p)] for p in turn_prompts}
+            results: list[tuple[RenderedPrompt, ModelResponse]] = []
+            batches = batching_mod.plan_batches(
+                turn_prompts,
+                group_size=group_size if use_batch else 1,
+                batching=self.engine_cfg.batching,
+                prefix=f"turn{turn}",
+            )
+            for batch in batches:
+                results.extend(
+                    await self._execute_batch(batch, client, store, use_batch, checkpoint)
+                )
+
+            still_live: list[dict[str, Any]] = []
+            for turn_prompt, response in results:
+                episode = index[turn_prompt.sample_id]
+                episode["response"] = response
+                episode["turn"] = turn
+                text = response.text
+                episode["messages"].append(ChatMessage(role="assistant", content=text))
+                episode["transcript"].append({"role": "assistant", "content": text})
+                if response.status is ResponseStatus.ERROR:
+                    continue
+                try:
+                    reply = adapter.interactive_step(episode["prompt"].sample, episode["state"], text)
+                except Exception as exc:  # noqa: BLE001 - environments must not break the run
+                    logger.warning(
+                        "episode %s: environment step failed: %s",
+                        turn_prompt.sample_id, exc,
+                    )
+                    reply = None
+                if reply is None:
+                    continue
+                episode["messages"].append(ChatMessage(role="user", content=reply))
+                episode["transcript"].append({"role": "user", "content": reply})
+                still_live.append(episode)
+            live = still_live
+
+        if live:
+            logger.info(
+                "%d episode(s) hit the %d-turn limit without committing to an answer",
+                len(live), limit,
+            )
+
+        pairs: list[tuple[RenderedPrompt, ModelResponse]] = []
+        for episode in episodes:
+            prompt = episode["prompt"]
+            response = episode["response"]
+            if response is None:
+                response = ModelResponse(
+                    sample_id=prompt.sample_id,
+                    model_id=model.id,
+                    status=ResponseStatus.ERROR,
+                    error="episode produced no response",
+                    error_class=ErrorClass.UNKNOWN.value,
+                )
+            # The turn count and the transcript are part of the result: an
+            # interactive benchmark is as much about what was asked as about the
+            # final answer.
+            response.usage = {
+                **(response.usage or {}),
+                "turns": episode["turn"],
+                "transcript_messages": len(episode["transcript"]),
+            }
+            prompt.sample.metadata["turns_used"] = episode["turn"]
+            prompt.sample.metadata["_transcript"] = episode["transcript"]
+            # The environment's final state, for scorers that grade the episode
+            # rather than the last message -- an experiment log, a set of
+            # predictions, the evidence that was actually requested.
+            prompt.sample.metadata["_episode_state"] = episode["state"]
+            pairs.append((prompt, response))
+        return pairs
 
     async def _execute_batch(
         self,
@@ -1165,97 +1509,6 @@ class EvaluationEngine:
             pairs.append((prompt, self._normalize(prompt, choice, batch_result, client, batch)))
         return pairs
 
-    async def _escalate_empty(
-        self,
-        pairs: list[tuple[RenderedPrompt, ModelResponse]],
-        *,
-        client: ModelClient,
-        store: RecordStore,
-        use_batch: bool,
-        checkpoint: TaskCheckpoint,
-        model: ModelConfig,
-    ) -> list[tuple[RenderedPrompt, ModelResponse]]:
-        """Re-issue samples whose answer was limited by the token budget.
-
-        A reasoning model can spend its whole ``max_tokens`` on hidden
-        chain-of-thought and return ``content: null`` with
-        ``finish_reason="length"``.  That is not a wrong answer and not an
-        endpoint failure -- it is an under-budgeted request.  Rather than raise
-        the budget for every sample in the dataset, only the affected samples
-        are retried with a multiplied budget (bounded by the model's cap and its
-        context window).
-        """
-        config = self.engine_cfg.retry
-        if config.max_empty_escalations <= 0:
-            return pairs
-        if not (config.escalate_empty_responses or config.escalate_truncated_responses):
-            return pairs
-
-        keep: list[tuple[RenderedPrompt, ModelResponse]] = []
-        retry_prompts: list[RenderedPrompt] = []
-        for prompt, response in pairs:
-            budget_exhausted = (
-                response.status is ResponseStatus.EMPTY
-                and (response.finish_reason == "length" or response.finish_reason is None)
-            ) or (
-                config.escalate_truncated_responses
-                and response.status is ResponseStatus.TRUNCATED
-            )
-            escalated = prompt.sample.metadata.get("_empty_escalations", 0)
-            if not budget_exhausted or escalated >= config.max_empty_escalations:
-                keep.append((prompt, response))
-                continue
-            bigger = int(prompt.sampling.max_tokens * config.empty_budget_multiplier)
-            bigger = min(bigger, model.sampling.max_tokens_cap)
-            if model.limits.context_window:
-                bigger = min(bigger, model.limits.context_window - prompt.input_tokens_est - 8)
-            if bigger <= prompt.sampling.max_tokens:
-                # No headroom left; keep the empty response and report it.
-                keep.append((prompt, response))
-                continue
-            prompt.sample.metadata["_empty_escalations"] = escalated + 1
-            retry_prompts.append(
-                RenderedPrompt(
-                    sample=prompt.sample,
-                    messages=prompt.messages,
-                    template_id=prompt.template_id,
-                    template_version=prompt.template_version,
-                    sampling=prompt.sampling.merged(max_tokens=bigger),
-                    input_tokens_est=prompt.input_tokens_est,
-                    output_contract=prompt.output_contract,
-                )
-            )
-
-        if not retry_prompts:
-            return pairs
-
-        checkpoint.empty_escalations += len(retry_prompts)
-        logger.info(
-            "%d sample(s) hit the token budget (empty or cut off); retrying them with a "
-            "%.1fx budget",
-            len(retry_prompts),
-            config.empty_budget_multiplier,
-        )
-        self.events.emit(
-            "empty_escalation",
-            model_id=model.id,
-            n_samples=len(retry_prompts),
-            sample_ids=[p.sample_id for p in retry_prompts],
-            multiplier=config.empty_budget_multiplier,
-        )
-        for batch in batching_mod.plan_batches(
-            retry_prompts,
-            group_size=(
-                model.endpoint.batch.group_size if use_batch else 1
-            ),
-            batching=self.engine_cfg.batching,
-            prefix="empty-retry",
-        ):
-            keep.extend(
-                await self._execute_batch(batch, client, store, use_batch, checkpoint)
-            )
-        return keep
-
     @staticmethod
     def _choice_for(batch_result: BatchResult, position: int) -> RawChoice | None:
         for choice in batch_result.choices:
@@ -1409,6 +1662,80 @@ class EvaluationEngine:
         )
         metrics["empty_response_rate"] = (empty + reused_empty) / planned
         return metrics
+
+    def _reduce_groups(
+        self,
+        adapter: DatasetAdapter,
+        identity: TaskIdentity,
+        scores: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+    ) -> tuple[list[tuple[SampleSpec, ModelResponse, SampleScore]], list[EvalRecord]]:
+        """Fold each item's several responses into one scored answer.
+
+        Self-consistency votes over k samples of one question; BOV rebuilds a
+        selected set from one yes/no answer per hypothesis.  Either way the
+        adapter decides what the fold means -- the engine only groups by
+        ``group_id`` and writes the result as an extra record marked
+        ``reduced``, keeping the members in the log so a vote can be inspected.
+        """
+        grouped: dict[str, list[tuple[SampleSpec, ModelResponse, SampleScore]]] = {}
+        ungrouped: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
+        for sample, response, score in scores:
+            if sample.group_id:
+                grouped.setdefault(sample.group_id, []).append((sample, response, score))
+            else:
+                ungrouped.append((sample, response, score))
+
+        out = list(ungrouped)
+        records: list[EvalRecord] = []
+        for group_id, members in grouped.items():
+            try:
+                reduced = adapter.reduce_group(members)
+            except Exception as exc:  # noqa: BLE001 - a bad fold must not lose the run
+                logger.warning(
+                    "task %s: reducing group %s failed: %s", identity.slug, group_id, exc
+                )
+                reduced = None
+            if reduced is None:
+                out.extend(members)
+                continue
+            sample, response, _ = members[0]
+            parent = sample.metadata.get("_parent_sample", sample)
+            out.append((parent, response, reduced))
+            records.append(
+                EvalRecord(
+                    task=identity,
+                    sample_id=group_id,
+                    status=response.status,
+                    prompt_fingerprint=f"reduced::{group_id}",
+                    task_kind=parent.task_kind,
+                    input_tokens_est=sum(m[0].max_tokens or 0 for m in members),
+                    sampling={"members": len(members)},
+                    response={
+                        "content": None,
+                        "status": response.status.value,
+                        "reduced_from": [m[0].sample_id for m in members],
+                    },
+                    metrics=reduced.metrics,
+                    prediction=reduced.prediction,
+                    parse_ok=reduced.parse_ok,
+                    reference=parent.reference,
+                    metadata={
+                        **{k: v for k, v in parent.metadata.items() if not k.startswith("_")},
+                        "reduced": True,
+                        "n_members": len(members),
+                    },
+                    details=reduced.details,
+                    group_id=group_id,
+                )
+            )
+        if records:
+            logger.info(
+                "task %s: %d group(s) reduced from %d response(s)",
+                identity.slug,
+                len(records),
+                sum(len(m) for m in grouped.values()),
+            )
+        return out, records
 
     def _make_record(
         self,

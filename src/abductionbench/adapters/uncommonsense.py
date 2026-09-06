@@ -35,6 +35,17 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
     """Explain an uncommon outcome; scored against the human explanation set."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a situation with an "
+        "outcome that is surprising given the context. Explain how it could plausibly have "
+        "come about -- the explanation has to make the uncommon outcome likely, not merely "
+        "possible."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "best_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

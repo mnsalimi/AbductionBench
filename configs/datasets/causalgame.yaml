@@ -7,6 +7,13 @@ dataset:
     domain: "Causal Science: Experimental Reasoning"
     processing_mode: "Generation"
     source_url: "https://causalgame.github.io/"
-    reason: "interactive game server, no static dataset"
-    detail: "The repository is an agent harness (agent/, api/, experiments/) that plays an interactive causal-discovery game against a live server; no static items with gold answers are released."
+    reason: "interactive game server, no released environment"
+    detail: >-
+      The project publishes an agent harness (agent/, api/, experiments/) that plays
+      against a live server at causalgame.github.io; the environment itself is not
+      released, so there is nothing to run locally and no static items with gold
+      answers either. Interactivity is not the obstacle -- seven other interactive
+      benchmarks in this suite run their own environments; the obstacle is that this
+      one's environment is not distributed.
+
   notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

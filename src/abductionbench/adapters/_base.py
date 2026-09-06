@@ -34,12 +34,14 @@ from ..core.metrics import (
     rouge_l,
     token_f1,
 )
-from ..core.types import ModelResponse, SampleScore, SampleSpec
+from ..core.types import ChatMessage, ModelResponse, SampleScore, SampleSpec
+from ._prompting import PromptParts, build_messages
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "PooledDatasetAdapter",
+    "PromptParts",
     "selection_score",
     "text_match_score",
     "unparsed_score",
@@ -96,6 +98,11 @@ class PooledDatasetAdapter(DatasetAdapter):
         return samples
 
     def replacement_samples(self, count: int, exclude: set[str]) -> list[SampleSpec]:
+        """Replacements for oversize items, expanded for the active modes.
+
+        The engine expands the main sample set once, before planning; a
+        replacement arrives after that, so it expands itself.
+        """
         out: list[SampleSpec] = []
         for index, item in enumerate(self._pool):
             if len(out) >= count:
@@ -104,7 +111,33 @@ class PooledDatasetAdapter(DatasetAdapter):
             if sample is None or sample.sample_id in exclude:
                 continue
             out.append(sample)
-        return out
+        return self.expand_for_modes(out)
+
+    # -- prompts: mechanics here, wording in the dataset's own adapter --- #
+
+    def prompt_parts(self, sample: SampleSpec) -> PromptParts:
+        """The dataset-owned content of this sample's prompt.
+
+        The default reads the fields adapters already produce.  An adapter with
+        a prompt published by its own benchmark overrides this and returns that
+        wording instead.
+        """
+        fields = sample.fields
+        return PromptParts(
+            system=self.system_prompt_for(sample),
+            observation=str(fields.get("observation", "") or ""),
+            context=str(fields.get("context", "") or ""),
+            question=str(fields.get("question", "") or ""),
+            instructions=str(fields.get("instructions", "") or ""),
+            answer_format=str(fields.get("answer_format", "") or ""),
+            options=[str(o) for o in (fields.get("options") or [])],
+            option_labels=[str(o) for o in (fields.get("option_labels") or [])],
+        )
+
+    def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        if sample.messages_override is not None:
+            return list(sample.messages_override), {}
+        return build_messages(self.prompt_parts(sample), self.context.modes)
 
     def _safe_make(self, item: Any, index: int) -> SampleSpec | None:
         try:

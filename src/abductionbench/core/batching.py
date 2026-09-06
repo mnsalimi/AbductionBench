@@ -24,15 +24,21 @@ __all__ = ["quantize_max_tokens", "resolve_sampling", "Batch", "plan_batches", "
 
 
 def quantize_max_tokens(value: int, quantum: int) -> int:
-    """Round ``value`` up to the next multiple of ``quantum`` (>= quantum)."""
+    """Round ``value`` **down** to a multiple of ``quantum`` (>= quantum).
+
+    Down, not up: the budget is now whatever is left of the context window once
+    the prompt is in it, so rounding up would ask the server for more tokens
+    than the window can hold.  Rounding down onto a grid is what still lets
+    prompts of similar length share a batch call, which the batch endpoint
+    requires (one sampling-parameter set per call).
+    """
     if quantum <= 1:
-        return value
-    return max(quantum, int(math.ceil(value / quantum) * quantum))
+        return max(1, value)
+    return max(quantum, int(math.floor(value / quantum) * quantum))
 
 
 def resolve_sampling(
     *,
-    requested_max_tokens: int | None,
     per_sample_overrides: dict,
     model_sampling: ModelSamplingConfig,
     template_sampling: dict,
@@ -42,21 +48,31 @@ def resolve_sampling(
 ) -> SamplingParams:
     """Compose the effective decoding parameters for one sample.
 
-    Precedence, lowest to highest: model defaults → template ``sampling`` →
-    adapter per-sample overrides.  The adapter's ``max_tokens`` request is
-    quantized up, then clamped to the model's floor/cap and, when a context
-    window is known, to what actually fits alongside the prompt.
+    The output budget is **not** estimated from the task any more.  Every
+    request asks for everything the model could still say::
+
+        max_tokens = min(max_tokens_cap, context_window - input_tokens_est)
+
+    with ``max_tokens_cap`` fixed at 32,000 for every dataset.  An adapter's own
+    idea of how long an answer should be is ignored, deliberately: a budget
+    guessed per task is what produced truncated answers that then had to be
+    re-issued, and a truncation is only informative when the model actually had
+    the whole window to work in.  The result is rounded down onto the batching
+    grid so prompts of similar length can still share one batch call.
+
+    Everything except the budget still layers model defaults → template hints →
+    per-sample overrides.
     """
-    max_tokens = requested_max_tokens or model_sampling.max_tokens_default
-    if "max_tokens" in per_sample_overrides:
-        max_tokens = int(per_sample_overrides["max_tokens"])
-    max_tokens = quantize_max_tokens(int(max_tokens), batching.max_tokens_quantum)
-    max_tokens = max(model_sampling.max_tokens_floor, min(max_tokens, model_sampling.max_tokens_cap))
+    max_tokens = int(model_sampling.max_tokens_cap)
     if context_window:
-        room = context_window - input_tokens - 8  # small slack for template scaffolding
-        if room > 0:
-            max_tokens = min(max_tokens, room)
-        max_tokens = max(1, max_tokens)
+        # The whole remaining window, less a small slack for the chat scaffolding
+        # the server adds around the messages (role tokens, generation prompt).
+        max_tokens = min(max_tokens, context_window - input_tokens - 8)
+    max_tokens = quantize_max_tokens(max_tokens, batching.max_tokens_quantum)
+    max_tokens = min(max_tokens, model_sampling.max_tokens_cap)
+    if context_window:
+        max_tokens = min(max_tokens, max(1, context_window - input_tokens - 8))
+    max_tokens = max(1, max_tokens)
 
     params = SamplingParams(
         max_tokens=max_tokens,
@@ -65,7 +81,8 @@ def resolve_sampling(
         seed=model_sampling.seed,
         stop=tuple(model_sampling.stop),
     )
-    # Template-level hints, then per-sample overrides.
+    # Template-level hints, then per-sample overrides. ``max_tokens`` is filtered
+    # out of both: the budget is computed above and is not open to override.
     template_overrides = {k: v for k, v in (template_sampling or {}).items() if k != "max_tokens"}
     if template_overrides:
         params = params.merged(**template_overrides)

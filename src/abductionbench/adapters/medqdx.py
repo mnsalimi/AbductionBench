@@ -34,18 +34,35 @@ from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score
+from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 
 REPO_URL = "https://github.com/MaiWert/MedQDx"
 LEVELS = ("100% Case", "80% Case", "50% Case")
 
 
-class MedQDxAdapter(PooledDatasetAdapter):
+class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     """Closed-set diagnosis from vignettes of varying completeness."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a clinical vignette "
+        "that may be incomplete, and a closed set of candidate diagnoses. Choose the "
+        "diagnosis best supported by the information actually present."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:
@@ -96,6 +113,70 @@ class MedQDxAdapter(PooledDatasetAdapter):
         rng.shuffle(options)
         return options
 
+    # ------------------------------------------------------------------ #
+    # the questioning loop -- MedQDx's whole premise
+    # ------------------------------------------------------------------ #
+
+    ACTIONS = ("ask", "diagnosis")
+    max_turns = 12
+    category_limits = {"ask": 8}
+
+    QUESTIONING_PROMPT = (
+        "You are a physician assessing a patient from an incomplete presentation. You may ask "
+        "the patient about any symptom, one question per turn, and the patient answers only "
+        "what you ask. When you can name the condition, commit to it.\n\n"
+        "Reply with a single JSON object and nothing else:\n"
+        '{"reasoning": "...", "action": "ask", "query": "the symptom you are asking about"}\n'
+        'or {"reasoning": "...", "action": "diagnosis", "query": "<label>"}\n\n'
+        "Ask about symptoms that would separate the conditions you are considering. Every "
+        "question costs a turn, so ask the discriminating one."
+    )
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        store = EvidenceStore()
+        # The case's symptom list is the patient: a symptom in the list is
+        # present, and anything else is absent. MedQDx's cases are built from
+        # exactly that list, so nothing has to be invented either way.
+        present = sample.metadata.get("_symptoms") or []
+        store.categories["ask"] = {
+            symptom.replace("_", " "): "yes, that is present" for symptom in present
+        }
+        options = sample.fields.get("options") or []
+        labels = sample.fields.get("option_labels") or []
+        listing = "\n".join(f"{label}) {option}" for label, option in zip(labels, options,
+                                                                          strict=False))
+        opening = (
+            f"{sample.fields.get('observation', '')}\n\n"
+            f"Possible conditions:\n{listing}\n\n"
+            "Ask about symptoms, then give the label of your diagnosis."
+        )
+        return (
+            [
+                ChatMessage(role="system", content=self.QUESTIONING_PROMPT),
+                ChatMessage(role="user", content=opening),
+            ],
+            {"evidence": store, "counts": {}},
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action = parse_action(assistant_text, actions=self.ACTIONS)
+        if action.action == "diagnosis":
+            return None
+        if not action.action:
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return 'Reply with one JSON object: {"action": "ask"|"diagnosis", "query": "..."}'
+        self.bump(state, "ask")
+        if self.over_limit(state, "ask"):
+            return "No more questions. Give the label of your diagnosis now."
+        store: EvidenceStore = state["evidence"]
+        found = store.reveal("ask", action.query_text, limit=3)
+        answer = found if found else "No, I do not have that."
+        return answer + self.limit_note(state, "ask")
+
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         row = item["row"]
         gold = (row.get("prognosis") or "").strip()
@@ -143,6 +224,13 @@ class MedQDxAdapter(PooledDatasetAdapter):
                 "case_index": item["case_index"],
                 "mode": self._mode,
                 "gold": gold,
+                # The patient, for the interactive form: the case's own symptom
+                # list, which is what its vignettes were written from.
+                "_symptoms": [
+                    part.strip()
+                    for part in str(row.get("symptoms") or "").split(",")
+                    if part.strip()
+                ],
             },
         )
 

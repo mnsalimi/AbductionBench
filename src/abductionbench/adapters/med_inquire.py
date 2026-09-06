@@ -23,21 +23,70 @@ narrative + examination + tests.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._interactive import EvidenceStore, InteractiveMixin, parse_action
+
+
+def _sentences(text: str, prefix: str = "") -> dict[str, str]:
+    """Split a case section into individually disclosable findings.
+
+    Med-Inquire stores its case as prose, so a "finding" is a sentence: the unit
+    a patient would answer with, and small enough that answering one question
+    does not hand over the whole case file.
+    """
+    out: dict[str, str] = {}
+    for index, chunk in enumerate(re.split(r"(?<=[.;])\s+|\n+", text or "")):
+        sentence = chunk.strip(" -\t")
+        if len(sentence) < 12:
+            continue
+        # No dot in the key: a dotted key would make every sentence of one
+        # section a child of the same parent, and the reveal would hand back the
+        # whole section the first time any of it matched.
+        key = f"{prefix}{index}" if prefix else str(index)
+        out[key] = sentence
+    return out
 
 REPO_URL = "https://github.com/yf-he/EvoClinician"
 OPTION_KEYS = ("option_a", "option_b", "option_c", "option_d")
 
 
-class MedInquireAdapter(PooledDatasetAdapter):
+class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
     """Free-text (default) or four-way diagnosis of a published case report."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a published case "
+        "report with the diagnostic work-up withheld. State the diagnosis that best explains "
+        "the presenting picture you can see."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'generation'},
+        "selection": {'subtask': 'selection'},
+    }
+    table_hypothesis_mode = "Generation"
+    hypothesis_mode_justification = (
+        "The Med-Inquire test file is DiagnosisArena's release, in which each case carries "
+        "four answer options with one correct diagnosis, so a closed-set selection task is "
+        "defined by the data itself."
+    )
     primary_metric = "diagnosis_match"
 
     @property
@@ -77,6 +126,93 @@ class MedInquireAdapter(PooledDatasetAdapter):
             parts.append(f"Diagnostic work-up:\n{tests}")
         return narrative, "\n\n".join(parts)
 
+    # ------------------------------------------------------------------ #
+    # the inquiry loop -- EvoClinician's own Med-Inquire protocol
+    # ------------------------------------------------------------------ #
+
+    #: The release's action vocabulary (evoclinician/med_inquire/types.py).
+    ACTIONS = ("askquestion", "ordertest", "submitdiagnosis")
+    max_turns = 12
+    category_limits = {"askquestion": 8, "ordertest": 6}
+
+    def _release_actor_prompt(self) -> str:
+        """The Actor system prompt as published, read from the cloned repo."""
+        if getattr(self, "_actor_prompt", None):
+            return self._actor_prompt
+        path = self.context.data_dir / "repo" / "evoclinician" / "agents" / "actor.py"
+        prompt = ""
+        if path.exists():
+            source = path.read_text(encoding="utf-8", errors="replace")
+            match = re.search(r"base_prompt: str = \(\n(.*?)\n    \)", source, re.S)
+            if match:
+                # The prompt is a run of adjacent string literals; evaluate just
+                # that expression so the text is the release's, character for
+                # character, rather than a transcription of it.
+                try:
+                    prompt = eval(  # noqa: S307 - a literal from a file we cloned
+                        "(" + match.group(1) + ")", {"__builtins__": {}}, {}
+                    )
+                except Exception:  # noqa: BLE001 - fall back to our own wording
+                    prompt = ""
+        self._actor_prompt = prompt or self.system_prompt
+        return self._actor_prompt
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        case = sample.metadata.get("_case") or {}
+        store = EvidenceStore()
+        # The Patient answers from the case history; the Examination agent
+        # answers test orders from the recorded work-up. Separate stores, so a
+        # question to the patient cannot return an imaging report.
+        store.categories["askquestion"] = _sentences(case.get("case_information", ""))
+        store.categories["ordertest"] = {
+            **_sentences(case.get("physical_examination", ""), prefix="exam"),
+            **_sentences(case.get("diagnostic_tests", ""), prefix="test"),
+        }
+        opening = (
+            "A new patient has presented. You have not yet taken a history.\n\n"
+            f"Opening statement from the patient: {sample.fields.get('observation', '')[:600]}"
+        )
+        return (
+            [
+                ChatMessage(role="system", content=self._release_actor_prompt()),
+                ChatMessage(role="user", content=opening),
+            ],
+            {"evidence": store, "counts": {}},
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action = parse_action(assistant_text, actions=self.ACTIONS)
+        # The release's field is action_text, not query; accept both.
+        if not action.query:
+            match = re.search(r'"action_text"\s*:\s*"([^"]*)"', assistant_text or "")
+            if match:
+                action.query = match.group(1)
+        if action.action == "submitdiagnosis":
+            return None
+        if not action.action:
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return (
+                'Return exactly one JSON object: {"action_type": "AskQuestion"|"OrderTest"|'
+                '"SubmitDiagnosis", "action_text": "..."}'
+            )
+
+        self.bump(state, action.action)
+        if self.over_limit(state, action.action):
+            return "No further actions of that kind are available. Please submit your diagnosis."
+        store: EvidenceStore = state["evidence"]
+        reply = store.reveal(action.action, action.query_text, limit=3)
+        if reply:
+            return reply
+        if action.action == "ordertest":
+            # The release's ExaminationAgent returns exactly this for a test the
+            # case does not record.
+            return "NOT AVAILABLE"
+        return "The patient does not report anything about that."
+
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         diagnosis = C.normalize_whitespace(item.get("final_diagnosis"))
         observation, context = self._evidence(item)
@@ -102,7 +238,7 @@ class MedInquireAdapter(PooledDatasetAdapter):
                 reference={"gold_label": gold_letter, "gold": diagnosis},
                 task_kind="selection",
                 max_tokens=768,
-                metadata={"id": item.get("id"), "subtask": "selection"},
+                metadata={"id": item.get("id"), "subtask": "selection", "_case": dict(item)},
             )
 
         return SampleSpec(
@@ -121,7 +257,7 @@ class MedInquireAdapter(PooledDatasetAdapter):
             # A diagnosis name, after reading a full case: reasoning-heavy input,
             # short output.
             max_tokens=768,
-            metadata={"id": item.get("id"), "subtask": "generation"},
+            metadata={"id": item.get("id"), "subtask": "generation", "_case": dict(item)},
         )
 
     def score(

@@ -101,7 +101,6 @@ class TaskCheckpoint:
     batches_submitted: int = 0
     batches_failed: int = 0
     bisections: int = 0
-    empty_escalations: int = 0
     oversize_replacements: int = 0
     prompt_tokens_total: int = 0
     completion_tokens_total: int = 0
@@ -120,7 +119,6 @@ class TaskCheckpoint:
             "batches_submitted": self.batches_submitted,
             "batches_failed": self.batches_failed,
             "bisections": self.bisections,
-            "empty_escalations": self.empty_escalations,
             "oversize_replacements": self.oversize_replacements,
             "prompt_tokens_total": self.prompt_tokens_total,
             "completion_tokens_total": self.completion_tokens_total,

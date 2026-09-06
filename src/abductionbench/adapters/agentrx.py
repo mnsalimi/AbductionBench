@@ -37,6 +37,17 @@ class AgentRxAdapter(PooledDatasetAdapter):
     """Select the failure category that explains an agent's failed run."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the trace of a "
+        "failed run of an AI agent and a taxonomy of failure categories. Identify the "
+        "category that explains why the run failed -- the fault that produced the observed "
+        "behaviour, not a downstream symptom of it."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

@@ -45,6 +45,17 @@ class DeFAbAdapter(PooledDatasetAdapter):
     """Pick the candidate rule/fact whose addition explains the target."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a defeasible "
+        "theory, a target conclusion it does not currently support, and candidate additions. "
+        "Select every candidate whose addition would make the target derivable while "
+        "respecting the theory's defeaters. More than one addition can be required."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "multi"
     primary_metric = "accuracy"
 
     @property

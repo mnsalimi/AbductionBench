@@ -55,7 +55,11 @@ def build_metrics_frame(result: RunResult) -> pd.DataFrame:
                     "run_id": result.run_id,
                     "dataset_id": task.identity.dataset_id,
                     "model_id": task.identity.model_id,
-                    "template": f"{task.identity.template_id}@{task.identity.template_version}",
+                    "prompt_mode": task.identity.prompt_mode,
+                    "selection_mode": task.identity.selection_mode,
+                    "data_delivery_mode": task.identity.data_delivery_mode,
+                    "task_kind": task.identity.task_kind,
+                    "template_mode": task.identity.template_mode,
                     "metric": metric,
                     "value": _fmt(value),
                     "is_primary": metric == task.primary_metric,
@@ -77,8 +81,11 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
             {
                 "dataset_id": task.identity.dataset_id,
                 "model_id": task.identity.model_id,
-                "template": f"{task.identity.template_id}@{task.identity.template_version}",
-                "variant": task.diagnostics.get("variant", "default"),
+                "prompt_mode": task.identity.prompt_mode,
+                "selection_mode": task.identity.selection_mode,
+                "data_delivery_mode": task.identity.data_delivery_mode,
+                "task_kind": task.identity.task_kind,
+                "template_mode": task.identity.template_mode,
                 "primary_metric": primary,
                 "value": _fmt(task.metrics.get(primary)),
                 "value_strict": _fmt(task.metrics.get(f"{primary}_strict")),
@@ -91,7 +98,9 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
-    return frame.sort_values(["dataset_id", "model_id", "template"]).reset_index(drop=True)
+    return frame.sort_values(
+        ["dataset_id", "model_id", "template_mode"]
+    ).reset_index(drop=True)
 
 
 def _build_tasks_frame(result: RunResult) -> pd.DataFrame:
@@ -102,7 +111,11 @@ def _build_tasks_frame(result: RunResult) -> pd.DataFrame:
             {
                 "dataset_id": task.identity.dataset_id,
                 "model_id": task.identity.model_id,
-                "template": f"{task.identity.template_id}@{task.identity.template_version}",
+                "prompt_mode": task.identity.prompt_mode,
+                "selection_mode": task.identity.selection_mode,
+                "data_delivery_mode": task.identity.data_delivery_mode,
+                "task_kind": task.identity.task_kind,
+                "template_mode": task.identity.template_mode,
                 "primary_metric": task.primary_metric,
                 "primary_value": _fmt(task.metrics.get(task.primary_metric)),
                 "n_planned": task.n_planned,
@@ -162,10 +175,15 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
             row: dict[str, Any] = {
                 "dataset_id": record.get("dataset_id"),
                 "model_id": record.get("model_id"),
-                "template": f"{record.get('template_id')}@{record.get('template_version')}",
+                # The three mode columns, then the identity they compose.
+                "prompt_mode": record.get("prompt_mode"),
+                "selection_mode": record.get("selection_mode"),
+                "data_delivery_mode": record.get("data_delivery_mode"),
+                "task_kind": record.get("task_kind"),
+                "template_mode": record.get("template_mode"),
                 "sample_id": record.get("sample_id"),
                 "group_id": record.get("group_id"),
-                "task_kind": record.get("task_kind"),
+                "reduced": bool((record.get("metadata") or {}).get("reduced")),
                 "status": record.get("status"),
                 "parse_ok": record.get("parse_ok"),
                 "input_tokens_est": record.get("input_tokens_est"),
@@ -174,6 +192,7 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
                 "prediction": _clip(record.get("prediction"), clip),
                 "reference": _clip(record.get("reference"), clip),
                 "response": _clip(response.get("content"), clip),
+                "reasoning": _clip(response.get("reasoning"), clip),
                 "error": _clip(response.get("error"), 300),
                 "batch_id": response.get("batch_id"),
                 "batch_size": response.get("batch_size"),
@@ -189,12 +208,26 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
     return pd.DataFrame(rows)
 
 
+#: Excel's hard limit on the number of characters in one cell.  Anything longer
+#: cannot be written at all, so this is the ceiling on "do not truncate".
+EXCEL_CELL_LIMIT = 32_767
+
+
 def _clip(value: Any, limit: int) -> Any:
+    """Keep the whole value, bounded only by what a cell can physically hold.
+
+    ``limit`` of 0 means "no configured limit"; the Excel ceiling still applies,
+    because a longer cell raises rather than silently truncating.  When a value
+    does hit the ceiling the marker says so, so a reader can tell a complete
+    response from one that ran out of cell.
+    """
     if value is None:
         return None
     text = value if isinstance(value, str) else str(value)
-    if limit and len(text) > limit:
-        return text[:limit] + "..."
+    ceiling = min(limit or EXCEL_CELL_LIMIT, EXCEL_CELL_LIMIT)
+    if len(text) > ceiling:
+        marker = "...[truncated at cell limit]"
+        return text[: ceiling - len(marker)] + marker
     return text
 
 
@@ -297,22 +330,25 @@ def write_reports(result: RunResult) -> dict[str, Path]:
 def _pivot(summary: pd.DataFrame) -> pd.DataFrame:
     """Dataset x model matrix of primary-metric values.
 
-    Columns are keyed by model and *prompt variant*, not by the bound template
-    id: datasets legitimately bind different templates (a formal-logic dataset
-    uses the structured template, an MCQ dataset the selection one), so keying
-    on template id would scatter one model across several mostly-empty columns.
-    The variant ("default", or a name from ``prompts.template_variants``) is the
-    axis a reader actually compares, and the exact template per task stays in
-    ``Summary_Long``, ``Metrics`` and ``Tasks``.
+    Columns are keyed by model and *execution mode*: one column per model when a
+    run uses a single mode, and one per (model, mode) when it compares several,
+    so that io and cot -- or SCS and BOV -- sit side by side for the same
+    dataset.  The full identity of every task stays in ``Summary_Long``,
+    ``Metrics`` and ``Tasks``, where ``template_mode`` names it exactly.
     """
     if summary.empty:
         return summary
     frame = summary.copy()
     frame["row"] = frame["dataset_id"] + " [" + frame["primary_metric"].fillna("") + "]"
-    variants = frame.get("variant")
-    if variants is None:
-        variants = pd.Series(["default"] * len(frame), index=frame.index)
-    variants = variants.fillna("default")
+    modes = frame.get("prompt_mode")
+    if modes is None:
+        modes = pd.Series(["io"] * len(frame), index=frame.index)
+    selection = frame.get("selection_mode")
+    if selection is None:
+        selection = pd.Series(["n/a"] * len(frame), index=frame.index)
+    variants = modes.fillna("io").str.cat(
+        selection.fillna("n/a").where(selection != "n/a", ""), sep="/"
+    ).str.rstrip("/")
     if variants.nunique() > 1:
         frame["column"] = frame["model_id"] + " (" + variants + ")"
     else:
@@ -348,10 +384,14 @@ def _write_task_documentation(result: RunResult, task: TaskResult) -> Path:
     lines.append(f"* **Generated**: {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
     lines.append(f"* **Dataset**: `{identity.dataset_id}`")
     lines.append(f"* **Model**: `{identity.model_id}`")
+    lines.append(f"* **Template mode**: `{identity.template_mode}`")
     lines.append(
-        f"* **Prompt template**: `{identity.template_id}@{identity.template_version}`"
-        f" (variant `{task.diagnostics.get('variant', 'default')}`)"
+        f"* **Prompt mode**: `{identity.prompt_mode}` \u00b7 "
+        f"**selection mode**: `{identity.selection_mode}` \u00b7 "
+        f"**delivery**: `{identity.data_delivery_mode}`"
     )
+    lines.append(f"* **Prompts**: owned by the `{identity.dataset_id}` adapter "
+                 f"(v{identity.template_version})")
     lines.append(f"* **Endpoint**: `{task.diagnostics.get('endpoint')}`")
     lines.append(
         f"* **Batch mode**: {task.diagnostics.get('batch_mode')} "

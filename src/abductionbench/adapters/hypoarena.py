@@ -36,6 +36,16 @@ class HypoArenaAdapter(PooledDatasetAdapter):
     """Propose a hypothesis for an observed situation; multi-reference scoring."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given an observed "
+        "situation. Propose the hypothesis that explains it: a specific, testable claim about "
+        "what is going on, not a restatement of the observation."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "best_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

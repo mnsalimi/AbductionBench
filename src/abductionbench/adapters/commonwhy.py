@@ -33,6 +33,16 @@ class CommonWhyAdapter(PooledDatasetAdapter):
     """Explain why an entity could not have done something."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are told that an entity could "
+        "not do something. Explain why not, using what is commonly known about that kind of "
+        "entity. The explanation should be the property that actually rules the action out."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "explanation_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:

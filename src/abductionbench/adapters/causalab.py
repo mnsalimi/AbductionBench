@@ -16,24 +16,96 @@ parents, quadratic hardness), and accuracy is reported per variant.
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, set_prf
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
+from ._interactive import InteractiveMixin, parse_action
 
 REPO_URL = "https://github.com/DylanZSZ/CausaLab-Benchmark"
 _EDGE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_ ]*?)\s*(?:->|→|causes|to)\s*([A-Za-z_][A-Za-z0-9_ ]*)")
 
 
-class CausaLabAdapter(PooledDatasetAdapter):
+def _simulate(
+    graph: dict[str, Any], interventions: dict[str, float], rng: random.Random
+) -> dict[str, float]:
+    """Run the released structural model once, under the given interventions.
+
+    Each node carries a ``computation`` string over the graph's own ``params``
+    and its parents; a node that is intervened on takes the set value instead,
+    which is exactly what makes an intervention different from an observation.
+    Nodes are resolved in dependency order, and a cycle (or a formula naming
+    something unknown) leaves the node at its base value rather than failing the
+    episode.
+    """
+    nodes = graph.get("nodes") or {}
+    params = dict(graph.get("params") or {})
+    values: dict[str, float] = {}
+
+    def base_of(info: dict[str, Any]) -> float:
+        spec = info.get("base_value") or {}
+        if isinstance(spec, dict) and spec.get("type") == "uniform":
+            return rng.uniform(float(spec.get("min", 0.0)), float(spec.get("max", 1.0)))
+        try:
+            return float(spec)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+
+    pending = dict(nodes)
+    for _ in range(len(nodes) + 1):
+        if not pending:
+            break
+        for name, info in list(pending.items()):
+            info = info or {}
+            if name in interventions:
+                values[name] = interventions[name]
+                pending.pop(name)
+                continue
+            formula = info.get("computation")
+            if not formula:
+                values[name] = base_of(info)
+                pending.pop(name)
+                continue
+            scope = {**params, **values}
+            try:
+                values[name] = float(eval(formula, {"__builtins__": {}}, scope))  # noqa: S307
+            except NameError:
+                continue  # a parent is not resolved yet
+            except Exception:  # noqa: BLE001 - an unusable formula falls back
+                values[name] = base_of(info)
+            pending.pop(name, None)
+    for name, info in pending.items():
+        values.setdefault(name, base_of(info or {}))
+    return values
+
+
+class CausaLabAdapter(InteractiveMixin, PooledDatasetAdapter):
     """Recover the causal edge set that explains observational data."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given observational data "
+        "over a set of variables. Recover the causal structure that would generate it: state "
+        "the edges of the causal graph, orienting each from cause to effect. Do not list an "
+        "edge that the data does not distinguish from its reverse."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "edge_f1"
 
     def load_items(self) -> list[dict[str, Any]]:
@@ -70,6 +142,90 @@ class CausaLabAdapter(PooledDatasetAdapter):
             "train/test split"
         )
         return items
+
+    # ------------------------------------------------------------------ #
+    # the intervention loop -- CausaLab ships the structural model
+    # ------------------------------------------------------------------ #
+
+    ACTIONS = ("intervene", "observe", "answer")
+    max_turns = 14
+
+    INTERVENTION_PROMPT = (
+        "You are a scientist working out the causal structure of a system. Some variables "
+        "you can set directly; the rest follow from the ones that cause them. You cannot "
+        "see the structure -- you can only intervene and observe what changes.\n\n"
+        "Reply with a single JSON object per turn and nothing else:\n"
+        '{"reasoning": "...", "action": "intervene", "query": {"<variable>": <number>, ...}}\n'
+        "  -- fixes those variables and returns every observable variable's value.\n"
+        '{"reasoning": "...", "action": "observe", "query": {}}\n'
+        "  -- samples the system without intervening.\n"
+        '{"reasoning": "...", "action": "answer", "query": ["A->B", "B->C"]}\n\n'
+        "An edge X->Y means X directly causes Y. Report only the edges your "
+        "interventions actually established: an edge you could not distinguish from its "
+        "reverse is a guess, and a guess costs you precision."
+    )
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        graph = sample.metadata.get("_graph") or {}
+        nodes = graph.get("nodes") or {}
+        controllable = [name for name, info in nodes.items() if (info or {}).get("is_controllable")]
+        observable = [name for name, info in nodes.items() if (info or {}).get("observable", True)]
+        # The release gives each graph its own intervention budget; it is the
+        # benchmark's own measure of how hard the graph is, so it is honoured.
+        budget = int(graph.get("budget") or 8)
+        lines = [
+            f"- {name}"
+            + (f" ({(info or {}).get('display_name')})" if (info or {}).get("display_name") else "")
+            + (" [you can set this]" if (info or {}).get("is_controllable") else "")
+            for name, info in nodes.items()
+        ]
+        opening = (
+            "System variables:\n" + "\n".join(lines) + "\n\n"
+            f"You may set: {', '.join(controllable) or 'nothing'}.\n"
+            f"You can observe: {', '.join(observable)}.\n"
+            f"Intervention budget: {budget}.\n\n"
+            "Find the causal structure, then report its edges."
+        )
+        return (
+            [
+                ChatMessage(role="system", content=self.INTERVENTION_PROMPT),
+                ChatMessage(role="user", content=opening),
+            ],
+            {"graph": graph, "counts": {}, "budget": budget, "used": 0,
+             "rng": random.Random(f"{sample.sample_id}::env")},
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action = parse_action(assistant_text, actions=self.ACTIONS)
+        if action.action == "answer":
+            return None
+        if action.action not in ("intervene", "observe"):
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return (
+                'Reply with one JSON object: {"action": "intervene"|"observe"|"answer", '
+                '"query": ...}'
+            )
+
+        state["used"] += 1
+        if state["used"] > state["budget"]:
+            return "Intervention budget spent. Report the causal edges now."
+        fixed = action.query if isinstance(action.query, dict) else {}
+        try:
+            values = _simulate(state["graph"], {k: float(v) for k, v in fixed.items()},
+                               state["rng"])
+        except Exception as exc:  # noqa: BLE001 - a bad setting is an observation too
+            return f"That intervention could not be run: {type(exc).__name__}: {exc}"
+        observed = ", ".join(
+            f"{name}={value:.3f}"
+            for name, value in values.items()
+            if (state["graph"].get("nodes", {}).get(name) or {}).get("observable", True)
+        )
+        remaining = state["budget"] - state["used"]
+        return f"Observed: {observed}\n({remaining} intervention(s) left.)"
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         nodes = item.get("nodes") or {}
@@ -125,6 +281,12 @@ class CausaLabAdapter(PooledDatasetAdapter):
                 "graph_id": item.get("graph_id"),
                 "n_nodes": len(nodes),
                 "n_edges": len(gold_edges),
+                # The structural model, for the intervention loop.
+                "_graph": {
+                    "nodes": nodes,
+                    "params": item.get("params") or {},
+                    "budget": item.get("budget"),
+                },
             },
         )
 

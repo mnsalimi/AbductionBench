@@ -22,24 +22,45 @@ reported.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
+
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, unparsed_score
+from ._interactive import InteractiveMixin, parse_action
 from ._mathnorm import equal_expressions
 
 REPO_URL = "https://github.com/principia-ai/PhysGym"
 
 
-class PhysGymAdapter(PooledDatasetAdapter):
+class PhysGymAdapter(InteractiveMixin, PooledDatasetAdapter):
     """State the law relating a physical setup's output variable to its inputs."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a physical setup "
+        "and the quantities it involves. State the law relating the target quantity to the "
+        "others, as an equation in the given symbols. A relation that fits the described "
+        "behaviour matters more than one that looks like a familiar formula."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "symbolic_match"
 
     def load_items(self) -> list[dict[str, Any]]:
@@ -60,6 +81,99 @@ class PhysGymAdapter(PooledDatasetAdapter):
             "and fewer problems than the 300-sample target"
         )
         return rows
+
+    # ------------------------------------------------------------------ #
+    # the experiment loop -- PhysGym ships the environment as code
+    # ------------------------------------------------------------------ #
+
+    ACTIONS = ("experiment", "answer")
+    #: The release's default experiment budget per problem.
+    max_turns = 12
+    category_limits = {"experiment": 10}
+
+    EXPERIMENT_PROMPT = (
+        "You are a physicist working out the law that governs a system you can experiment "
+        "on. You cannot see the law; you can only set the inputs and observe the output.\n\n"
+        "Reply with a single JSON object per turn and nothing else:\n"
+        '{"reasoning": "...", "action": "experiment", "query": {"<input>": <number>, ...}}\n'
+        "  -- sets every input and returns the measured output.\n"
+        '{"reasoning": "...", "action": "answer", "query": "<equation for the output '
+        'in terms of the inputs>"}\n\n'
+        "Vary one quantity at a time when you can: the point of an experiment is to "
+        "separate the exponents, not to collect numbers."
+    )
+
+    def _environment(self, sample: SampleSpec):
+        """Compile the sample's own ``env_function`` from the release's code.
+
+        The code is PhysGym's, shipped with the dataset, and is compiled the way
+        the release compiles it -- with ``math`` and ``numpy`` in scope and
+        nothing else.  It is arithmetic over floats, and it is the only way an
+        experiment can return the true value rather than a simulated one.
+        """
+        code = sample.metadata.get("_python_code")
+        if not code:
+            return None
+        namespace: dict[str, Any] = {"np": np, "math": math}
+        try:
+            renamed = re.sub(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", "def env_function(", code)
+            exec(renamed, namespace)  # noqa: S102 - the benchmark's own environment
+        except Exception as exc:  # noqa: BLE001 - a broken sample loses its loop, not the run
+            self.log.warning("physgym: cannot compile env for %s: %s", sample.sample_id, exc)
+            return None
+        return namespace.get("env_function")
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        inputs = sample.metadata.get("_inputs") or {}
+        output_name = sample.metadata.get("output_name", "the output")
+        lines = [f"- {name}: {description}" for name, description in inputs.items()]
+        opening = (
+            f"{sample.fields.get('observation', '')}\n\n"
+            "Inputs you can set:\n" + "\n".join(lines) + "\n\n"
+            f"Output you observe: {output_name}\n\n"
+            "Run experiments, then state the law relating the output to the inputs."
+        )
+        return (
+            [
+                ChatMessage(role="system", content=self.EXPERIMENT_PROMPT),
+                ChatMessage(role="user", content=opening),
+            ],
+            {"env": self._environment(sample), "counts": {}, "experiments": []},
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action = parse_action(assistant_text, actions=self.ACTIONS)
+        if action.action == "answer":
+            return None
+        env = state.get("env")
+        if env is None:
+            # No executable environment for this item: it degrades to the
+            # single-turn form rather than pretending to run experiments.
+            return None
+        if action.action != "experiment" or not isinstance(action.query, dict):
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return (
+                'Reply with one JSON object: {"action": "experiment", "query": '
+                '{"<input>": <number>}} or {"action": "answer", "query": "<equation>"}'
+            )
+
+        self.bump(state, "experiment")
+        if self.over_limit(state, "experiment"):
+            return "Experiment budget exhausted. State the law now."
+        try:
+            values = {str(k): float(v) for k, v in action.query.items()}
+            observed = env(**values)
+        except TypeError as exc:
+            return f"Could not run that experiment: {exc}. Set every input exactly once."
+        except Exception as exc:  # noqa: BLE001 - a bad setting is an observation too
+            return f"The experiment failed at those settings: {type(exc).__name__}: {exc}"
+        state["experiments"].append({"inputs": values, "output": observed})
+        settings = ", ".join(f"{name}={value:g}" for name, value in values.items())
+        return f"Measured with {settings}: {sample.metadata.get('output_name', 'output')} = {observed!r}"
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         content = C.normalize_whitespace(item.get("content"))
@@ -101,7 +215,15 @@ class PhysGymAdapter(PooledDatasetAdapter):
             # gemma-4-E4B's answers were cut off mid-derivation, which makes the
             # metric about verbosity rather than physics.
             max_tokens=2560,
-            metadata={"tag": item.get("tag"), "n_inputs": len(inputs)},
+            metadata={
+                "tag": item.get("tag"),
+                "n_inputs": len(inputs),
+                "output_name": output_name,
+                # The environment itself, for the experiment loop: the
+                # release's own code and variable descriptions.
+                "_python_code": item.get("python_code"),
+                "_inputs": dict(inputs),
+            },
         )
 
     def score(

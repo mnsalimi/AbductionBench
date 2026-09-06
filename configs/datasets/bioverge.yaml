@@ -11,10 +11,8 @@ dataset:
     detail: >-
       The repository contains agent code, API wrappers and prompts (42 files, no
       data). Its README points at a single Google Drive archive
-      (bioverge_dataset.tar.gz) which is 11.9 GB -- a biomedical literature and
-      knowledge-graph corpus for the authors' retrieval agent, with no separately
-      downloadable item file. Pulling 11.9 GB to extract a 300-item probe was
-      judged out of proportion for this run; a future run can materialize it
-      manually into data/bioverge/ and a thin adapter added, but shipping an
-      unvalidated download path would be worse than reporting this honestly.
+      (bioverge_dataset.tar.gz) of 11.9 GB -- a biomedical literature and knowledge-
+      graph corpus for the authors' retrieval agent, with no separately downloadable
+      item file. Pulling 11.9 GB to extract a 300-item probe was judged out of
+      proportion; the dataset is reported as skipped rather than approximated.
   notes: "Reported as skipped with a reason; see the Skipped sheet of the report."

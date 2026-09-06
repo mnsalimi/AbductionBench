@@ -38,6 +38,18 @@ class ABDAdapter(PooledDatasetAdapter):
     """State the minimal-cost explanatory formula for a default-exception theory."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. Here the evidence is a "
+        "default-exception theory and an observation it does not yet explain. A good answer "
+        "is the minimal-cost set of literals that, added to the theory, derives the "
+        "observation without contradicting a stated exception. Respect the theory's own "
+        "predicate vocabulary: an explanation outside it does not count."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "formula_match"
 
     def load_items(self) -> list[dict[str, Any]]:

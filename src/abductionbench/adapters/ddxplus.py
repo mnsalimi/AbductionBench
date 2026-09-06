@@ -27,9 +27,16 @@ from typing import Any
 
 from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span
-from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
+from ..core.types import (
+    AdapterDocumentation,
+    ChatMessage,
+    ModelResponse,
+    SampleScore,
+    SampleSpec,
+)
 from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 
 FIGSHARE = "https://ndownloader.figshare.com/files"
 FILES = {
@@ -41,10 +48,33 @@ FILES = {
 SOURCE_URL = "https://figshare.com/articles/dataset/DDXPlus_Dataset/20043374"
 
 
-class DDXPlusAdapter(PooledDatasetAdapter):
+class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
     """Diagnose a DDXPlus patient from decoded questionnaire answers."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a patient's answers "
+        "to a diagnostic questionnaire, including their age, sex and reported symptoms. State "
+        "the diagnosis that explains the whole picture, not merely a condition consistent "
+        "with one symptom."
+    )
+    data_delivery_mode = "interactive"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'generation'},
+        "selection": {'subtask': 'selection'},
+    }
+    table_hypothesis_mode = "Selection"
+    hypothesis_mode_justification = (
+        "DDXPlus releases, per patient, both a single GROUND-TRUTH PATHOLOGY and a "
+        "DIFFERENTIAL DIAGNOSIS list; the differential defines a closed candidate set "
+        "(selection) while the ground-truth pathology is recoverable without candidates "
+        "(generation), so the two are separate tasks over the same records."
+    )
     primary_metric = "diagnosis_match"
 
     @property
@@ -115,6 +145,93 @@ class DDXPlusAdapter(PooledDatasetAdapter):
         entry = self._conditions.get(raw) or {}
         return C.normalize_whitespace(entry.get("cond-name-eng") or raw)
 
+    # ------------------------------------------------------------------ #
+    # the consultation -- DDXPlus is a questionnaire, so the model asks it
+    # ------------------------------------------------------------------ #
+
+    ACTIONS = ("ask", "diagnosis")
+    #: DDXPlus dialogues in the release average well under 20 questions; the
+    #: limit exists so a model that never commits still terminates.
+    max_turns = 20
+    category_limits = {"ask": 15}
+
+    INTERVIEW_PROMPT = (
+        "You are a physician taking a history from a patient. You are given the patient's "
+        "age, sex and presenting complaint, and you may ask about any symptom or antecedent "
+        "one at a time. The patient answers only what you ask.\n\n"
+        "Reply with a single JSON object and nothing else:\n"
+        '{"reasoning": "...", "action": "ask", "query": "your question to the patient"}\n'
+        "or, once the picture is clear:\n"
+        '{"reasoning": "...", "action": "diagnosis", "query": "the single most likely '
+        'diagnosis"}\n\n'
+        "Ask about what would discriminate between the diagnoses you are considering, not "
+        "about what you already know. Commit as soon as the evidence supports one diagnosis."
+    )
+
+    def _question_catalogue(self) -> dict[str, str]:
+        """``code -> English question text`` for every evidence in the release."""
+        if getattr(self, "_catalogue", None) is None:
+            self._catalogue = {
+                code: C.normalize_whitespace(entry.get("question_en") or entry.get("name") or "")
+                for code, entry in (self._evidences or {}).items()
+            }
+        return self._catalogue
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        meta = sample.metadata
+        # DDXPlus records the presenting complaint as the questionnaire item the
+        # patient first answered, e.g. "Do you have a cough? -> yes". It is
+        # quoted as that question-and-answer pair rather than reworded into a
+        # complaint, so the opening states exactly what the record says.
+        initial = str(meta.get("initial") or "")
+        question, _, answer = initial.partition(" -> ")
+        complaint = f'"{question}" - {answer}' if answer else (question or "unspecified")
+        opening = [
+            f"Patient: {meta.get('age')}-year-old, sex {meta.get('sex')}.",
+            f"Presenting complaint, as the patient first reported it: {complaint}",
+            "Take a history, then give your diagnosis.",
+        ]
+        # The patient's answers: every evidence the record holds, keyed by the
+        # question the release asks for it.
+        store = EvidenceStore()
+        store.categories["ask"] = dict(meta.get("_answers") or {})
+        state = {"evidence": store, "counts": {}, "final": None}
+        return (
+            [
+                ChatMessage(role="system", content=self.INTERVIEW_PROMPT),
+                ChatMessage(role="user", content="\n".join(opening)),
+            ],
+            state,
+        )
+
+    def interactive_step(
+        self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
+    ) -> str | None:
+        action = parse_action(assistant_text, actions=self.ACTIONS)
+        if action.action == "diagnosis":
+            state["final"] = action.query_text
+            return None
+        if not action.action:
+            state["parse_errors"] = state.get("parse_errors", 0) + 1
+            if state["parse_errors"] > 2:
+                return None
+            return (
+                'Reply with one JSON object: {"reasoning": "...", "action": "ask"|"diagnosis", '
+                '"query": "..."}'
+            )
+
+        self.bump(state, "ask")
+        if self.over_limit(state, "ask"):
+            return "That is all the history available. Please give your diagnosis now."
+        store: EvidenceStore = state["evidence"]
+        answer = store.reveal("ask", action.query_text, limit=3)
+        if not answer:
+            # The patient record has nothing matching. DDXPlus records a
+            # patient's *positive* evidences plus the questionnaire's defaults,
+            # so an unmatched question is genuinely a negative answer.
+            answer = "No, nothing like that."
+        return answer + self.limit_note(state, "ask")
+
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         pathology = C.normalize_whitespace(item.get("PATHOLOGY"))
         if not pathology:
@@ -130,6 +247,13 @@ class DDXPlusAdapter(PooledDatasetAdapter):
         if not decoded:
             return None
         initial = self._decode(str(item.get("INITIAL_EVIDENCE") or ""))
+        # The patient's answer sheet for the interactive consultation: the
+        # release's own question text mapped to what this patient answered.
+        answers = {
+            line.split(" -> ", 1)[0]: line.split(" -> ", 1)[1]
+            for line in decoded
+            if " -> " in line
+        }
         age, sex = item.get("AGE"), item.get("SEX")
         antecedents = [line for line in decoded if "have you" in line.lower() or "did you" in line.lower()]
         observation = "\n".join(
@@ -164,7 +288,14 @@ class DDXPlusAdapter(PooledDatasetAdapter):
                 reference={"gold_label": labels[options.index(gold)], "gold": gold},
                 task_kind="selection",
                 max_tokens=768,
-                metadata={"pathology": pathology, "n_evidences": len(decoded)},
+                metadata={
+                    "pathology": pathology,
+                    "n_evidences": len(decoded),
+                "age": age,
+                "sex": sex,
+                "initial": initial,
+                "_answers": answers,
+                },
             )
 
         return SampleSpec(
@@ -182,6 +313,10 @@ class DDXPlusAdapter(PooledDatasetAdapter):
                 "pathology": pathology,
                 "n_evidences": len(decoded),
                 "n_antecedents": len(antecedents),
+                "age": age,
+                "sex": sex,
+                "initial": initial,
+                "_answers": answers,
             },
         )
 

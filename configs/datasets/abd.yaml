@@ -2,8 +2,6 @@ dataset:
   id: abd
   impl: abductionbench.adapters.abd:ABDAdapter
   sample_size: 300
-  prompt_bindings:
-    knowledge_completion: gen_structured_v1
   options:
     scenarios: null    # null -> ABD_FULL, ABD_PARTIAL, ABD_SKEPTICAL
     max_worlds: 4

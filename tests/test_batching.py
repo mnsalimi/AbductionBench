@@ -24,43 +24,34 @@ def _prompt(sample_id: str, max_tokens: int, tokens: int = 100) -> RenderedPromp
     )
 
 
-def test_quantization_rounds_up():
-    assert quantize_max_tokens(1, 256) == 256
+def test_quantization_rounds_down_onto_the_grid():
+    """Down, not up: the budget is what is left of the context window."""
+    assert quantize_max_tokens(1, 256) == 256      # never below one quantum
     assert quantize_max_tokens(256, 256) == 256
-    assert quantize_max_tokens(257, 256) == 512
+    assert quantize_max_tokens(511, 256) == 256    # rounding up would overrun
+    assert quantize_max_tokens(512, 256) == 512
     assert quantize_max_tokens(300, 1) == 300
 
 
-def test_resolve_sampling_precedence_and_clamping():
+def test_output_budget_is_the_rest_of_the_context_window():
+    """The budget is computed, not requested: cap vs what the prompt left over."""
     batching = BatchingConfig(max_tokens_quantum=64)
     model = ModelSamplingConfig(
-        temperature=0.0, top_p=1.0, max_tokens_default=100, max_tokens_cap=256, max_tokens_floor=32
+        temperature=0.0, top_p=1.0, max_tokens_default=32_000, max_tokens_cap=32_000
     )
-    # adapter request is quantized up, then capped
+
+    # No window known: the suite-wide 32,000 ceiling applies.
     params = resolve_sampling(
-        requested_max_tokens=1000,
         per_sample_overrides={},
         model_sampling=model,
         template_sampling={},
         batching=batching,
     )
-    assert params.max_tokens == 256
+    assert params.max_tokens == 32_000
 
-    # per-sample override beats the adapter request; template sampling applies
+    # With a window, the budget is what is left of it after the prompt, and it
+    # never exceeds that -- the quantum rounds down, so it cannot overrun.
     params = resolve_sampling(
-        requested_max_tokens=1000,
-        per_sample_overrides={"max_tokens": 40, "temperature": 0.9},
-        model_sampling=model,
-        template_sampling={"stop": ["</s>"], "temperature": 0.5},
-        batching=batching,
-    )
-    assert params.max_tokens == 64  # 40 -> quantized to 64
-    assert params.temperature == 0.9  # sample override beats template
-    assert params.stop == ("</s>",)
-
-    # context window limits the output budget
-    params = resolve_sampling(
-        requested_max_tokens=256,
         per_sample_overrides={},
         model_sampling=model,
         template_sampling={},
@@ -68,7 +59,22 @@ def test_resolve_sampling_precedence_and_clamping():
         context_window=1000,
         input_tokens=900,
     )
-    assert params.max_tokens <= 92
+    assert params.max_tokens <= 1000 - 900
+    assert params.max_tokens % 64 == 0 or params.max_tokens == 64
+
+    # An adapter cannot ask for more (or less): only decoding params layer.
+    params = resolve_sampling(
+        per_sample_overrides={"max_tokens": 40, "temperature": 0.9},
+        model_sampling=model,
+        template_sampling={"stop": ["</s>"], "temperature": 0.5},
+        batching=batching,
+        context_window=4096,
+        input_tokens=96,
+    )
+    assert params.max_tokens > 40           # the override is ignored by design
+    assert params.max_tokens <= 4096 - 96
+    assert params.temperature == 0.9        # sample override still beats template
+    assert params.stop == ("</s>",)
 
 
 def test_plan_batches_groups_by_signature_and_size():

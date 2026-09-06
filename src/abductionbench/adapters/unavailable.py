@@ -33,6 +33,13 @@ from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, Sampl
 class UnavailableAdapter(DatasetAdapter):
     """Always raises :class:`SkippedDataset` with the configured reason."""
 
+    always_skips = True
+
+    #: Never reached -- the adapter skips before a prompt is ever built -- but
+    #: the base class requires it, and an explicit failure beats an empty one.
+    def build_messages(self, sample):  # type: ignore[override]
+        raise SkippedDataset(str(self.context.option("reason", "not available")))
+
     adapter_version = "1.0"
     primary_metric = ""
 

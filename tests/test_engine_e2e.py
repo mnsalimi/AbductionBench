@@ -118,7 +118,7 @@ def test_resume_skips_completed_samples(fake_server, write_run_config, fake_data
     assert len(fake_server.state.batch_calls) == calls_first + 1
 
 
-def test_resume_is_invalidated_by_a_template_change(fake_server, write_run_config, fake_dataset):
+def test_resume_is_invalidated_by_a_mode_change(fake_server, write_run_config, fake_dataset):
     config_path = write_run_config(
         base_url=fake_server.base_url, datasets=[fake_dataset("fake", n=4, sample_size=4)]
     )
@@ -127,15 +127,17 @@ def test_resume_is_invalidated_by_a_template_change(fake_server, write_run_confi
     changed = write_run_config(
         base_url=fake_server.base_url,
         datasets=[fake_dataset("fake", n=4, sample_size=4)],
-        prompts={"bindings": {"generation": "gen_cot_v1"}},
+        modes={"prompt_modes": ["cot"]},
         name="test-run-2",
     )
     config = load_run_config(changed)
     engine = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
     result2 = asyncio.run(engine.run())
-    # Different template id -> a different task directory, nothing reused.
+    # A different prompt mode is a different run version: its own task
+    # directory, and nothing reused from the io run.
     assert result2.tasks[0].n_reused == 0
-    assert result2.tasks[0].identity.template_id == "gen_cot_v1"
+    assert result2.tasks[0].identity.prompt_mode == "cot"
+    assert result2.tasks[0].identity.template_mode == "cot|n/a|generation|static"
 
 
 def test_transient_failures_are_retried(fake_server, write_run_config, fake_dataset):
@@ -202,9 +204,9 @@ def test_oversize_samples_are_replaced_not_dropped(fake_server, write_run_config
     assert task.n_planned == 6
     assert task.n_scored == 6
     doc = task.documentation
-    assert doc.statistics["oversize_dropped[default]"] == 3
-    assert doc.statistics["replacements_used[default]"] == 3
-    assert doc.statistics["prompts_kept[default]"] == 6
+    assert doc.statistics["oversize_dropped[io_n-a_static]"] == 3
+    assert doc.statistics["replacements_used[io_n-a_static]"] == 3
+    assert doc.statistics["prompts_kept[io_n-a_static]"] == 6
 
 
 def test_oversize_skip_policy_shrinks_the_set(fake_server, write_run_config, fake_dataset):
@@ -294,17 +296,33 @@ def test_skipped_dataset_does_not_stop_the_run(fake_server, write_run_config, fa
     assert [task.identity.dataset_id for task in result.tasks] == ["fine"]
 
 
-def test_template_variants_create_parallel_tasks(fake_server, write_run_config, fake_dataset):
+def test_prompt_modes_create_parallel_tasks(fake_server, write_run_config, fake_dataset):
     config_path = write_run_config(
         base_url=fake_server.base_url,
         datasets=[fake_dataset("fake", n=4, sample_size=4)],
-        prompts={"template_variants": {"cot": {"generation": "gen_cot_v1"}}},
+        modes={"prompt_modes": ["io", "cot"]},
     )
     result, _ = _run(config_path)
-    templates = sorted(task.identity.template_id for task in result.tasks)
-    assert templates == ["gen_cot_v1", "gen_freeform_v1"]
-    # Both variants evaluated the same samples.
+    assert sorted(task.identity.prompt_mode for task in result.tasks) == ["cot", "io"]
+    # Both modes evaluated the same samples, and each is its own run version.
     assert {task.n_planned for task in result.tasks} == {4}
+    assert len({task.identity.template_mode for task in result.tasks}) == 2
+
+
+def test_self_consistency_votes_are_reduced_to_one_score(
+    fake_server, write_run_config, fake_dataset
+):
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"prompt_modes": ["self-consistency"], "self_consistency_n": 3},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    # Four items asked three times each: twelve requests, four scored answers.
+    assert task.n_planned == 12
+    assert task.n_scored == 4
+    assert task.metrics["self_consistency_agreement"] == 1.0
 
 
 def test_dry_run_calls_nothing(fake_server, write_run_config, fake_dataset):
@@ -417,74 +435,17 @@ def test_summary_matrix_is_dense_across_datasets(fake_server, write_run_config, 
     assert len(pivot.index) == 2
 
 
-def test_summary_matrix_separates_prompt_variants(fake_server, write_run_config, fake_dataset):
+def test_summary_matrix_separates_prompt_modes(fake_server, write_run_config, fake_dataset):
     config_path = write_run_config(
         base_url=fake_server.base_url,
         datasets=[fake_dataset("a", n=4, sample_size=4)],
-        prompts={"template_variants": {"cot": {"generation": "gen_cot_v1"}}},
+        modes={"prompt_modes": ["io", "cot"]},
     )
     result, _ = _run(config_path)
     from abductionbench.core.reporting import _pivot, build_summary_frame
 
     pivot = _pivot(build_summary_frame(result))
-    assert sorted(pivot.columns) == ["fake-model (cot)", "fake-model (default)"]
-
-
-def test_empty_response_is_retried_with_a_larger_budget(
-    fake_server, write_run_config, fake_dataset
-):
-    """A reasoning model that burns its budget on hidden CoT is re-asked.
-
-    The fake server returns ``content: null`` while the requested budget is
-    small, and real content once the escalated budget arrives -- so the sample
-    ends up scored instead of counted as empty.
-    """
-    original = fake_server.state.responder
-    threshold = 96
-
-    def responder(conversation, max_tokens):
-        if max_tokens < threshold:
-            return None  # budget exhausted by "reasoning"
-        return original(conversation, max_tokens)
-
-    fake_server.state.responder = responder
-    config_path = write_run_config(
-        base_url=fake_server.base_url,
-        datasets=[fake_dataset("fake", n=4, sample_size=4, max_tokens=48)],
-        engine={
-            "batching": {"max_tokens_quantum": 16},
-            "retry": {
-                "max_attempts": 2,
-                "initial_backoff_s": 0.01,
-                "jitter": 0.0,
-                "recovery": {"enabled": False},
-                "escalate_empty_responses": True,
-                "empty_budget_multiplier": 2.0,
-                "max_empty_escalations": 1,
-            },
-        },
-    )
-    result, _ = _run(config_path)
-    task = result.tasks[0]
-    assert task.checkpoint.empty_escalations == 4
-    assert task.diagnostics["empty_escalations"] == 4
-    assert task.metrics["empty_response_rate"] == 0.0
-    assert task.n_scored == 4
-    statuses = {record["status"] for record in _records(task.output_dir)}
-    assert statuses == {"ok"}
-
-
-def test_empty_escalation_can_be_disabled(fake_server, write_run_config, fake_dataset):
-    fake_server.state.empty_marker = "observation number"  # every sample comes back empty
-    config_path = write_run_config(
-        base_url=fake_server.base_url,
-        datasets=[fake_dataset("fake", n=4, sample_size=4)],
-        engine={"retry": {"escalate_empty_responses": False, "recovery": {"enabled": False}}},
-    )
-    result, _ = _run(config_path)
-    task = result.tasks[0]
-    assert task.checkpoint.empty_escalations == 0
-    assert task.metrics["empty_response_rate"] == 1.0
+    assert sorted(pivot.columns) == ["fake-model (cot)", "fake-model (io)"]
 
 
 def test_output_budget_clamped_by_context_window_is_reported(
@@ -532,45 +493,3 @@ def test_no_clamp_reported_when_the_window_is_ample(fake_server, write_run_confi
     assert result.tasks[0].metrics["output_budget_clamped_rate"] == 0.0
 
 
-def test_truncated_response_escalation_is_opt_in(fake_server, write_run_config, fake_dataset):
-    """A cut-off answer is re-asked only when the run opts in.
-
-    The fake server clips its answer to the budget and reports
-    ``finish_reason="length"`` when it does -- exactly what a real server does
-    for a verbose answer.
-    """
-
-    def responder(conversation, max_tokens):
-        return " ".join(["word"] * 60)  # longer than the small budget below
-
-    fake_server.state.responder = responder
-
-    def run(escalate: bool):
-        config_path = write_run_config(
-            base_url=fake_server.base_url,
-            datasets=[fake_dataset("fake", n=4, sample_size=4, max_tokens=32)],
-            engine={
-                "batching": {"max_tokens_quantum": 16},
-                "retry": {
-                    "max_attempts": 2,
-                    "initial_backoff_s": 0.01,
-                    "jitter": 0.0,
-                    "recovery": {"enabled": False},
-                    "escalate_empty_responses": False,
-                    "escalate_truncated_responses": escalate,
-                },
-            },
-            name=f"trunc-{escalate}",
-        )
-        return _run(config_path)[0].tasks[0]
-
-    off = run(False)
-    assert off.checkpoint.empty_escalations == 0
-    assert off.metrics["truncation_rate"] == 1.0  # all four cut off, none re-asked
-
-    on = run(True)
-    assert on.checkpoint.empty_escalations == 4  # each cut-off sample re-asked once
-    # 32 -> 64 tokens is still under the 60-word answer for some, so what is
-    # asserted is that the escalation happened and nothing was lost.
-    assert on.n_scored == 4
-    assert on.n_error == 0

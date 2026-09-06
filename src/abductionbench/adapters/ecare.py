@@ -37,6 +37,23 @@ class ECareAdapter(PooledDatasetAdapter):
     """Abductive half of e-CARE: pick the cause that explains the premise."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given an everyday "
+        "observation. The cause you want is the one that would ordinarily bring the "
+        "observation about -- judge plausibility by common causal knowledge, not by topical "
+        "similarity of wording."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'explanation'},
+        "selection": {'subtask': 'cause_selection'},
+    }
+    table_hypothesis_mode = "Generation / Selection (separate tasks)"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

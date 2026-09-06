@@ -38,6 +38,17 @@ class AERAdapter(PooledDatasetAdapter):
     """Multi-answer selection of the direct causes of a news event."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a news event and a "
+        "list of candidate antecedent events. Select every candidate that is a direct cause "
+        "of the event -- an event whose occurrence made the target event happen, not one that "
+        "merely preceded or accompanied it. Several candidates can be direct causes."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "multi"
     primary_metric = "set_f1"
 
     def load_items(self) -> list[dict[str, Any]]:

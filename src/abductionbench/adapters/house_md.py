@@ -38,6 +38,17 @@ class HouseMDAdapter(PooledDatasetAdapter):
     """Diagnose a rare-disease vignette; reference is the episode's disease."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a clinical vignette "
+        "whose presentation is unusual. Name the underlying disease that explains the "
+        "combination of findings -- rare diseases are expected here, so do not default to the "
+        "common condition that explains only part of the picture."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "diagnosis_match"
 
     def load_items(self) -> list[dict[str, Any]]:

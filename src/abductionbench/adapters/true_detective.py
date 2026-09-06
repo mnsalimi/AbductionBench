@@ -34,6 +34,16 @@ class TrueDetectiveAdapter(PooledDatasetAdapter):
     """Select the correct culprit/explanation for a long mystery."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a detective puzzle "
+        "in full. Work out which candidate explanation the evidence actually supports; these "
+        "puzzles are designed so that the obvious reading is usually wrong."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

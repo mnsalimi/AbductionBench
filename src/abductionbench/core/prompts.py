@@ -1,33 +1,33 @@
-"""Versioned, swappable prompt templates.
+"""Versioned prompt templates -- for the **judge**, not for datasets.
 
-Prompt wording is configuration, never code.  A template is a YAML file such as
-``configs/prompts/gen_freeform_v1.yaml``::
+Dataset prompts moved out of here: each child adapter owns its own system prompt
+and wording (specification item 4), because what makes a good instruction is a
+property of the task, and a universal one imposed by the core cannot be right
+for forty benchmarks at once.  ``abductionbench.adapters._prompting`` holds the
+mode scaffolding those adapters share.
 
-    id: gen_freeform_v1
+What is left is the LLM judge.  A judge is the harness prompting a model of its
+own, not a dataset being evaluated, so its wording stays swappable configuration
+-- a YAML file such as ``configs/prompts/judge/judge_binary_v1.yaml``::
+
+    id: judge_binary_v1
     version: "1.0"
-    description: Zero-shot free-form abductive explanation.
-    task_kinds: [generation]
-    required_fields: [observation]
-    optional_fields: [context, question]
+    description: Binary same-hypothesis verdict.
+    task_kinds: [judge]
+    required_fields: [candidate, gold]
     messages:
       - role: system
-        content: "You are an expert at abductive reasoning..."
+        content: "You are grading whether two statements say the same thing."
       - role: user
         content: |
-          Observation:
-          {{ observation }}
-          {% if question %}Question: {{ question }}{% endif %}
-          Give the single most plausible explanation.
+          Reference: {{ gold }}
+          Candidate: {{ candidate }}
+          Answer YES or NO.
     output_contract:
-      answer_prefix: "Explanation:"
-    sampling:
-      stop: []
+      answer_prefix: "Answer:"
 
-The engine renders a :class:`~abductionbench.core.types.SampleSpec` with the
-template bound to that sample's ``task_kind`` (run config → dataset override →
-template variant).  ``output_contract`` is handed to the adapter's scorer, so a
-template can change the expected answer format and the scorer can follow it
-without code changes.
+``output_contract`` is handed to whatever parses the verdict, so a template can
+change the expected answer format without a code change.
 """
 
 from __future__ import annotations

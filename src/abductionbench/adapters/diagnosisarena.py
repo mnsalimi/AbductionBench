@@ -35,6 +35,27 @@ class DiagnosisArenaAdapter(PooledDatasetAdapter):
     """Free-text diagnosis (default) or the dataset's own four-way choice."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given the full work-up of "
+        "a published clinical case: presentation, history, examination and investigations. "
+        "State the final diagnosis that explains the case as a whole."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection",)
+    hypothesis_mode_options = {
+        "generation": {'subtask': 'generation'},
+        "selection": {'subtask': 'selection'},
+    }
+    table_hypothesis_mode = "Generation"
+    hypothesis_mode_justification = (
+        "Every DiagnosisArena case ships four answer options with one correct diagnosis "
+        "alongside the free-text gold diagnosis, so the release itself defines a closed-set "
+        "selection task over the same cases as well as the open-ended one."
+    )
     primary_metric = "diagnosis_match"
 
     @property

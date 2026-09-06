@@ -43,6 +43,18 @@ class GearAdapter(PooledDatasetAdapter):
     """ACRE blicket experiments: on / off / undetermined."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are shown blicket-detector "
+        "experiments: which objects were placed on the detector and whether it activated. "
+        "Decide whether the queried object activates the detector. Answer 'undetermined' when "
+        "the experiments genuinely do not settle it -- guessing is worse than admitting the "
+        "evidence is incomplete."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

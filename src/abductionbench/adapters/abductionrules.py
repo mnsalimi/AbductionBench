@@ -35,6 +35,17 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
     """One sample per (theory, observation) pair from the official test splits."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a small rule base "
+        "and an observation that the rules alone do not entail. State the single missing fact "
+        "which, added to the rule base, would make the observation derivable. Answer in the "
+        "same subject-predicate form the rules use."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "exact_match"
 
     def load_items(self) -> list[dict[str, Any]]:

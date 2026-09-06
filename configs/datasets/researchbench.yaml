@@ -1,12 +1,17 @@
 dataset:
   id: researchbench
-  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  impl: abductionbench.adapters.researchbench:ResearchBenchAdapter
   sample_size: 300
   options:
-    name: "ResearchBench"
-    domain: "Scientific Discovery: Literature-Grounded"
-    processing_mode: "Generation / Selection"
-    source_url: "https://huggingface.co/datasets/ankilok/ResearchBench"
-    reason: "gated Hugging Face repository"
-    detail: "Downloads return HTTP 401 (GatedRepoError): the repo requires accepting terms with an authenticated HF token. Set HF_TOKEN with access and re-enable this dataset to include it."
-  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
+    # generation (the released generation/ file) or selection (ranking/).
+    # The run's modes.hypothesis_modes normally sets this: the dataset table
+    # marks ResearchBench "Generation / Selection (separate tasks)", so both are
+    # run as independent tasks with independent scores.
+    subtask: generation
+  notes: >-
+    Gated Hugging Face dataset. Set HF_TOKEN to a token whose account has
+    accepted the terms once at https://huggingface.co/datasets/ankilok/ResearchBench
+    (gate type "auto": acceptance grants access immediately). Without that, the
+    adapter reports the dataset as skipped and names the acceptance URL; a token
+    alone is not enough, because repository metadata reads for any account while
+    the files stay 403.

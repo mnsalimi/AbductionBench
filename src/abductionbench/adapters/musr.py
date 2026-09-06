@@ -33,6 +33,16 @@ class MuSRAdapter(PooledDatasetAdapter):
     """Murder-mystery domain of MuSR: name the murderer."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a murder mystery. "
+        "Name the murderer, and be guided by means, motive and opportunity as the narrative "
+        "establishes them -- the culprit is the suspect all three converge on."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = "single"
     primary_metric = "accuracy"
 
     def load_items(self) -> list[dict[str, Any]]:

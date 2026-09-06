@@ -37,6 +37,7 @@ def write_run_config(tmp_path: Path, prompt_dir: Path):
         datasets: list[dict[str, Any]],
         engine: dict[str, Any] | None = None,
         prompts: dict[str, Any] | None = None,
+        modes: dict[str, Any] | None = None,
         models: list[dict[str, Any]] | None = None,
         name: str = "test-run",
     ) -> Path:
@@ -69,6 +70,7 @@ def write_run_config(tmp_path: Path, prompt_dir: Path):
                 "reporting": {"include_sample_sheets": True},
                 **(engine or {}),
             },
+            "modes": modes or {},
             "prompts": {
                 "template_dirs": [str(prompt_dir)],
                 "bindings": {"generation": "gen_freeform_v1", "selection": "sel_mcq_letter_v1"},

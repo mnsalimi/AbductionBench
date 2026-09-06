@@ -27,6 +27,16 @@ class NeuLRAdapter(PooledDatasetAdapter):
     """The abductive third of NeuLR: name the missing premise."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given premises and a "
+        "conclusion with one premise missing. Name the missing premise that makes the "
+        "argument go through."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = True
+    selection_cardinality = None
     primary_metric = "exact_match"
 
     def load_items(self) -> list[dict[str, Any]]:

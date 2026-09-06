@@ -33,6 +33,17 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
     """Propose the mechanism-level hypothesis for a materials research problem."""
 
     adapter_version = "1.0"
+
+    system_prompt = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
+        "would best account for the evidence you are given. You are given a materials-science "
+        "research problem and its observations. Propose the mechanism that explains them at "
+        "the level of structure and process -- what is happening in the material, not what "
+        "should be measured next."
+    )
+    data_delivery_mode = "static"
+    objective_metrics = False
+    selection_cardinality = None
     primary_metric = "hypothesis_rouge_l"
 
     def load_items(self) -> list[dict[str, Any]]:
