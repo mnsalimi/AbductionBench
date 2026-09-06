@@ -355,8 +355,8 @@ class SciLabAdapter(InteractiveMixin, PooledDatasetAdapter):
         ]
         if not pairs:
             return SampleScore(
-                metrics={"prediction_error": float("nan"), "answered_rate": 0.0,
-                         "law_stated": 0.0},
+                # No prediction_error key: the episode was not measured.
+                metrics={"answered_rate": 0.0, "law_stated": 0.0},
                 parse_ok=False,
                 details={"reason": "the episode produced no usable predictions"},
             )
@@ -384,18 +384,17 @@ class SciLabAdapter(InteractiveMixin, PooledDatasetAdapter):
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
-        usable = [
-            {k: v for k, v in score.metrics.items() if not math.isnan(v)} for score in scores
+        # An episode that could not be measured omits the metric rather than
+        # reporting NaN, so "scored" is simply the episodes that have one.
+        metrics = aggregate_mean_metrics([score.metrics for score in scores])
+        errors = [
+            score.metrics["prediction_error"]
+            for score in scores
+            if "prediction_error" in score.metrics
         ]
-        metrics = aggregate_mean_metrics(usable)
-        scored = [
-            s.metrics["prediction_error"]
-            for s in scores
-            if not math.isnan(s.metrics.get("prediction_error", float("nan")))
-        ]
-        metrics["episodes_scored"] = float(len(scored))
-        if scored:
-            metrics["prediction_error"] = mean(scored)
+        metrics["episodes_scored"] = float(len(errors))
+        if errors:
+            metrics["prediction_error"] = mean(errors)
         return metrics
 
     # ------------------------------------------------------------------ #

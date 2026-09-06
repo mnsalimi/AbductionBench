@@ -592,3 +592,35 @@ def test_a_prompt_with_no_room_to_answer_is_skipped_not_sent(
     assert task.metrics["coverage"] == 0.0
     # Nothing was sent, so nothing could fail.
     assert task.n_error == 0
+
+
+def test_every_sheet_has_a_bold_centred_frozen_header(
+    fake_server, write_run_config, fake_dataset
+):
+    """Checked by reading the workbook back, not by trusting the writer."""
+    from openpyxl import load_workbook
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+    )
+    result, _ = _run(config_path)
+    write_reports(result)
+    workbook = load_workbook(
+        result.run_dir / "reports" / "abductionbench_results.xlsx"
+    )
+    assert len(workbook.sheetnames) > 5
+
+    for name in workbook.sheetnames:
+        sheet = workbook[name]
+        # Row 1 is frozen everywhere. Sheets whose first column carries the row
+        # labels freeze that too, so a wide matrix survives sideways scrolling.
+        assert sheet.freeze_panes in ("A2", "B2"), f"{name}: {sheet.freeze_panes}"
+
+        header = [cell for cell in sheet[1] if cell.value not in (None, "")]
+        assert header, f"{name} has no header row"
+        for cell in header:
+            assert cell.font.bold, f"{name}!{cell.coordinate} is not bold"
+            assert cell.alignment.horizontal == "center", (
+                f"{name}!{cell.coordinate} is not centred"
+            )

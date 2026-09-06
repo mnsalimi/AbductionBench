@@ -39,7 +39,6 @@ are skipped and reported.  ``options.environments`` overrides the selection.
 from __future__ import annotations
 
 import importlib
-import math
 import random
 import re
 import sys
@@ -386,8 +385,10 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
         truths = state.get("truths") or []
         pairs = min(len(predictions), len(truths))
         if not pairs:
+            # No standardized_error key at all: the episode was not measured,
+            # and an absent metric is what the aggregator reads as "skip me".
             return SampleScore(
-                metrics={"standardized_error": float("nan"), "answered_rate": 0.0},
+                metrics={"answered_rate": 0.0},
                 parse_ok=False,
                 details={"reason": "the episode produced no predictions"},
             )
@@ -396,8 +397,7 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
             error, _spread = goal.evaluate_predictions(predictions[:pairs], truths[:pairs])
         except Exception as exc:  # noqa: BLE001 - an unparseable answer is a wrong one
             return SampleScore(
-                metrics={"standardized_error": float("nan"), "answered_rate": pairs /
-                         max(1, len(truths))},
+                metrics={"answered_rate": pairs / max(1, len(truths))},
                 parse_ok=False,
                 details={"reason": f"predictions could not be scored: {exc}"},
             )
@@ -418,18 +418,17 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
-        metrics = aggregate_mean_metrics(
-            [
-                {k: v for k, v in score.metrics.items() if not math.isnan(v)}
-                for score in scores
-            ]
-        )
-        scored = [s for s in scores if not math.isnan(s.metrics.get("standardized_error", float("nan")))]
-        metrics["episodes_scored"] = float(len(scored))
-        if scored:
-            metrics["standardized_error"] = mean(
-                [s.metrics["standardized_error"] for s in scored]
-            )
+        # An episode that could not be measured omits the metric rather than
+        # reporting NaN, so "scored" is simply the episodes that have one.
+        metrics = aggregate_mean_metrics([score.metrics for score in scores])
+        errors = [
+            score.metrics["standardized_error"]
+            for score in scores
+            if "standardized_error" in score.metrics
+        ]
+        metrics["episodes_scored"] = float(len(errors))
+        if errors:
+            metrics["standardized_error"] = mean(errors)
         return metrics
 
     # ------------------------------------------------------------------ #

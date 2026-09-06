@@ -152,3 +152,45 @@ def test_report_does_not_average_a_group_with_its_own_reduction(tmp_path):
     ]
     assert len(scored) == 1
     assert scored[0]["metrics"]["set_f1"] == 1.0
+
+
+def test_a_non_finite_metric_never_reaches_the_records_file():
+    """NaN is not JSON: the serializer writes null, and null cannot be read back.
+
+    An adapter that reports NaN for "not measured" would otherwise produce a
+    records file that `abench report` crashes on -- which is exactly what
+    happened to a live run's BoxingGym episodes.
+    """
+    import math
+
+    from abductionbench.core.types import EvalRecord, ResponseStatus, TaskIdentity
+
+    identity = TaskIdentity(
+        run_id="r", dataset_id="d", model_id="m", template_id="t", template_version="1.0"
+    )
+    record = EvalRecord(
+        task=identity,
+        sample_id="s1",
+        status=ResponseStatus.OK,
+        prompt_fingerprint="f",
+        task_kind="generation",
+        input_tokens_est=10,
+        sampling={},
+        response={},
+        metrics={
+            "good": 0.5,
+            "not_measured": float("nan"),
+            "diverged": float("inf"),
+        },
+    )
+    payload = record.to_json_dict()
+    assert payload["metrics"] == {"good": 0.5}
+
+    # And what survives is round-trippable.
+    import json
+
+    reread = json.loads(json.dumps(payload))
+    assert all(
+        isinstance(v, (int, float)) and math.isfinite(v)
+        for v in reread["metrics"].values()
+    )

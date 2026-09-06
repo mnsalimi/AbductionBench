@@ -116,7 +116,14 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
 
                 scores = [
                     SampleScore(
-                        metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
+                        # Records from older runs can carry a null where a
+                        # non-finite metric was written; one unreadable value
+                        # must not cost the whole report.
+                        metrics={
+                            k: float(v)
+                            for k, v in (rec.get("metrics") or {}).items()
+                            if isinstance(v, (int, float))
+                        },
                         prediction=rec.get("prediction"),
                         parse_ok=bool(rec.get("parse_ok", True)),
                         details=rec.get("details") or {},

@@ -3312,3 +3312,27 @@ eval_point: 141, 295, 113, 1
 19:18:52 INFO    abductionbench.core.engine: 4 episode(s) ran out of context after 2 turn(s); ending them there
 19:19:46 INFO    abductionbench.core.sync: artifact sync ok (interval) in 554.3s -> gdrive:AbductionBench/20260906-140511_full
 19:22:28 INFO    abductionbench.core.engine: 1 episode(s) ran out of context after 16 turn(s); ending them there
+19:25:49 INFO    abductionbench.core.engine: 3 episode(s) ran out of context after 3 turn(s); ending them there
+19:26:32 INFO    abductionbench.core.engine: 1 episode(s) ran out of context after 17 turn(s); ending them there
+19:26:57 INFO    abductionbench.core.engine: 7 episode(s) hit the 20-turn limit without committing to an answer
+19:27:00 INFO    abductionbench.core.engine: task ddxplus__qwen3-5-2b-local__io_n-a_generation_interactive finished in 3761.8s: diagnosis_match=0.1067 (scored 300/300, 0 error(s))
+19:27:00 WARNING abductionbench.core.engine: task defab__qwen3-5-2b-local__io_MCS_static: 5 of 300 prompt(s) had their output budget clamped by the model's 32768-token context window (worst: sample defab-biology-obogo_modificationofmorphologyorphysiologyofotherorganisminvolvedinsymbioticinteraction_obogo_modulationof asked for 32000, got 31744). Scores for those samples may reflect a truncated answer.
+19:27:00 INFO    abductionbench.core.engine: task defab__qwen3-5-2b-local__io_MCS_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:27:05 INFO    abductionbench.core.engine: task defab__qwen3-5-2b-local__io_MCS_static finished in 5.3s: accuracy=0.8567 (scored 300/300, 0 error(s))
+19:27:05 WARNING abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_n-a_generation_static: 69 of 300 prompt(s) had their output budget clamped by the model's 32768-token context window (worst: sample dxarena-892 asked for 32000, got 31744). Scores for those samples may reflect a truncated answer.
+19:27:05 INFO    abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_n-a_generation_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:27:30 INFO    abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_n-a_generation_static finished in 24.4s: diagnosis_match=0.0133 (scored 300/300, 0 error(s))
+19:27:30 WARNING abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_SCS_selection_static: 109 of 300 prompt(s) had their output budget clamped by the model's 32768-token context window (worst: sample dxarena-495 asked for 32000, got 31488). Scores for those samples may reflect a truncated answer.
+19:27:30 INFO    abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_SCS_selection_static: 300 prompt(s) -> 39 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:27:36 INFO    abductionbench.core.engine: task diagnosisarena__qwen3-5-2b-local__io_SCS_selection_static finished in 6.1s: accuracy=0.5033 (scored 300/300, 0 error(s))
+19:27:36 INFO    abductionbench.core.engine: task ecare__qwen3-5-2b-local__io_n-a_generation_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:27:51 INFO    abductionbench.core.engine: task ecare__qwen3-5-2b-local__io_n-a_generation_static finished in 15.2s: explanation_match=0.0000 (scored 300/300, 0 error(s))
+19:27:51 INFO    abductionbench.core.engine: task ecare__qwen3-5-2b-local__io_SCS_selection_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:27:56 INFO    abductionbench.core.engine: task ecare__qwen3-5-2b-local__io_SCS_selection_static finished in 4.9s: accuracy=0.7233 (scored 300/300, 0 error(s))
+19:27:56 INFO    abductionbench.core.engine: task enwn_entailmentbank__qwen3-5-2b-local__io_n-a_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:28:07 INFO    abductionbench.core.engine: task enwn_entailmentbank__qwen3-5-2b-local__io_n-a_static finished in 11.4s: exact_match=0.0233 (scored 300/300, 0 error(s))
+19:28:07 INFO    abductionbench.core.engine: task gear__qwen3-5-2b-local__io_SCS_static: 300 prompt(s) -> 38 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:28:13 INFO    abductionbench.core.engine: task gear__qwen3-5-2b-local__io_SCS_static finished in 5.6s: accuracy=0.3533 (scored 300/300, 0 error(s))
+19:28:13 WARNING abductionbench.core.engine: task house_md__qwen3-5-2b-local__io_n-a_static: 86 of 300 prompt(s) had their output budget clamped by the model's 32768-token context window (worst: sample housemd-245-245 asked for 32000, got 31232). Scores for those samples may reflect a truncated answer.
+19:28:13 INFO    abductionbench.core.engine: task house_md__qwen3-5-2b-local__io_n-a_static: 300 prompt(s) -> 40 batch call(s) (group size 8, model=Qwen/Qwen3.5-2B)
+19:29:03 INFO    abductionbench.core.engine: 1 episode(s) ran out of context after 4 turn(s); ending them there

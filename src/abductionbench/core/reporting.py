@@ -408,19 +408,66 @@ def _pivot(summary: pd.DataFrame) -> pd.DataFrame:
     ).sort_index()
 
 
+def _header_format(writer: Any) -> Any:
+    """The one header format, made once per workbook.
+
+    xlsxwriter formats belong to a workbook, and re-adding an identical one for
+    every sheet grows the file for no benefit, so it is cached on the writer.
+    """
+    cached = getattr(writer, "_abench_header_format", None)
+    if cached is None:
+        cached = writer.book.add_format(
+            {
+                "bold": True,
+                "align": "center",
+                "valign": "vcenter",
+                "text_wrap": True,
+                "bottom": 1,
+            }
+        )
+        writer._abench_header_format = cached
+    return cached
+
+
 def _write_sheet(writer: Any, frame: pd.DataFrame, name: str, *, index: bool = False) -> None:
+    """Write one sheet with a bold, centred, frozen header row.
+
+    pandas writes the header with its own default format, so it is rewritten
+    afterwards rather than fought with: same cells, same order, our format.
+    Freezing the header keeps the column names on screen in sheets that run to
+    thousands of rows -- which the per-sample sheets do -- and the first column
+    is frozen too when it carries the row labels, so a wide matrix stays
+    readable when it is scrolled sideways.
+    """
     if frame is None or frame.empty:
-        pd.DataFrame({"note": ["no data"]}).to_excel(writer, sheet_name=name, index=False)
-        return
+        frame = pd.DataFrame({"note": ["no data"]})
+        index = False
     frame.to_excel(writer, sheet_name=name, index=index)
     worksheet = writer.sheets[name]
-    for position, column in enumerate(frame.columns, start=1 if index else 0):
+    header = _header_format(writer)
+    offset = 1 if index else 0
+
+    if index:
+        # The corner cell holds the index's name (often blank) and is part of
+        # the header row, so it gets the same treatment.
+        worksheet.write(0, 0, str(frame.index.name or ""), header)
+    for position, column in enumerate(frame.columns):
+        worksheet.write(0, position + offset, str(column), header)
+
+    for position, column in enumerate(frame.columns, start=offset):
         # str() per cell rather than astype(str): pandas >= 2.1 leaves missing
         # values as float NaN under astype(str), which has no len().
         widths = [len(str(column))]
-        series = frame.iloc[:, position - 1 if index else position].head(200)
+        series = frame.iloc[:, position - offset].head(200)
         widths.extend(len(str(value)) for value in series)
         worksheet.set_column(position, position, min(60, max(10, max(widths) + 2)))
+    if index:
+        labels = [len(str(frame.index.name or ""))]
+        labels.extend(len(str(value)) for value in frame.index[:200])
+        worksheet.set_column(0, 0, min(60, max(10, max(labels) + 2)))
+
+    # Row 1 down scrolls; the header stays. With an index, its column stays too.
+    worksheet.freeze_panes(1, offset)
 
 
 def _write_task_documentation(result: RunResult, task: TaskResult) -> Path:

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -380,7 +381,16 @@ class EvalRecord:
             "input_tokens_est": self.input_tokens_est,
             "sampling": self.sampling,
             "response": self.response,
-            "metrics": self.metrics,
+            # NaN and infinity are not JSON: the serializer writes them as
+            # null, and reading that back as a number fails. A non-finite
+            # metric already means "not measured", which is what an absent key
+            # means to the aggregator, so it is dropped rather than written as
+            # a value nothing can read.
+            "metrics": {
+                key: value
+                for key, value in (self.metrics or {}).items()
+                if isinstance(value, (int, float)) and math.isfinite(value)
+            },
             "prediction": self.prediction,
             "parse_ok": self.parse_ok,
             "reference": self.reference,
