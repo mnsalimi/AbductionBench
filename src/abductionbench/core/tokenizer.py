@@ -5,8 +5,8 @@ and the per-model context check.  Which counter is used is configuration:
 
 * ``hf``        -- the served model's own tokenizer (exact, needs ``transformers``);
 * ``tiktoken``  -- BPE approximation, no model download;
-* ``endpoint``  -- ask the vLLM server itself (``POST /tokenize``); exact, but
-                   costs a round trip per prompt, so it is opt-in;
+* ``endpoint``  -- not implemented; asks the caller to use ``hf`` instead
+                   rather than quietly degrading to a guess;
 * ``heuristic`` -- characters / ``chars_per_token``; dependency-free fallback;
 * ``auto``      -- hf → tiktoken → heuristic, whichever is available.
 
@@ -200,9 +200,15 @@ def build_token_counter(config: TokenizerConfig) -> TokenCounter:
             elif backend == "heuristic":
                 counter = HeuristicCounter(config)
             elif backend == "endpoint":
-                # The endpoint counter is created by the client (it needs an
-                # HTTP session); the engine substitutes it when configured.
-                counter = HeuristicCounter(config)
+                # Documented as exact, but never implemented: it would need an
+                # HTTP session the counter does not have. Silently handing back
+                # the crudest counter to someone who asked for the exact one is
+                # how a run overshoots its context window, so this says no.
+                raise ValueError(
+                    "tokenizer.backend='endpoint' is not implemented. Use 'hf' for exact "
+                    "counts with the model's own tokenizer (set tokenizer.hf_model, or "
+                    "leave it empty and the run's first model is used)."
+                )
             else:
                 raise ValueError(f"unknown tokenizer backend {backend!r}")
             logger.info("token counting backend: %s", counter.backend)
