@@ -676,8 +676,12 @@ class EvaluationEngine:
         assert bundle.adapter is not None
         dataset_cfg = bundle.config
         adapter = bundle.adapter
-        budget = dataset_cfg.input_token_budget or self.engine_cfg.limits.input_token_budget
-        policy = self.engine_cfg.limits.on_oversize
+        # An interactive episode's context is a transcript, not a prompt, so its
+        # budget is set by how the dataset is delivered unless the dataset names
+        # its own. Oversize interactive items are dropped rather than replaced.
+        delivery = bundle.modes.data_delivery_mode
+        budget = dataset_cfg.input_token_budget or self.engine_cfg.limits.budget_for(delivery)
+        policy = self.engine_cfg.limits.oversize_policy_for(delivery)
         target = len(bundle.samples)
         modes = bundle.modes
 
@@ -885,6 +889,9 @@ class EvaluationEngine:
         # Compose model-specific sampling params for every prompt.
         rendered: list[RenderedPrompt] = []
         clamped: list[tuple[str, int, int]] = []
+        no_room: list[tuple[str, int]] = []
+        # The least room worth sending a request for.
+        min_answer_tokens = max(64, self.engine_cfg.batching.max_tokens_quantum)
         for sample, messages, tokens in prompt_set.entries:
             contract = sample.metadata.get("_output_contract", prompt_set.output_contract)
             sampling = batching_mod.resolve_sampling(
@@ -909,6 +916,13 @@ class EvaluationEngine:
                     stop=sampling.stop,
                     extra=sampling.extra,
                 )
+            if sampling.max_tokens < min_answer_tokens:
+                # The prompt fits the dataset's input budget but leaves this
+                # model no room to answer in. Sending it earns a 400 that takes
+                # the whole batch down with it, so it is skipped and reported:
+                # the sample is fine, this model's window is too small for it.
+                no_room.append((sample.sample_id, tokens))
+                continue
             if sampling.max_tokens < model.sampling.max_tokens_cap:
                 # The window, not the cap, is what limits this request. Counted
                 # so a dataset whose prompts crowd out the answer is visible.
@@ -925,6 +939,25 @@ class EvaluationEngine:
                     input_tokens_est=tokens,
                     output_contract=contract,
                 )
+            )
+
+        if no_room:
+            longest = max(no_room, key=lambda item: item[1])
+            logger.warning(
+                "task %s: %d prompt(s) left %s no room to answer in and were skipped "
+                "(longest: sample %s at %d input tokens against a %s-token window). "
+                "Lower engine.limits.input_token_budget for this model, or use a model "
+                "with a larger window.",
+                identity.slug, len(no_room), model.id, longest[0], longest[1],
+                model.limits.context_window,
+            )
+            self.events.emit(
+                "prompts_without_answer_room",
+                **identity.as_dict(),
+                n_skipped=len(no_room),
+                longest_sample=longest[0],
+                longest_input_tokens=longest[1],
+                context_window=model.limits.context_window,
             )
 
         result.n_planned = len(rendered)
@@ -1144,7 +1177,9 @@ class EvaluationEngine:
         all_scores = [score for _, _, score in scores] + reused_scores
         result.n_scored = len(all_scores)
         result.n_error = checkpoint.failed + reused_errors
-        result.n_skipped = checkpoint.skipped + reused_skips
+        # Prompts this model had no room to answer are skipped before anything
+        # is sent, so they are counted here rather than by the checkpoint.
+        result.n_skipped = checkpoint.skipped + reused_skips + len(no_room)
 
         metrics = self._aggregate(adapter, all_scores, result, scores, reused_records)
         result.metrics = metrics
@@ -1254,8 +1289,28 @@ class EvaluationEngine:
             try:
                 messages, state = adapter.interactive_start(prompt.sample)
             except Exception as exc:  # noqa: BLE001 - one bad episode must not stop the task
+                # An episode whose environment will not start is an *error*, not
+                # a single-turn episode: falling back to the bare prompt would
+                # score the model on a question the benchmark never asked.
                 logger.warning("episode %s could not start: %s", prompt.sample_id, exc)
-                messages, state = list(prompt.messages), {}
+                episodes.append(
+                    {
+                        "prompt": prompt,
+                        "messages": [],
+                        "state": {},
+                        "turn": 0,
+                        "transcript": [],
+                        "response": ModelResponse(
+                            sample_id=prompt.sample_id,
+                            model_id=model.id,
+                            status=ResponseStatus.ERROR,
+                            error=f"environment failed to start: {type(exc).__name__}: {exc}",
+                            error_class=ErrorClass.INVALID_REQUEST.value,
+                        ),
+                        "dead": True,
+                    }
+                )
+                continue
             episodes.append(
                 {
                     "prompt": prompt,
@@ -1268,14 +1323,31 @@ class EvaluationEngine:
             )
 
         limit = max(1, int(getattr(adapter, "max_turns", 8)))
-        live = list(episodes)
+        # The least room an answer needs for a turn to be worth sending at all.
+        min_answer_tokens = max(64, self.engine_cfg.batching.max_tokens_quantum)
+        live = [episode for episode in episodes if not episode.get("dead")]
         turn = 0
         while live and turn < limit:
             turn += 1
             turn_prompts: list[RenderedPrompt] = []
+            exhausted: list[dict[str, Any]] = []
             for episode in live:
                 base = episode["prompt"]
                 tokens = self.token_counter.count_messages(episode["messages"])
+                window = model.limits.context_window
+                room = window - tokens - batching_mod.context_reserve(
+                    tokens, self.engine_cfg.batching
+                ) if window else min_answer_tokens
+                if window and room < min_answer_tokens:
+                    # An episode's transcript grows with every turn, and a long
+                    # one eventually leaves no room to answer in. Sending the
+                    # request anyway just earns a context_length rejection and
+                    # loses the whole batch it travelled in, so the episode ends
+                    # here and says why -- which is also a real property of the
+                    # model being measured: it ran out of room to think in.
+                    episode["context_exhausted"] = True
+                    exhausted.append(episode)
+                    continue
                 sampling = batching_mod.resolve_sampling(
                     per_sample_overrides=base.sample.sampling_overrides,
                     model_sampling=model.sampling,
@@ -1295,6 +1367,15 @@ class EvaluationEngine:
                         output_contract=base.output_contract,
                     )
                 )
+
+            if exhausted:
+                logger.info(
+                    "%d episode(s) ran out of context after %d turn(s); ending them there",
+                    len(exhausted), turn - 1,
+                )
+                live = [episode for episode in live if not episode.get("context_exhausted")]
+            if not turn_prompts:
+                break
 
             by_id = {id(p): episode for p, episode in zip(turn_prompts, live, strict=True)}
             index = {p.sample_id: by_id[id(p)] for p in turn_prompts}
@@ -1360,8 +1441,11 @@ class EvaluationEngine:
                 **(response.usage or {}),
                 "turns": episode["turn"],
                 "transcript_messages": len(episode["transcript"]),
+                "context_exhausted": bool(episode.get("context_exhausted")),
             }
             prompt.sample.metadata["turns_used"] = episode["turn"]
+            if episode.get("context_exhausted"):
+                prompt.sample.metadata["context_exhausted"] = True
             prompt.sample.metadata["_transcript"] = episode["transcript"]
             # The environment's final state, for scorers that grade the episode
             # rather than the last message -- an experiment log, a set of

@@ -297,6 +297,16 @@ class BatchingConfig(_Base):
     """
 
     max_tokens_quantum: int = Field(512, ge=1)
+    #: Fraction of the prompt held back from the output budget, on top of
+    #: ``context_reserve_tokens``.  The engine's token count and the server's
+    #: never agree exactly -- different tokenizer, plus the chat template the
+    #: server adds -- and the disagreement grows with the prompt.  Measured on
+    #: this suite: a 2,040-token estimate was 2,049 tokens at the server, which
+    #: is enough to overshoot a 16,384-token window by one token and lose the
+    #: whole batch the request travelled in.
+    context_reserve_fraction: float = Field(0.05, ge=0, le=0.5)
+    #: Flat reserve, for short prompts where a fraction is nearly nothing.
+    context_reserve_tokens: int = Field(128, ge=0)
     #: Group samples of similar input length together (shorter head-of-line
     #: blocking within a batch call, since a batch returns only when its
     #: slowest conversation finishes).
@@ -407,15 +417,42 @@ class LimitsConfig(_Base):
 
     #: Maximum *input* tokens per sample (output budget is separate).
     input_token_budget: int = Field(16000, ge=1)
+    #: Per-delivery-mode override of that budget.  An interactive episode's
+    #: context is not one prompt but a transcript that grows with every turn, so
+    #: it needs far more room than a static item: the opening prompt is only the
+    #: first of a dozen messages.  Static delivery keeps the 16,000-token budget
+    #: the specification sets.
+    #:
+    #: This is a *ceiling*, not a promise -- an episode can still only use what
+    #: the model's own context window holds, and the engine ends an episode that
+    #: runs out of window (reported as ``context_exhausted``).
+    input_token_budget_by_delivery: dict[str, int] = Field(
+        default_factory=lambda: {"interactive": 32_000, "sequential": 32_000}
+    )
     #: What to do when a rendered prompt exceeds the budget:
     #: ``resample`` asks the adapter for a replacement item from the same split,
     #: ``skip`` records the sample as skipped, ``fail`` aborts the task.
     on_oversize: Literal["resample", "skip", "fail"] = "resample"
+    #: Per-delivery-mode override of that policy.  An oversize interactive item
+    #: is dropped rather than replaced: a replacement episode is a different
+    #: episode, and the ones that fit are what the dataset can measure.
+    on_oversize_by_delivery: dict[str, str] = Field(
+        default_factory=lambda: {"interactive": "skip", "sequential": "skip"}
+    )
     #: Ceiling on replacement draws before giving up on a task.
     max_resample_attempts: int = Field(200, ge=0)
     #: If more than this fraction of a dataset's sample is oversize, the task is
     #: reported as unusable rather than resampled indefinitely.
     oversize_abort_fraction: float = Field(0.5, gt=0, le=1)
+
+
+    def budget_for(self, delivery_mode: str) -> int:
+        """Input-token ceiling for a dataset delivered this way."""
+        return int(self.input_token_budget_by_delivery.get(delivery_mode, self.input_token_budget))
+
+    def oversize_policy_for(self, delivery_mode: str) -> str:
+        """What to do with an oversize prompt for a dataset delivered this way."""
+        return str(self.on_oversize_by_delivery.get(delivery_mode, self.on_oversize))
 
 
 class LoggingConfig(_Base):

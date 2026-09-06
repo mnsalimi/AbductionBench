@@ -1,0 +1,57 @@
+# Qwen/Qwen3.5-2B served by vLLM on this instance (127.0.0.1:18001), reached
+# without a tunnel.
+#
+# The serving model on this box changes; this file records what is actually up:
+#   vllm serve Qwen/Qwen3.5-2B --host 127.0.0.1 --port 18001
+#     --max-model-len 32768 --max-num-seqs 8
+# Both of those flags are load-bearing below -- the context window and the batch
+# group size are read straight off them.
+#
+# No tunnel, so no discovery: a fixed local address never rotates. Cloudflare
+# quick tunnels cut every request off at ~100 s (HTTP 524), which a batch that
+# generates for longer cannot survive, so local is the right path when the
+# engine runs on the GPU host.
+model:
+  id: qwen3-5-2b-local
+  model_name: Qwen/Qwen3.5-2B
+  description: >-
+    Qwen3.5-2B served by vLLM with MAX_MODEL_LEN=16384 and MAX_NUM_SEQS=8.
+  # Returns content directly and leaves `reasoning` null.
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18001}
+    api_key: ${env:ABENCH_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18001}
+      path: /v1/chat/completions/batch
+      # MAX_NUM_SEQS=8, so a batch of 8 fills the scheduler exactly; a larger
+      # batch would only queue inside vLLM.
+      group_size: 8
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # The budget is not guessed per task: every request asks for
+    # min(max_tokens_cap, context_window - input_tokens_est). Against a
+    # 32,768-token window the window is still usually what binds.
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN: prompt + generation must fit inside this. 32,768 is what
+    # gives interactive episodes room to run their transcripts to the end --
+    # see engine.limits.input_token_budget_by_delivery.
+    context_window: 32768

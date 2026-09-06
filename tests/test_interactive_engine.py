@@ -150,3 +150,53 @@ def test_a_transcript_is_kept_for_every_episode(fake_server, write_run_config, t
     by_id = {row["sample_id"]: row for row in rows}
     assert by_id["e2"]["metadata"]["turns_used"] == 3
     assert by_id["e2"]["response"]["usage"]["turns"] == 3
+
+
+class ChattyEnvironmentAdapter(EchoEnvironmentAdapter):
+    """An environment that pads every reply until the window is gone.
+
+    A real interactive benchmark does this on its own: a viva that discloses
+    findings for twenty turns eventually leaves no room to answer in. The
+    episode has to end at that point rather than send a request the server can
+    only reject.
+    """
+
+    max_turns = 40
+
+    def interactive_step(self, sample, state, assistant_text):
+        state["turn"] = state.get("turn", 0) + 1
+        return "finding: " + ("padding " * 400)
+
+
+def test_an_episode_that_runs_out_of_context_ends_rather_than_failing(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {
+                "id": "chatty",
+                "impl": "test_interactive_engine:ChattyEnvironmentAdapter",
+                "sample_size": 2,
+                "options": {},
+            }
+        ],
+    )
+    result = _run(config_path)
+    task = result.tasks[0]
+
+    # Every episode is accounted for, and none of them failed: running out of
+    # room is an outcome, not an error.
+    assert task.n_scored == 2
+    assert task.n_error == 0
+
+    import json
+
+    rows = [
+        json.loads(line)
+        for line in (task.output_dir / "records.jsonl").read_text().splitlines()
+    ]
+    assert all(row["metadata"]["context_exhausted"] for row in rows)
+    # It stopped well before the 40-turn limit, because the window ran out first.
+    assert all(0 < row["metadata"]["turns_used"] < 40 for row in rows)

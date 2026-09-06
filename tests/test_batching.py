@@ -59,8 +59,22 @@ def test_output_budget_is_the_rest_of_the_context_window():
         context_window=1000,
         input_tokens=900,
     )
+    # A prompt that nearly fills the window leaves nothing: the budget collapses
+    # rather than overshooting, and the engine skips such prompts for this model.
     assert params.max_tokens <= 1000 - 900
-    assert params.max_tokens % 64 == 0 or params.max_tokens == 64
+
+    # With room to spare, the budget is the window less the prompt and a reserve,
+    # rounded down onto the grid -- never more than the window can hold.
+    params = resolve_sampling(
+        per_sample_overrides={},
+        model_sampling=model,
+        template_sampling={},
+        batching=batching,
+        context_window=16384,
+        input_tokens=2049,
+    )
+    assert params.max_tokens % 64 == 0
+    assert params.max_tokens + 2049 < 16384
 
     # An adapter cannot ask for more (or less): only decoding params layer.
     params = resolve_sampling(

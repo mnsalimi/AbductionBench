@@ -108,6 +108,40 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
     # data: the released environments themselves
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _patch_pymc_compat() -> None:
+        """Let the release's environments run on a current PyMC.
+
+        BoxingGym calls ``pm.sample_prior_predictive(samples=1)``; PyMC renamed
+        that argument to ``draws`` in 6.x, so on a current install 21 of the 66
+        episodes raise ``TypeError`` the moment their goal is constructed.  The
+        environments are otherwise unchanged and correct, so the fix is to
+        accept the old spelling rather than to pin the whole project to a PyMC
+        from before the rename.
+        """
+        try:
+            import pymc
+        except ImportError:  # pragma: no cover - reported by load_items instead
+            return
+        if getattr(pymc.sample_prior_predictive, "_abench_samples_shim", False):
+            return
+        original = pymc.sample_prior_predictive
+        try:
+            import inspect
+
+            if "samples" in inspect.signature(original).parameters:
+                return  # an older PyMC: nothing to translate
+        except (TypeError, ValueError):  # pragma: no cover - unsignatured callable
+            return
+
+        def sample_prior_predictive(*args, **kwargs):
+            if "samples" in kwargs:
+                kwargs["draws"] = kwargs.pop("samples")
+            return original(*args, **kwargs)
+
+        sample_prior_predictive._abench_samples_shim = True
+        pymc.sample_prior_predictive = sample_prior_predictive
+
     def _source_root(self) -> Path:
         root = C.ensure_git_repo(
             REPO_URL, self.context.data_dir / "repo", offline=self.context.offline
@@ -123,6 +157,7 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     def load_items(self) -> list[dict[str, Any]]:
         self._source_root()
+        self._patch_pymc_compat()
         try:
             goal_module = importlib.import_module("boxing_gym.envs.goal")
         except Exception as exc:  # noqa: BLE001 - a missing dependency is a skip, not a crash
@@ -157,6 +192,13 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
                 continue
             env_name, env_class = env_classes[0]
             for goal_name, goal_class in goal_classes:
+                problem = self._briefing_problem(env_class, goal_class, goal_name)
+                if problem:
+                    # A goal whose briefing the release cannot produce would have
+                    # to be run with a prompt written here, which would measure a
+                    # different task than the one the benchmark defines.
+                    unusable.append(f"{name}.{goal_name} ({problem})")
+                    continue
                 for episode in range(episodes_per_goal):
                     items.append(
                         {
@@ -180,6 +222,25 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
             + (f"; excluded: {', '.join(unusable)}" if unusable else "")
         )
         return items
+
+    @staticmethod
+    def _briefing_problem(env_class, goal_class, goal_name: str) -> str | None:
+        """``None`` if this goal can state its own task, else why it cannot.
+
+        Three of IRT's five goals ask their environment for a system message it
+        does not implement (``'IRT' object has no attribute
+        'get_system_message'``). That is a gap in the release, not something to
+        paper over: the briefing is what tells the model what it is predicting.
+        """
+        try:
+            env = env_class()
+            goal = goal_class(env)
+            message = goal.get_system_message(not goal_name.endswith("Naive"))
+        except Exception as exc:  # noqa: BLE001 - the reason is what we want
+            return f"{type(exc).__name__}: {exc}"
+        if not str(message or "").strip():
+            return "the goal's system message is empty"
+        return None
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         sample_id = C.stable_id(
@@ -227,11 +288,10 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
         seed = self.context.seed + int(spec["episode"])
         env, goal = self._instantiate(spec, seed)
         include_prior = not spec["goal_name"].endswith("Naive")
-        try:
-            briefing = goal.get_system_message(include_prior)
-        except Exception as exc:  # noqa: BLE001 - a broken goal ends its own episode
-            self.log.warning("boxinggym: %s has no system message: %s", spec["goal_name"], exc)
-            briefing = self.system_prompt
+        # Not caught: load_items already excluded every goal that cannot brief
+        # itself, so a failure here is a real breakage and the engine records the
+        # episode as an error rather than scoring a substitute prompt.
+        briefing = goal.get_system_message(include_prior)
         state = {
             "env": env,
             "goal": goal,
@@ -420,6 +480,11 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "The emotion and moral_machines environments are excluded: they build the "
                 "environment out of an LLM (they import openai), which would put a second model "
                 "inside the evaluation of the first.",
+                "Three of IRT's goals (BestStudent, DifficultQuestion, DiscriminatingQuestion) "
+                "are excluded because the released IRT environment implements no "
+                "get_system_message, so those goals cannot state their own task. They are "
+                "listed in statistics.unusable_modules rather than run with a substitute "
+                "prompt written here.",
                 "Lower is better here, unlike every other dataset in the suite. The Summary "
                 "sheet shows the value as reported; read it as an error.",
                 "An episode's cost is its experiment budget plus its questions, so this dataset "

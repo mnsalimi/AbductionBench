@@ -476,7 +476,13 @@ def test_output_budget_clamped_by_context_window_is_reported(
         datasets=[
             fake_dataset("fake", n=4, sample_size=4, max_tokens=512, long_every=1, long_chars=300)
         ],
-        engine={"limits": {"input_token_budget": 4000}},
+        engine={
+            "limits": {"input_token_budget": 4000},
+            # A fine grid, so the clamped budget still leaves room to answer:
+            # with the default 512-token quantum this window would leave less
+            # than one quantum and the prompts would be skipped instead.
+            "batching": {"max_tokens_quantum": 64},
+        },
     )
     result, _ = _run(config_path)
     task = result.tasks[0]
@@ -545,3 +551,40 @@ def test_long_responses_are_not_truncated_to_a_preview(
     )
     longest = max(len(str(value)) for value in samples["response"])
     assert longest >= 9000
+
+
+def test_a_prompt_with_no_room_to_answer_is_skipped_not_sent(
+    fake_server, write_run_config, fake_dataset
+):
+    """A prompt that fills the window is this model's problem, not a failure.
+
+    Sending it earns an HTTP 400 that takes down the whole batch it travelled
+    in, so the engine skips it and says which model could not fit it.
+    """
+    models = [
+        {
+            "id": "tiny-window",
+            "model_name": "test/model",
+            "endpoint": {
+                "base_url": fake_server.base_url,
+                "api_key": "test-key",
+                "batch": {"enabled": True, "group_size": 4},
+            },
+            "sampling": {"max_tokens_default": 4096, "max_tokens_cap": 4096},
+            "limits": {"max_parallel_batches": 1, "context_window": 600},
+        }
+    ]
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        models=models,
+        datasets=[
+            fake_dataset("fake", n=4, sample_size=4, long_every=1, long_chars=300)
+        ],
+        engine={"limits": {"input_token_budget": 4000}},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.n_planned == 0
+    assert task.n_skipped == 4
+    # Nothing was sent, so nothing could fail.
+    assert task.n_error == 0

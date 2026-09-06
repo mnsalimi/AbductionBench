@@ -37,6 +37,19 @@ def quantize_max_tokens(value: int, quantum: int) -> int:
     return max(quantum, int(math.floor(value / quantum) * quantum))
 
 
+def context_reserve(input_tokens: int, batching: BatchingConfig) -> int:
+    """Tokens held back from the output budget to absorb count disagreement.
+
+    Proportional, because the gap between our count and the server's grows with
+    the prompt: a flat slack that is ample for a 200-token prompt is nothing for
+    a 12,000-token one.
+    """
+    return int(
+        batching.context_reserve_tokens
+        + batching.context_reserve_fraction * max(0, input_tokens)
+    )
+
+
 def resolve_sampling(
     *,
     per_sample_overrides: dict,
@@ -65,13 +78,20 @@ def resolve_sampling(
     """
     max_tokens = int(model_sampling.max_tokens_cap)
     if context_window:
-        # The whole remaining window, less a small slack for the chat scaffolding
-        # the server adds around the messages (role tokens, generation prompt).
-        max_tokens = min(max_tokens, context_window - input_tokens - 8)
+        # The whole remaining window, less a reserve. The reserve is not
+        # cosmetic: the server tokenizes with a different tokenizer and adds its
+        # own chat template, so its count of the same prompt is higher than
+        # ours, and a request that overshoots the window by even one token is
+        # rejected -- taking the whole batch it travelled in with it.
+        reserve = context_reserve(input_tokens, batching)
+        max_tokens = min(max_tokens, context_window - input_tokens - reserve)
     max_tokens = quantize_max_tokens(max_tokens, batching.max_tokens_quantum)
     max_tokens = min(max_tokens, model_sampling.max_tokens_cap)
     if context_window:
-        max_tokens = min(max_tokens, max(1, context_window - input_tokens - 8))
+        max_tokens = min(
+            max_tokens,
+            max(1, context_window - input_tokens - context_reserve(input_tokens, batching)),
+        )
     max_tokens = max(1, max_tokens)
 
     params = SamplingParams(

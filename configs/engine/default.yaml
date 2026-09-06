@@ -69,6 +69,20 @@ engine:
 
   limits:
     input_token_budget: 16000   # INPUT tokens only; output budget is separate
+    # An interactive episode's context is a transcript that grows every turn,
+    # not a single prompt, so it gets a larger ceiling. Static delivery keeps
+    # the 16,000 the specification sets. Note this is a ceiling, not a promise:
+    # an episode can still only use what the model's context window holds, and
+    # one that runs out of window ends there and is reported as
+    # context_exhausted rather than failing.
+    input_token_budget_by_delivery:
+      interactive: 32000
+      sequential: 32000
+    # An oversize interactive item is dropped, not replaced: a replacement
+    # episode is a different episode.
+    on_oversize_by_delivery:
+      interactive: skip
+      sequential: skip
     on_oversize: resample       # resample | skip | fail
     max_resample_attempts: 200
     oversize_abort_fraction: 0.5
