@@ -35,7 +35,7 @@ The engine and an adapter exchange exactly four kinds of object
 | object                 | direction        | meaning |
 |------------------------|------------------|---------|
 | `SampleSpec`           | adapter → engine | one item: prompt **fields**, gold `reference`, `task_kind`, `max_tokens`, metadata |
-| `RenderedPrompt`       | engine internal  | a sample after template rendering, budgeting and sampling resolution |
+| `RenderedPrompt`       | engine internal  | a sample after the adapter rendered it, plus budgeting and sampling resolution |
 | `ModelResponse`        | engine → adapter | normalized model output plus status, finish reason, usage, latency |
 | `SampleScore`          | adapter → engine | per-sample metrics, parsed prediction, `parse_ok`, details |
 
@@ -51,8 +51,8 @@ retries and reporting.
 1. **Dataset bundles** (once per dataset). Resolve the adapter from
    `impl: "module:Class"`, `prepare()` it, take its deterministic sample. An
    adapter that raises `SkippedDataset` is recorded and the run continues.
-2. **Prompt sets** (once per dataset × template variant). Render through the
-   bound template, count input tokens, replace oversize items with fresh draws
+2. **Prompt sets** (once per dataset × execution mode). Ask the adapter to
+   render each sample, count input tokens, replace oversize items with fresh draws
    from the same split. Deliberately **model-independent**, so every model sees
    the identical prompt set and cross-model numbers are comparable.
 3. **Tasks** (dataset × variant × model). Resolve sampling params against that
@@ -160,7 +160,7 @@ runs/<run-id>/
 ├── engine.log · engine.jsonl     human + JSON logs
 ├── events.jsonl                  structured telemetry (batch/sample/task events)
 ├── RUN_REPORT.md                 human summary of the whole run
-├── datasets/<dataset>/<model>/<template@version>/
+├── datasets/<dataset>/<model>/<mode-slug@version>/
 │   ├── records.jsonl             one JSON object per sample (atomic appends)
 │   ├── metrics.json              aggregated metrics + diagnostics
 │   ├── checkpoint.json           resume state and batch statistics
@@ -172,15 +172,15 @@ runs/<run-id>/
     ├── summary.csv · metrics_long.csv
 ```
 
-The hierarchy is `dataset / model / template@version`, so a run that compares
+The hierarchy is `dataset / model / mode-slug@version`, so a run that compares
 two prompt templates on the same dataset keeps them in separate directories and
 separate rows of the grid.
 
 ## Resume semantics
 
 `records.jsonl` is append-only; each record carries a `prompt_fingerprint` =
-hash(model, template@version, messages, sampling). Under the default
+hash(model, mode@version, messages, sampling). Under the default
 `resume_policy: strict` a stored record is reused only if that fingerprint still
-matches, so changing a prompt template can never silently mix results from two
+matches, so changing a mode can never silently mix results from two
 different prompts. `error` records are always retried; `skipped` ones are
 reproducible decisions and are kept.

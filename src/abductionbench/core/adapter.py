@@ -1,22 +1,27 @@
 """The abstract dataset adapter -- the single seam between core and datasets.
 
-A child adapter is responsible for exactly four things:
+A child adapter is responsible for five things:
 
 1. **Materialize** its dataset (``prepare``): find it on disk under
    ``context.data_dir`` or fetch it, and pick the split (test → validation →
    train) it will evaluate.
 2. **Sample** deterministically (``build_samples``): a pseudo-random draw of
    ``context.sample_size`` items, seeded from ``context.seed``, yielding
-   :class:`~abductionbench.core.types.SampleSpec` objects whose ``fields`` are
-   the *content* of the prompt (never its wording -- that is the template's job)
-   and whose ``max_tokens`` reflects that item's task complexity.
-3. **Score** one response (``score``), using whatever metric that dataset's
+   :class:`~abductionbench.core.types.SampleSpec` objects carrying the *content*
+   of each item.
+3. **Prompt** (``system_prompt`` / ``build_messages``): its own wording, in its
+   benchmark's terms.  The core has no system prompt to impose and no template
+   to bind; ``abductionbench.adapters._prompting`` supplies only the scaffolding
+   the execution modes share.  An interactive benchmark also implements its
+   environment here (``interactive_start`` / ``interactive_step``).
+4. **Score** one response (``score``), using whatever metric that dataset's
    task defines, and **aggregate** those per-sample metrics (``aggregate``).
-4. **Document** itself (``documentation``), so the run report states which
+   Where a mode asks one item as several requests, ``reduce_group`` folds them.
+5. **Document** itself (``documentation``), so the run report states which
    split, which abductive subset, which seed and which decisions were made.
 
-The engine does everything else: prompt rendering from swappable templates,
-input-token budgeting and replacement draws, batch packing, retries, endpoint
+The engine does everything else: input-token budgeting and replacement draws,
+output budgeting, batch packing, multi-turn episodes, retries, endpoint
 recovery, checkpointing, reporting.
 
 Adapters must not import engine internals beyond this module,
@@ -615,8 +620,12 @@ class DatasetAdapter(ABC):
                                     salt=salt or self.dataset_id)
 
     @staticmethod
-    def clamp_max_tokens(value: int, *, low: int = 64, high: int = 8192) -> int:
-        """Clamp an adapter's own complexity estimate into a sane band."""
+    def clamp_max_tokens(value: int, *, low: int = 64, high: int = 32_000) -> int:
+        """Clamp an adapter's own complexity estimate into a sane band.
+
+        Retained for adapters that record an estimate, but the engine no longer
+        budgets from it: see :attr:`SampleSpec.max_tokens`.
+        """
         return max(low, min(int(value), high))
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

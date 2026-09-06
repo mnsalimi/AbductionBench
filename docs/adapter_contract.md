@@ -64,8 +64,8 @@ SampleSpec(
     sample_id="split-000123",        # derived from the data, never from iteration order
     fields={"observation": ..., "context": ..., "options": [...]},
     reference={...},                  # whatever your scorer needs; opaque to the engine
-    task_kind="generation",           # or "selection" — picks the prompt template family
-    max_tokens=512,                   # YOUR estimate of this item's output need
+    task_kind="generation",           # what the item asks for, in your own vocabulary
+    max_tokens=512,                   # advisory only: the engine budgets the window
     metadata={"split": "test", "subtask": ...},   # provenance for the reports
     group_id=None,                    # optional: groups several probes of one case
 )
@@ -73,14 +73,16 @@ SampleSpec(
 
 Rules that matter:
 
-* **`fields` are content, not wording.** Use the conventional names below so any
-  template works with your adapter. Prompt phrasing lives in
-  `configs/prompts/*.yaml`.
+* **`fields` are content; wording is yours too, but it lives in
+  `build_messages`.** Use the conventional names below and the pooled base class
+  turns them into a prompt around your `system_prompt`; override
+  `prompt_parts` (or `build_messages`) when your benchmark publishes its own
+  wording. Nothing in `abductionbench.core` supplies a system prompt.
 * **`sample_id` must be stable** across runs — it is the resume key.
-* **`max_tokens` is per sample**, chosen from that item's complexity (a one-word
-  label needs far less than a multi-step derivation). The engine quantizes it
-  upward so similar items can share a batch call, and clamps it to the model's
-  floor/cap.
+* **`max_tokens` is not yours to set.** Every request is given
+  `min(32000, context_window - input_tokens_est)`: the whole remaining window,
+  capped at 32,000 for every dataset. The field is kept as a record of what you
+  think an item needs, and is ignored by the engine.
 * If the chosen split has fewer than `sample_size` items, return them all and
   record the shortfall in `documentation().statistics`.
 
@@ -88,7 +90,7 @@ Rules that matter:
 
 | field          | meaning |
 |----------------|---------|
-| `observation`  | the puzzling fact(s) needing explanation **(required by every shipped template)** |
+| `observation`  | the puzzling fact(s) needing explanation **(every dataset has one)** |
 | `context`      | background: case history, rule base, logs, dialogue, theory |
 | `question`     | an explicit question, when the dataset poses one |
 | `options`      | candidate hypotheses (selection tasks) |
@@ -114,6 +116,39 @@ def replacement_samples(self, count, exclude):
 
 so a replacement is the next unused item of the *same* draw, never a re-draw.
 
+## 2b. Prompts and, if the benchmark is interactive, the environment
+
+Your adapter owns its wording. Set `system_prompt` to what your task is, in your
+benchmark's terms; the pooled base class builds the rest of the prompt from your
+`fields` and the active execution modes (io / cot / self-consistency, SCS / MCS /
+BOV). Override `prompt_parts` to supply different content, or `build_messages`
+to take over completely — which is what an adapter does when its own release
+publishes a prompt worth using verbatim.
+
+Declare what your dataset admits, because the engine will not guess:
+
+```python
+data_delivery_mode = "interactive"    # static | interactive | sequential
+objective_metrics = True              # can it be scored without an LLM judge?
+selection_cardinality = "single"      # single | multi | flexible | None
+hypothesis_modes = ("generation", "selection")   # independent tasks, if two
+```
+
+An interactive benchmark implements its environment here:
+
+```python
+def interactive_start(self, sample):
+    return [ChatMessage(...), ...], {"state": ...}
+
+def interactive_step(self, sample, state, assistant_text):
+    "The environment's reply, or None when the episode is over."
+```
+
+The engine drives the loop and batches turn *t* of every live episode together,
+so an environment implementation costs nothing in throughput. Answer only what
+was asked: an environment that volunteers evidence the model did not request has
+stopped measuring what the benchmark measures.
+
 ## 3. `score()` and `aggregate()`
 
 ```python
@@ -131,10 +166,10 @@ def score(self, sample, response, *, output_contract=None) -> SampleScore:
   metrics; the engine tracks `parse_failure_rate` separately so a formatting
   problem is distinguishable from a wrong answer. (A scorer that raises anyway
   is caught and recorded, but you lose the metric.)
-* **Honour `output_contract`** — it is the active template's declared answer
+* **Honour `output_contract`** — it is the contract your own `build_messages`
   format (`answer_prefix`, `answer_regex`, …). Use the helpers in
   `abductionbench.core.metrics` (`extract_answer_span`, `extract_choice_label`)
-  and your adapter keeps working when the prompt template is swapped.
+  returned, so a prompt change and the parsing it implies stay in one file.
 * `response.status` may be `empty` (a reasoning model spent its whole budget on
   hidden chain-of-thought and returned `content: null`) or `truncated`.
   `response.text` is `""` in the empty case.

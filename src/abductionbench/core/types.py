@@ -150,10 +150,13 @@ class SampleSpec:
         Which configured prompt template family to render with, e.g.
         ``"generation"`` or ``"selection"``.
     max_tokens:
-        Adapter's own estimate of the output budget this item needs.  ``None``
-        falls back to the model/run default.  The engine may quantize it
-        upwards (see ``engine.batching.max_tokens_quantum``) so that similar
-        items can share a batch call.
+        **Advisory only; the engine does not read it.**  Every request is given
+        ``min(max_tokens_cap, context_window - input_tokens_est)`` -- the whole
+        remaining window, capped at 32,000 for every dataset -- because a budget
+        estimated per task is what produced truncated answers that then had to
+        be re-issued.  The field is kept because an adapter may still want to
+        record what it thinks an item needs, and because a truncation is only
+        informative when the model had the whole window to work in.
     sampling_overrides:
         Per-sample decoding overrides (rarely needed; every distinct signature
         costs batch packing efficiency).
