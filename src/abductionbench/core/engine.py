@@ -45,14 +45,20 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import batching as batching_mod
-from .adapter import AdapterContext, DatasetAdapter, SkippedDataset, replace_sample
+from .adapter import (
+    AdapterContext,
+    DatasetAdapter,
+    SkippedDataset,
+    evaluation_item_id,
+    replace_sample,
+)
 from .checkpoint import RecordStore, TaskCheckpoint
 from .client import BatchResult, ModelClient, RawChoice
 from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
 from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
 from .judge import JudgeStage
-from .metrics import mean
-from .modes import SELF_CONSISTENCY, TaskModes
+from .metrics import aggregate_mean_metrics, mean
+from .modes import TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
@@ -508,6 +514,13 @@ class EvaluationEngine:
             # slug and the columns stay uncluttered for single-task datasets.
             hypothesis_modes = [None]
 
+        # A dataset config may run an interactive benchmark in its static form
+        # as an ablation ("how much does the interaction actually buy?"); the
+        # benchmark's own mode is the default.
+        delivery = str(
+            dataset_cfg.options.get("delivery") or adapter_cls.data_delivery_mode
+        )
+
         out: list[TaskModes] = []
         for prompt_mode in cfg.prompt_modes:
             for hypothesis_mode in hypothesis_modes:
@@ -519,16 +532,11 @@ class EvaluationEngine:
                         prompt_mode=prompt_mode,
                         selection_mode=selection_mode,
                         hypothesis_mode=hypothesis_mode,
-                        # A dataset config may run an interactive benchmark in
-                        # its static form as an ablation ("how much does the
-                        # interaction actually buy?"); the benchmark's own mode
-                        # is the default.
-                        data_delivery_mode=str(
-                            dataset_cfg.options.get("delivery")
-                            or adapter_cls.data_delivery_mode
-                        ),
+                        data_delivery_mode=delivery,
                         self_consistency_n=cfg.self_consistency_n,
                         self_consistency_temperature=cfg.self_consistency_temperature,
+                        repeats=cfg.repeats_for(delivery),
+                        repeat_temperature=cfg.repeat_temperature,
                     )
                     if any(m.slug == modes.slug for m in out):
                         continue
@@ -563,7 +571,13 @@ class EvaluationEngine:
         if not out:
             # Everything requested was inadmissible; fall back to the plain mode
             # so the dataset is still evaluated rather than silently dropped.
-            out.append(TaskModes(data_delivery_mode=adapter_cls.data_delivery_mode))
+            out.append(
+                TaskModes(
+                    data_delivery_mode=delivery,
+                    repeats=cfg.repeats_for(delivery),
+                    repeat_temperature=cfg.repeat_temperature,
+                )
+            )
         return out
 
     def _build_bundles(self) -> list[DatasetBundle]:
@@ -588,10 +602,11 @@ class EvaluationEngine:
             # here rather than inside a base class means every adapter gets the
             # modes, including one that builds its samples its own way.
             samples = adapter.expand_for_modes(samples)
-            # A mode may derive several requests per item (BOV asks one
-            # question per hypothesis, self-consistency asks k times), so
-            # the size guard counts items, not requests.
-            items = len({s.group_id or s.sample_id for s in samples})
+            # A record can become many requests -- k repeats, each split into
+            # one question per hypothesis, each asked k times for a vote -- so
+            # the size guard counts records, not requests. Counting requests
+            # would cut a 300-record dataset to 60 the moment repeats was 5.
+            items = len({evaluation_item_id(s) for s in samples})
             if items > dataset_cfg.sample_size:
                 logger.warning(
                     "dataset %s: adapter returned %d samples for a requested size of %d; "
@@ -601,10 +616,10 @@ class EvaluationEngine:
                     dataset_cfg.sample_size,
                 )
                 keep = list(dict.fromkeys(
-                    s.group_id or s.sample_id for s in samples
+                    evaluation_item_id(s) for s in samples
                 ))[: dataset_cfg.sample_size]
                 allowed = set(keep)
-                samples = [s for s in samples if (s.group_id or s.sample_id) in allowed]
+                samples = [s for s in samples if evaluation_item_id(s) in allowed]
             seen: set[str] = set()
             unique: list[SampleSpec] = []
             for sample in samples:
@@ -948,15 +963,15 @@ class EvaluationEngine:
                 input_tokens=tokens,
                 exact_tokens=getattr(self.token_counter, "exact", False),
             )
-            if prompt_set.modes.prompt_mode == SELF_CONSISTENCY:
-                # A vote needs the k samples to be able to differ, so the
-                # temperature comes from the mode and the fixed seed is dropped.
-                sampling = sampling.merged(
-                    temperature=prompt_set.modes.self_consistency_temperature
-                )
+            mode_temperature = prompt_set.modes.sampling_temperature
+            if mode_temperature is not None:
+                # Repeats and votes both need the answers to be able to differ,
+                # so the temperature comes from the mode and the model's fixed
+                # seed is dropped -- with it, five repeats would be one answer
+                # copied five times.
                 sampling = SamplingParams(
                     max_tokens=sampling.max_tokens,
-                    temperature=sampling.temperature,
+                    temperature=mode_temperature,
                     top_p=sampling.top_p,
                     seed=None,
                     stop=sampling.stop,
@@ -1765,6 +1780,96 @@ class EvaluationEngine:
                     details={"scorer_error": f"{type(exc).__name__}: {exc}"},
                 )
 
+    @staticmethod
+    def _repeat_metrics(
+        fresh: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+        result: TaskResult,
+    ) -> dict[str, float]:
+        """How much the repeats of one record disagreed with each other.
+
+        Asking every record five times only buys something if the spread is
+        reported: a mean over five noisy observations looks exactly like a mean
+        over five identical ones. Two numbers say which it was --
+        ``repeat_agreement`` (how often all repeats of a record gave the same
+        answer) and ``<primary>_repeat_std`` (the typical spread of the primary
+        metric within a record).
+        """
+        by_record: dict[str, list[tuple[SampleSpec, SampleScore]]] = {}
+        for sample, _response, score in fresh:
+            if "repeat_of" not in sample.metadata:
+                continue
+            by_record.setdefault(str(sample.metadata["repeat_of"]), []).append((sample, score))
+        repeated = [members for members in by_record.values() if len(members) > 1]
+        if not repeated:
+            return {}
+
+        agreements = [
+            1.0 if len({str(score.prediction) for _s, score in members}) == 1 else 0.0
+            for members in repeated
+        ]
+        out: dict[str, float] = {
+            "repeats": float(max(len(members) for members in by_record.values())),
+            "repeat_agreement": mean(agreements),
+        }
+
+        primary = result.primary_metric
+        spreads: list[float] = []
+        for members in repeated:
+            values = [
+                score.metrics[primary] for _s, score in members if primary in score.metrics
+            ]
+            if len(values) > 1:
+                average = mean(values)
+                spreads.append(
+                    (sum((value - average) ** 2 for value in values) / len(values)) ** 0.5
+                )
+        if spreads:
+            out[f"{primary}_repeat_std"] = mean(spreads)
+
+        # Self-consistency, for free. A vote is a plurality over k samples of
+        # the same question, and the repeats *are* k samples of the same
+        # question -- so the voted answer can be read off them instead of
+        # bought again. Every metric gets a `self_consistency_` counterpart, so
+        # a run reports both what one sample is worth and what a vote over five
+        # is worth, from the same calls.
+        voted = [EvaluationEngine._plurality(members) for members in repeated]
+        voted_scores = [score for score in voted if score is not None]
+        if voted_scores:
+            out.update(
+                aggregate_mean_metrics(
+                    [score.metrics for score in voted_scores], prefix="self_consistency_"
+                )
+            )
+            out["self_consistency_n_records"] = float(len(voted_scores))
+        return out
+
+    @staticmethod
+    def _plurality(
+        members: list[tuple[SampleSpec, SampleScore]]
+    ) -> SampleScore | None:
+        """The score of the answer most of a record's repeats agreed on.
+
+        No re-scoring: repeats that produced the same prediction were scored
+        identically, so the winning answer's score is the score of any repeat
+        that gave it.  Ties keep the first-seen answer, which is stable because
+        repeats are ordered.
+        """
+        counts: dict[str, int] = {}
+        for _sample, score in members:
+            if not score.parse_ok:
+                continue
+            key = str(score.prediction)
+            counts[key] = counts.get(key, 0) + 1
+        if not counts:
+            # Nothing parsed in any repeat: the vote is the failure, not an
+            # invented answer.
+            return members[0][1]
+        winner = max(counts, key=lambda key: counts[key])
+        for _sample, score in members:
+            if score.parse_ok and str(score.prediction) == winner:
+                return score
+        return members[0][1]
+
     def _aggregate(
         self,
         adapter: DatasetAdapter,
@@ -1792,6 +1897,8 @@ class EvaluationEngine:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("adapter %s: aggregate() failed: %s", adapter.dataset_id, exc)
                 result.failure = (result.failure or "") + f" aggregate() failed: {exc}"
+
+        metrics.update(self._repeat_metrics(fresh, result))
 
         planned = max(1, result.n_planned)
         coverage = result.n_scored / planned

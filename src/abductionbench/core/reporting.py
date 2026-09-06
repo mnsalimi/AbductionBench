@@ -224,6 +224,13 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
                 "task_kind": record.get("task_kind"),
                 "template_mode": record.get("template_mode"),
                 "sample_id": record.get("sample_id"),
+                # The record this request came from, and which of its repeats
+                # this is: with repeats > 1 the sample_id is unique per call,
+                # so these are what group a record's observations together.
+                "record_id": (record.get("metadata") or {}).get("repeat_of")
+                or record.get("group_id")
+                or record.get("sample_id"),
+                "repeat_index": (record.get("metadata") or {}).get("repeat_index"),
                 "group_id": record.get("group_id"),
                 "reduced": bool((record.get("metadata") or {}).get("reduced")),
                 "status": record.get("status"),

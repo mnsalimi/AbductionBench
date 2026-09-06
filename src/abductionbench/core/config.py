@@ -808,6 +808,31 @@ class ModesConfig(_Base):
     #: A vote at temperature 0 would be k identical samples.
     self_consistency_n: int = Field(5, ge=2)
     self_consistency_temperature: float = Field(0.7, gt=0)
+    #: How many times each record of every dataset is asked.  Each repeat is a
+    #: separate API call, scored on its own; the dataset's score becomes the
+    #: mean over ``repeats x records`` observations rather than over records,
+    #: and the disagreement between repeats of one record is reported next to
+    #: it (``repeat_agreement``, ``<primary>_repeat_std``).
+    #:
+    #: This is not self-consistency: nothing is voted on and nothing is folded
+    #: away.  It multiplies the cost of a run by ``repeats``.
+    repeats: int = Field(5, ge=1)
+    #: Per-delivery-mode override.  An interactive record is already many calls
+    #: -- an episode is ten to twenty turns -- so repeating it five times costs
+    #: five times a lot rather than five times a little: measured on this suite,
+    #: 5 repeats of the interactive datasets is about 75 hours of episodes
+    #: against roughly one hour for all the static ones. They repeat once by
+    #: default; raise it deliberately, knowing the arithmetic.
+    repeats_by_delivery: dict[str, int] = Field(
+        default_factory=lambda: {"interactive": 1, "sequential": 1}
+    )
+    #: Temperature used once ``repeats > 1``.  Asking the same question five
+    #: times at temperature 0 measures the server's determinism, not the model.
+    repeat_temperature: float = Field(0.7, gt=0)
+
+    def repeats_for(self, delivery_mode: str) -> int:
+        """How many times a record of a dataset delivered this way is asked."""
+        return int(self.repeats_by_delivery.get(delivery_mode, self.repeats))
 
     @model_validator(mode="after")
     def _validate_modes(self) -> ModesConfig:

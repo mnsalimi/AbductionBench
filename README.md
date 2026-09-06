@@ -211,6 +211,8 @@ directory and its own row, identified by `template_mode`.
 | `hypothesis_mode` | `generation`, `selection` | the benchmark's task definition |
 | `data_delivery_mode` | `static`, `interactive`, `sequential` | the benchmark — not a choice |
 
+Orthogonal to all four is **`repeats`**: how many times each record is asked.
+
 ```yaml
 modes:
   prompt_modes:     [io, cot]          # crossed with:
@@ -218,7 +220,49 @@ modes:
   hypothesis_modes: [generation, selection]
   self_consistency_n: 5
   self_consistency_temperature: 0.7
+  repeats: 5                           # each record asked 5 times
+  repeats_by_delivery: {interactive: 1, sequential: 1}
+  repeat_temperature: 0.7
 ```
+
+**`repeats`.** Each record is put to the model `repeats` times as separate API
+calls, and **each answer is scored on its own**. A dataset's score becomes the
+mean over `repeats × records` observations rather than over records, and two
+metrics report whether that mean is worth anything:
+
+| metric | meaning |
+|---|---|
+| `repeat_agreement` | fraction of records whose repeats all gave the same answer. 1.0 means the model is deterministic here; a low value means the mean is an average of disagreement |
+| `<primary>_repeat_std` | typical spread of the primary metric within one record |
+
+Repeats are drawn at `repeat_temperature` with the model's fixed seed dropped —
+asking the same question five times at temperature 0 measures the server's
+determinism, not the model. `n_scored` is five times `records`, and the sample
+sheet has one row per call, with `record_id` and `repeat_index` to group them.
+
+**Self-consistency comes out of these same calls, free.** A vote is a plurality
+over *k* samples of one question, and the repeats *are* *k* samples of one
+question — so the voted answer is read off them rather than bought again. Every
+metric gains a `self_consistency_` counterpart:
+
+```
+accuracy                      0.60   ← what one sample is worth
+self_consistency_accuracy     1.00   ← what a vote over five is worth
+repeat_agreement              0.00   ← they never all agreed
+accuracy_repeat_std           0.49   ← and this is how much they moved
+```
+
+So `prompt_modes: [io, cot]` with `repeats: 5` gives you four numbers per
+dataset — io, cot, and the voted version of each — for two tasks' worth of
+calls. There is a standalone `self-consistency` prompt mode, but with repeats on
+it buys nothing the io and cot tasks do not already report.
+
+**Cost.** Repeats multiply a run by `repeats`, and an interactive record is
+already ten to twenty calls, so it multiplies five times a lot rather than five
+times a little. Measured on this suite: `repeats: 5` everywhere is ~112,000
+calls, of which ~25,500 are interactive *episodes* — roughly 75 hours against
+about an hour for every static dataset combined. Hence
+`repeats_by_delivery: {interactive: 1}` by default. Raise it deliberately.
 
 **`io` / `cot` / `self-consistency`.** `io` asks for the answer and nothing
 else; `cot` asks the model to work through the evidence first; `self-consistency`
@@ -377,7 +421,9 @@ request, plus one reduced row per item in modes that ask an item more than once.
 
 | column | meaning |
 |---|---|
-| `sample_id` | stable id derived from the data, not from iteration order; the resume key |
+| `sample_id` | stable id derived from the data, not from iteration order; the resume key. With `repeats > 1` it is unique per *call*, not per record |
+| `record_id` | the record the call came from, through every expansion — group repeats, BOV questions and votes back to the item they belong to |
+| `repeat_index` | which repeat of that record this call is (`0 … repeats-1`) |
 | `group_id` | the evaluation item a request belongs to. Set when one item is asked as several requests: `#bov0`, `#bov1`, ... for BOV, `#sc0`, `#sc1`, ... for self-consistency |
 | `reduced` | `True` on the single folded row that carries the item's score; the member rows are kept for inspection but are not counted twice |
 
@@ -462,7 +508,9 @@ squeezed budget cannot look like a clean result.
 | `self_consistency_agreement` | fraction of the *k* votes that agreed with the winning answer. 1.0 is unanimous; 1/k means every sample differed |
 | `bov_yes_rate` | fraction of hypotheses a BOV run said yes to. A model that says yes to everything scores well on recall alone, so this sits next to the score rather than inside it |
 | `turns_used` | model turns an interactive episode took |
-| `repeats` | how many times each question was asked (`options.repeats`) |
+| `repeats` | how many times each record was asked (`modes.repeats`) |
+| `repeat_agreement` | fraction of records whose repeats all agreed |
+| `<primary>_repeat_std` | typical spread of the primary metric within one record |
 
 ### Answer-shape metrics
 

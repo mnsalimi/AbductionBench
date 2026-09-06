@@ -500,3 +500,57 @@ def test_a_self_consistency_replacement_brings_all_of_its_votes():
     replacements = adapter.replacement_samples(1, set())
     assert len(replacements) == 4
     assert len({s.group_id for s in replacements}) == 1
+
+
+# --------------------------------------------------------------------------- #
+# repeats: the same record, asked several times, each scored on its own
+# --------------------------------------------------------------------------- #
+
+
+def test_repeats_ask_each_record_several_times_without_folding_them():
+    adapter = _adapter(TaskModes(repeats=5))
+    derived = adapter.expand_for_modes(adapter.build_samples())
+
+    assert len(derived) == 5
+    assert len({s.sample_id for s in derived}) == 5
+    # No group_id: a repeat is an independent observation, not a piece of one.
+    assert all(s.group_id is None for s in derived)
+    assert {s.metadata["repeat_index"] for s in derived} == {0, 1, 2, 3, 4}
+    assert {s.metadata["repeat_of"] for s in derived} == {"s1"}
+    # Same question every time.
+    assert len({adapter.build_messages(s)[0][-1].content for s in derived}) == 1
+    # Nothing to reduce -- that is what separates repeats from a vote.
+    assert TaskModes(repeats=5).needs_group_reduction is False
+
+
+def test_repeats_are_drawn_warm_and_a_single_run_is_not():
+    assert TaskModes(repeats=5, repeat_temperature=0.7).sampling_temperature == 0.7
+    assert TaskModes(repeats=1).sampling_temperature is None
+    # A vote still uses its own temperature even if repeats are also on.
+    voting = TaskModes(prompt_mode="self-consistency", self_consistency_temperature=0.9, repeats=3)
+    assert voting.sampling_temperature == 0.9
+
+
+def test_repeats_compose_with_bov_and_with_a_vote():
+    adapter = _adapter(TaskModes(repeats=3, selection_mode="BOV"))
+    derived = adapter.expand_for_modes(adapter.build_samples())
+    # 3 repeats x 3 hypotheses, grouped per repeat so each repeat rebuilds its
+    # own selected set.
+    assert len(derived) == 9
+    assert len({s.group_id for s in derived}) == 3
+    assert all(s.metadata["repeat_of"] == "s1" for s in derived)
+
+    voting = _adapter(
+        TaskModes(repeats=2, prompt_mode="self-consistency", self_consistency_n=4)
+    )
+    votes = voting.expand_for_modes(voting.build_samples())
+    assert len(votes) == 8               # 2 repeats x 4 votes
+    assert len({s.group_id for s in votes}) == 2
+
+
+def test_the_record_behind_a_request_survives_every_expansion():
+    from abductionbench.core.adapter import evaluation_item_id
+
+    adapter = _adapter(TaskModes(repeats=2, selection_mode="BOV"))
+    for sample in adapter.expand_for_modes(adapter.build_samples()):
+        assert evaluation_item_id(sample) == "s1"

@@ -70,7 +70,10 @@ def write_run_config(tmp_path: Path, prompt_dir: Path):
                 "reporting": {"include_sample_sheets": True},
                 **(engine or {}),
             },
-            "modes": modes or {},
+            # Tests are about mechanics, so a record is asked once unless the
+            # test is about repeats. The production default is 5, which would
+            # otherwise multiply every assertion about call counts by five.
+            "modes": {"repeats": 1, **(modes or {})},
             "prompts": {
                 "template_dirs": [str(prompt_dir)],
                 "bindings": {"generation": "gen_freeform_v1", "selection": "sel_mcq_letter_v1"},

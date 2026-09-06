@@ -48,7 +48,13 @@ from .types import (
     SampleSpec,
 )
 
-__all__ = ["AdapterContext", "DatasetAdapter", "deterministic_sample", "replace_sample"]
+__all__ = [
+    "AdapterContext",
+    "DatasetAdapter",
+    "deterministic_sample",
+    "evaluation_item_id",
+    "replace_sample",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -294,9 +300,21 @@ class DatasetAdapter(ABC):
         ``k x len(options)`` times.  Every derived sample keeps the original
         item's ``sample_id`` as its ``group_id``, so the reduction in
         :meth:`reduce_group` puts the item back together.
+
+        ``repeats`` sits outside both.  It asks the whole thing again -- a fresh
+        independent observation of the same record -- so a repeat gets its own
+        ``sample_id`` and deliberately *no* ``group_id``: it is scored on its
+        own and averaged with its siblings, never folded into them.  The link
+        back to the record lives in ``metadata["repeat_of"]``, which is what
+        lets the engine report how much the repeats of one record disagreed.
         """
         modes = self.context.modes
         expanded = samples
+        if modes.repeats > 1:
+            expanded = [
+                derived for sample in expanded
+                for derived in self._repeat_samples(sample, modes.repeats)
+            ]
         if modes.selection_mode == BOV:
             expanded = [derived for sample in expanded for derived in self._bov_samples(sample)]
         if modes.prompt_mode == SELF_CONSISTENCY:
@@ -305,6 +323,21 @@ class DatasetAdapter(ABC):
                 for derived in self._vote_samples(sample, modes.votes)
             ]
         return expanded
+
+    @staticmethod
+    def _repeat_samples(sample: SampleSpec, repeats: int) -> list[SampleSpec]:
+        """The same record, asked ``repeats`` times as independent evaluations."""
+        if repeats <= 1:
+            return [sample]
+        record_id = sample.metadata.get("repeat_of") or sample.sample_id
+        return [
+            replace_sample(
+                sample,
+                sample_id=f"{sample.sample_id}#r{index}",
+                metadata={**sample.metadata, "repeat_of": record_id, "repeat_index": index},
+            )
+            for index in range(repeats)
+        ]
 
     def _bov_samples(self, sample: SampleSpec) -> list[SampleSpec]:
         """One request per candidate hypothesis, each answerable yes or no."""
@@ -677,6 +710,17 @@ def _option_labels_for(fields: dict[str, Any]) -> list[str]:
         return [str(label) for label in labels]
     options = fields.get("options") or []
     return [chr(ord("A") + index) for index in range(len(options))]
+
+
+def evaluation_item_id(sample: SampleSpec) -> str:
+    """The record a sample ultimately came from, through every expansion.
+
+    A record can become several requests -- k repeats, each split into one
+    question per hypothesis, each asked k times for a vote -- and anything that
+    counts *records* (the sample-size guard, the repeat statistics) has to see
+    through all of that to the item underneath.
+    """
+    return str(sample.metadata.get("repeat_of") or sample.group_id or sample.sample_id)
 
 
 def replace_sample(sample: SampleSpec, **changes: Any) -> SampleSpec:

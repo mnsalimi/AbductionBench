@@ -624,3 +624,125 @@ def test_every_sheet_has_a_bold_centred_frozen_header(
             assert cell.alignment.horizontal == "center", (
                 f"{name}!{cell.coordinate} is not centred"
             )
+
+
+def test_repeats_multiply_the_calls_and_report_their_spread(
+    fake_server, write_run_config, fake_dataset
+):
+    """Five calls per record, five scores, and a number saying how they differed."""
+    import itertools
+
+    # Alternate right and wrong so the repeats of a record genuinely disagree.
+    answers = itertools.cycle(["right", "wrong"])
+    fake_server.state.responder = lambda conv, mt: f"Answer: {next(answers)}"
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"repeats": 5, "repeat_temperature": 0.7},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+
+    # Four records asked five times: twenty calls, twenty scores. Nothing folded.
+    assert task.n_planned == 20
+    assert task.n_scored == 20
+    assert task.metrics["repeats"] == 5.0
+    # The repeats disagreed, and the report says so rather than hiding it in a mean.
+    assert task.metrics["repeat_agreement"] < 1.0
+
+    records = _records(task.output_dir)
+    assert len(records) == 20
+    assert {r["metadata"]["repeat_of"] for r in records} == {f"s{i:04d}" for i in range(4)}
+    assert {r["metadata"]["repeat_index"] for r in records} == {0, 1, 2, 3, 4}
+    # Warm, and unseeded: five identical answers would measure nothing.
+    assert all(r["sampling"]["temperature"] == 0.7 for r in records)
+    assert all("seed" not in r["sampling"] for r in records)
+
+
+def test_the_sample_sheet_carries_the_record_and_repeat_columns(
+    fake_server, write_run_config, fake_dataset
+):
+    import pandas as pd
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=3, sample_size=3)],
+        modes={"repeats": 4},
+    )
+    result, _ = _run(config_path)
+    write_reports(result)
+    sheet = pd.read_excel(
+        result.run_dir / "reports" / "abductionbench_results.xlsx", sheet_name="S_fake"
+    )
+    assert {"record_id", "repeat_index"} <= set(sheet.columns)
+    assert len(sheet) == 12
+    # Every record appears once per repeat, so the sheet can be pivoted on it.
+    assert sheet.groupby("record_id")["repeat_index"].nunique().tolist() == [4, 4, 4]
+
+
+def test_self_consistency_is_computed_from_the_repeats_not_bought_again(
+    fake_server, write_run_config, fake_dataset
+):
+    """A vote over k samples needs no calls beyond the k samples.
+
+    Three of every five answers to a record are correct, so the per-answer
+    accuracy is 0.6 while the majority answer is right every time. Both numbers
+    come out of the same twenty calls.
+    """
+    import collections
+    import re as _re
+
+    seen: collections.Counter = collections.Counter()
+
+    def responder(conversation, max_tokens):
+        body = conversation[-1]["content"]
+        # The record is identified by its observation number; count how often
+        # this record has been asked so the first three answers are right.
+        match = _re.search(r"observation number (\d+)", body)
+        key = match.group(1) if match else body[:40]
+        seen[key] += 1
+        if seen[key] <= 3:
+            return f"Answer: echo:{body[:80]}"
+        return "Answer: echo: nothing useful here"
+
+    fake_server.state.responder = responder
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"repeats": 5},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+
+    # Twenty calls for four records, in five batches of four: no extra call was
+    # made for the vote.
+    assert task.n_scored == 20
+    assert task.checkpoint.batches_submitted == 5
+
+    assert task.metrics["repeats"] == 5.0
+    assert task.metrics["self_consistency_n_records"] == 4.0
+    # Three of five answers right per record: the average answer scores 0.6,
+    # the majority answer scores 1.0.
+    assert task.metrics["accuracy"] == pytest.approx(0.6)
+    assert task.metrics["self_consistency_accuracy"] == 1.0
+    # And the spread is reported, so a flat mean cannot hide the disagreement.
+    assert task.metrics["repeat_agreement"] == 0.0
+    assert task.metrics["accuracy_repeat_std"] > 0.0
+
+
+def test_a_vote_no_repeat_could_parse_stays_a_failure(
+    fake_server, write_run_config, fake_dataset
+):
+    """The vote must not invent an answer none of the samples produced."""
+    fake_server.state.responder = lambda conv, mt: ""
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=2, sample_size=2)],
+        modes={"repeats": 3},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.metrics.get("self_consistency_accuracy", 0.0) == 0.0

@@ -30,6 +30,14 @@ without either choice changing the other.
     ``selection``, ...).  It varies per sample, so it enters the identity of a
     *record*; a task uses the kind its prompt set is built around.
 
+Orthogonal to all four is ``repeats``: how many times each record is asked.
+It is not a mode -- it does not change what is asked or how -- it changes how
+many independent observations of the same question the run collects.  Every
+repeat is scored on its own and they are averaged, so a score becomes a mean
+over ``repeats x records`` observations and the spread between repeats of one
+record becomes measurable.  That is what separates it from
+``self-consistency``, which asks k times and then *votes*, yielding one answer.
+
 Together they form ``template_mode``, which is the only thing that identifies a
 run version -- it replaces the old "which YAML template was bound" identity now
 that each adapter owns its own prompts.
@@ -125,6 +133,13 @@ class TaskModes:
     #: Temperature used for self-consistency sampling; identical samples at
     #: temperature 0 would make the vote meaningless.
     self_consistency_temperature: float = 0.7
+    #: How many times each record is asked.  Every repeat is scored
+    #: independently and the results are averaged; nothing is voted on.
+    repeats: int = 1
+    #: Temperature used once ``repeats > 1``.  Repeating a question at
+    #: temperature 0 would return the same answer every time on a server that
+    #: is deterministic, which measures nothing.
+    repeat_temperature: float = 0.7
 
     def __post_init__(self) -> None:
         if self.prompt_mode not in PROMPT_MODES:
@@ -143,6 +158,8 @@ class TaskModes:
             )
         if self.prompt_mode == SELF_CONSISTENCY and self.self_consistency_n < 2:
             raise ConfigError("self-consistency needs self_consistency_n >= 2 to have a majority")
+        if self.repeats < 1:
+            raise ConfigError(f"modes.repeats must be at least 1, got {self.repeats}")
 
     # -- derived identity ------------------------------------------------ #
 
@@ -159,6 +176,20 @@ class TaskModes:
             parts.append(self.hypothesis_mode)
         parts.append(self.data_delivery_mode)
         return "_".join(part.replace("/", "-") for part in parts)
+
+    @property
+    def sampling_temperature(self) -> float | None:
+        """Decoding temperature the modes require, or ``None`` for the model's own.
+
+        Both repeats and self-consistency need the answers to be able to differ;
+        at temperature 0 a repeat is a copy and a vote is unanimous by
+        construction.
+        """
+        if self.prompt_mode == SELF_CONSISTENCY:
+            return self.self_consistency_temperature
+        if self.repeats > 1:
+            return self.repeat_temperature
+        return None
 
     @property
     def votes(self) -> int:
@@ -182,6 +213,7 @@ class TaskModes:
             "hypothesis_mode": self.hypothesis_mode or NOT_APPLICABLE,
             "data_delivery_mode": self.data_delivery_mode,
             "self_consistency_n": self.votes,
+            "repeats": self.repeats,
         }
 
     def describe(self) -> str:
@@ -192,5 +224,7 @@ class TaskModes:
             parts.append(f"selection_mode={self.selection_mode}")
         if self.hypothesis_mode:
             parts.append(f"hypothesis_mode={self.hypothesis_mode}")
+        if self.repeats > 1:
+            parts.append(f"repeats={self.repeats}@T={self.repeat_temperature}")
         parts.append(f"delivery={self.data_delivery_mode}")
         return ", ".join(parts)
