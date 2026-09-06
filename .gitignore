@@ -10,3 +10,4 @@ runs/
 !runs/.gitkeep
 !data/.gitkeep
 .env
+full_run.log
