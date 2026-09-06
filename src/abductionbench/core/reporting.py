@@ -9,8 +9,11 @@ Outputs written under a run directory:
     * ``Datasets``     -- each adapter's self-documentation (split, subset, seed,
                           decisions, caveats, statistics), including skipped ones.
     * ``Skipped``      -- datasets that were not evaluated, with the reason.
+    * ``Skipped_modes``    -- mode combinations a dataset declined, with the reason.
+    * ``Introduced_modes`` -- hypothesis modes run beyond the dataset table, each
+                          with the benchmark formulation that justifies it.
     * ``Models``       -- endpoint/verification details per model.
-    * ``Samples:<ds>`` -- per-sample grid per dataset (optional, capped).
+    * ``S_<ds>``       -- per-sample grid per dataset (optional, capped).
 ``reports/metrics_long.csv``, ``reports/summary.csv``
     The same tables as CSV, for scripting.
 ``datasets/<dataset>/<model>/<template>/run_documentation.md``
@@ -167,6 +170,45 @@ def _build_datasets_frame(result: RunResult) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_skipped_modes_frame(result: RunResult) -> pd.DataFrame:
+    """Mode combinations a dataset declined, and why.
+
+    A mode that was asked for and not run has to be visible: silence would look
+    like the dataset simply had nothing to say in that mode.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "dataset_id": entry.get("dataset_id"),
+                "mode": entry.get("mode"),
+                "reason": entry.get("reason"),
+            }
+            for entry in result.skipped_modes
+        ]
+    )
+
+
+def _build_introduced_modes_frame(result: RunResult) -> pd.DataFrame:
+    """Hypothesis modes run beyond what the dataset table lists.
+
+    Specification item 15 requires both facts on the record: that the mode was
+    introduced, and the benchmark's own formulation that makes it a separate
+    task rather than a re-reading of the same one.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "dataset_id": entry.get("dataset_id"),
+                "hypothesis_mode": entry.get("hypothesis_mode"),
+                "mode": entry.get("mode"),
+                "dataset_table_says": entry.get("table_says"),
+                "justification": entry.get("justification"),
+            }
+            for entry in result.introduced_modes
+        ]
+    )
+
+
 def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for directory in task_dirs:
@@ -292,6 +334,14 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             _write_sheet(writer, tasks, _safe_sheet_name("Tasks", used))
             _write_sheet(writer, datasets, _safe_sheet_name("Datasets", used))
             _write_sheet(writer, skipped, _safe_sheet_name("Skipped", used))
+            _write_sheet(
+                writer, _build_skipped_modes_frame(result),
+                _safe_sheet_name("Skipped_modes", used),
+            )
+            _write_sheet(
+                writer, _build_introduced_modes_frame(result),
+                _safe_sheet_name("Introduced_modes", used),
+            )
             _write_sheet(writer, models, _safe_sheet_name("Models", used))
             if reporting.include_sample_sheets:
                 by_dataset: dict[str, list[Path]] = {}
@@ -521,6 +571,32 @@ def _render_run_report(result: RunResult, summary: pd.DataFrame) -> str:
         for entry in result.skipped_datasets:
             reason = textwrap.shorten(entry.get("reason", ""), width=300, placeholder="...")
             lines.append(f"* `{entry.get('dataset_id')}`: {reason}")
+        lines.append("")
+
+    if result.introduced_modes:
+        lines.append("## Additional hypothesis modes")
+        lines.append("")
+        lines.append(
+            "These datasets were run in a mode the published dataset table does not list, "
+            "because the benchmark itself defines it as a separate task. The formulation "
+            "that justifies each is quoted."
+        )
+        lines.append("")
+        for entry in result.introduced_modes:
+            lines.append(
+                f"* `{entry.get('dataset_id')}` -- ran **{entry.get('hypothesis_mode')}**; "
+                f"the table lists \"{entry.get('table_says')}\".  \n"
+                f"  {entry.get('justification')}"
+            )
+        lines.append("")
+
+    if result.skipped_modes:
+        lines.append("## Modes not run")
+        lines.append("")
+        for entry in result.skipped_modes:
+            lines.append(
+                f"* `{entry.get('dataset_id')}` / `{entry.get('mode')}`: {entry.get('reason')}"
+            )
         lines.append("")
 
     lines.append("## Reliability")

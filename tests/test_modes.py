@@ -393,3 +393,62 @@ def test_chat_message_roles_are_well_formed():
     messages, _ = adapter.build_messages(adapter.build_samples()[0])
     assert [m.role for m in messages] == ["system", "user"]
     assert all(isinstance(m, ChatMessage) and m.content.strip() for m in messages)
+
+
+# --------------------------------------------------------------------------- #
+# item 15: an introduced mode has to be justified, in the record
+# --------------------------------------------------------------------------- #
+
+
+def test_a_mode_the_table_lists_is_not_reported_as_introduced():
+    class Listed(_Selection):
+        hypothesis_modes = ("generation", "selection")
+        table_hypothesis_mode = "Generation / Selection (separate tasks)"
+
+    assert Listed.introduced_hypothesis_mode("generation") is None
+    assert Listed.introduced_hypothesis_mode("selection") is None
+
+
+def test_an_extra_mode_must_carry_the_benchmarks_own_formulation():
+    class Extra(_Selection):
+        hypothesis_modes = ("generation", "selection")
+        table_hypothesis_mode = "Generation"
+        hypothesis_mode_justification = "The release ships four answer options per case."
+
+    assert Extra.introduced_hypothesis_mode("generation") is None
+    assert Extra.introduced_hypothesis_mode("selection") == (
+        "The release ships four answer options per case."
+    )
+
+
+def test_an_unjustified_extra_mode_says_so_rather_than_passing_silently():
+    class Sloppy(_Selection):
+        hypothesis_modes = ("generation", "selection")
+        table_hypothesis_mode = "Generation"
+
+    assert "bug in the adapter" in Sloppy.introduced_hypothesis_mode("selection")
+
+
+def test_every_shipped_adapter_justifies_the_modes_it_adds():
+    """No adapter may quietly invent a task the dataset table does not list."""
+    import importlib
+    import inspect
+    import pkgutil
+
+    import abductionbench.adapters as adapters
+    from abductionbench.core.adapter import DatasetAdapter
+
+    unjustified = []
+    for module_info in pkgutil.iter_modules(adapters.__path__):
+        if module_info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"abductionbench.adapters.{module_info.name}")
+        for _name, obj in vars(module).items():
+            if not (inspect.isclass(obj) and issubclass(obj, DatasetAdapter)
+                    and obj.__module__ == module.__name__):
+                continue
+            for mode in obj.hypothesis_modes:
+                reason = obj.introduced_hypothesis_mode(mode)
+                if reason and "bug in the adapter" in reason:
+                    unjustified.append(f"{module_info.name}:{mode}")
+    assert unjustified == []

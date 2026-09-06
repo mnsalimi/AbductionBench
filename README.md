@@ -331,7 +331,7 @@ on and how failures are handled.
 
 ```
 runs/<run-id>/
-├── reports/abductionbench_results.xlsx   Summary · Summary_Long · Metrics · Tasks · Datasets · Skipped · Models · Samples:<ds>
+├── reports/abductionbench_results.xlsx   Summary · Summary_Long · Metrics · Tasks · Datasets · Skipped · Skipped_modes · Introduced_modes · Models · S_<ds>
 ├── reports/summary.csv · metrics_long.csv
 ├── RUN_REPORT.md                         headline table, failures, skipped datasets and modes, reliability
 ├── datasets/<dataset>/<model>/<mode-slug@version>/
@@ -370,7 +370,7 @@ sheet.
 
 ## 2. Sample-level run log
 
-`records.jsonl` per task, and the `Samples:<dataset>` sheets. One row per
+`records.jsonl` per task, and the `S_<dataset>` sheets. One row per
 request, plus one reduced row per item in modes that ask an item more than once.
 
 **Identity** — every column from [§1](#1-identity-columns), plus:

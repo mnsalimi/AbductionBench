@@ -493,3 +493,55 @@ def test_no_clamp_reported_when_the_window_is_ample(fake_server, write_run_confi
     assert result.tasks[0].metrics["output_budget_clamped_rate"] == 0.0
 
 
+
+
+def test_reports_carry_the_mode_columns_and_mode_sheets(
+    fake_server, write_run_config, fake_dataset
+):
+    """The columns item 8-10 ask for have to survive into the workbook."""
+    import pandas as pd
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"prompt_modes": ["io", "cot"]},
+    )
+    result, _ = _run(config_path)
+    write_reports(result)
+    workbook = result.run_dir / "reports" / "abductionbench_results.xlsx"
+    sheets = pd.read_excel(workbook, sheet_name=None)
+
+    assert {"Skipped_modes", "Introduced_modes"} <= set(sheets)
+    for name in ("Summary_Long", "Metrics", "Tasks"):
+        columns = set(sheets[name].columns)
+        assert {"prompt_mode", "selection_mode", "data_delivery_mode",
+                "task_kind", "template_mode"} <= columns, name
+
+    samples = sheets["S_fake"]
+    assert {"prompt_mode", "selection_mode", "data_delivery_mode", "task_kind",
+            "template_mode", "response"} <= set(samples.columns)
+    # Both modes are present, and each row's template_mode is its own identity.
+    assert set(samples["prompt_mode"]) == {"io", "cot"}
+    assert set(samples["template_mode"]) == {
+        "io|n/a|generation|static",
+        "cot|n/a|generation|static",
+    }
+
+
+def test_long_responses_are_not_truncated_to_a_preview(
+    fake_server, write_run_config, fake_dataset
+):
+    """Item 11: the workbook holds the whole answer, not the first 2,000 chars."""
+    import pandas as pd
+
+    fake_server.state.responder = lambda conv, max_tokens: "x" * 9000
+    config_path = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("fake", n=2, sample_size=2)]
+    )
+    result, _ = _run(config_path)
+    write_reports(result)
+    samples = pd.read_excel(
+        result.run_dir / "reports" / "abductionbench_results.xlsx", sheet_name="S_fake"
+    )
+    longest = max(len(str(value)) for value in samples["response"])
+    assert longest >= 9000
