@@ -1,7 +1,6 @@
 dataset:
   id: discoverybench
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "DiscoveryBench"
     domain: "Scientific Discovery: Data-Driven"

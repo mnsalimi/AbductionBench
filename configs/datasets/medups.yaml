@@ -1,7 +1,6 @@
 dataset:
   id: medups
   impl: abductionbench.adapters.medups:MedUPSAdapter
-  sample_size: 300
   options:
     subtask: generation   # generation (default) | selection (uses the shipped ICD distractors)
   notes: >-

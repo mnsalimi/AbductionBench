@@ -1784,6 +1784,8 @@ class EvaluationEngine:
     def _repeat_metrics(
         fresh: list[tuple[SampleSpec, ModelResponse, SampleScore]],
         result: TaskResult,
+        *,
+        votable: bool = True,
     ) -> dict[str, float]:
         """How much the repeats of one record disagreed with each other.
 
@@ -1826,12 +1828,20 @@ class EvaluationEngine:
         if spreads:
             out[f"{primary}_repeat_std"] = mean(spreads)
 
-        # Self-consistency, for free. A vote is a plurality over k samples of
-        # the same question, and the repeats *are* k samples of the same
-        # question -- so the voted answer can be read off them instead of
-        # bought again. Every metric gets a `self_consistency_` counterpart, so
-        # a run reports both what one sample is worth and what a vote over five
-        # is worth, from the same calls.
+        # Self-consistency, for free -- but only where a vote means something.
+        # A plurality needs answers that can *coincide*: a label, a set, an
+        # equation. Free-text hypotheses judged by overlap never repeat
+        # verbatim, so every sample would be its own plurality of one and the
+        # "voted" score would just be whichever sample happened to come first.
+        # Those datasets report the spread of their repeats and nothing else.
+        if not votable:
+            return out
+
+        # A vote is a plurality over k samples of the same question, and the
+        # repeats *are* k samples of the same question -- so the voted answer
+        # can be read off them instead of bought again. Every metric gets a
+        # `self_consistency_` counterpart, so a run reports both what one sample
+        # is worth and what a vote over five is worth, from the same calls.
         voted = [EvaluationEngine._plurality(members) for members in repeated]
         voted_scores = [score for score in voted if score is not None]
         if voted_scores:
@@ -1898,7 +1908,11 @@ class EvaluationEngine:
                 logger.exception("adapter %s: aggregate() failed: %s", adapter.dataset_id, exc)
                 result.failure = (result.failure or "") + f" aggregate() failed: {exc}"
 
-        metrics.update(self._repeat_metrics(fresh, result))
+        # A dataset whose answers are graded by an LLM judge, or by overlap with
+        # a reference, has no discrete answer space for a vote to be taken over.
+        metrics.update(
+            self._repeat_metrics(fresh, result, votable=adapter.objective_metrics)
+        )
 
         planned = max(1, result.n_planned)
         coverage = result.n_scored / planned

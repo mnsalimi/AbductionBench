@@ -1,7 +1,6 @@
 dataset:
   id: proof_writer
   impl: abductionbench.adapters.proof_writer:ProofWriterAdapter
-  sample_size: 300
   options:
     configs: [OWA-depth-1, OWA-depth-2, OWA-depth-3, OWA-depth-5]
   notes: >-

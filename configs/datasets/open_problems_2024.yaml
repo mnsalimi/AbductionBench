@@ -3,7 +3,6 @@ dataset:
   impl: abductionbench.adapters.open_problems:OpenProblemsAdapter
   # 15 evaluable problems x 2 modes = 30 items; the shortfall against 300 is
   # inherent to the source (see the adapter's caveats) and is reported.
-  sample_size: 300
   options:
     # both = direction + strategy, the two abductive modes.
     # Also: direction | strategy | resolution | all | leakage_probe

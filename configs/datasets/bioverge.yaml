@@ -1,7 +1,6 @@
 dataset:
   id: bioverge
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "BioVerge"
     domain: "Scientific Discovery: Biomedical"

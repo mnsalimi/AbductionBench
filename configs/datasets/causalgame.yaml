@@ -1,7 +1,6 @@
 dataset:
   id: causalgame
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "CausalGame"
     domain: "Causal Science: Experimental Reasoning"

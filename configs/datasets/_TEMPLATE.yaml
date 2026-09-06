@@ -6,7 +6,6 @@ dataset:
   id: my_dataset                 # also the output directory name
   impl: abductionbench.adapters.my_dataset:MyDatasetAdapter
   enabled: true
-  sample_size: 300
   seed: null                     # null -> inherit the run seed
   input_token_budget: null       # null -> inherit engine.limits.input_token_budget
   batch_group_size: null         # null -> the model's own group size

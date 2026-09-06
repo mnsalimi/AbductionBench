@@ -1,7 +1,6 @@
 dataset:
   id: researchbench
   impl: abductionbench.adapters.researchbench:ResearchBenchAdapter
-  sample_size: 300
   options:
     # generation (the released generation/ file) or selection (ranking/).
     # The run's modes.hypothesis_modes normally sets this: the dataset table

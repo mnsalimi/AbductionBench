@@ -1,7 +1,6 @@
 dataset:
   id: scir
   impl: abductionbench.adapters.scir:SciRAdapter
-  sample_size: 300
   options:
     variant: obfuscated            # obfuscated (default) | nl
     include_difficulty_scaling: false

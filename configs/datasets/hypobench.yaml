@@ -1,7 +1,6 @@
 dataset:
   id: hypobench
   impl: abductionbench.adapters.hypobench:HypoBenchAdapter
-  sample_size: 300
   options:
     families: [real, synthetic]
     examples_per_sample: 12

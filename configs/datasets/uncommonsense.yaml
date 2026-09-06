@@ -1,5 +1,4 @@
 dataset:
   id: uncommonsense
   impl: abductionbench.adapters.uncommonsense:UncommonsenseAdapter
-  sample_size: 300
   notes: Validation split (no test split upstream); scored against human explanations.

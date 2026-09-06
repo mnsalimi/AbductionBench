@@ -1,7 +1,6 @@
 dataset:
   id: causalab
   impl: abductionbench.adapters.causalab:CausaLabAdapter
-  sample_size: 300
   options:
     variants: null          # null -> every released graph variant
     max_observations: 20    # bootstrap records shown per prompt

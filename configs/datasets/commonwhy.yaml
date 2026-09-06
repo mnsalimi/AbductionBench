@@ -1,7 +1,6 @@
 dataset:
   id: commonwhy
   impl: abductionbench.adapters.commonwhy:CommonWhyAdapter
-  sample_size: 300
   options:
     strata: [Head, Longtail]
   notes: Head + Longtail pooled (no official split); the inference rule is withheld.

@@ -1,7 +1,6 @@
 dataset:
   id: synpat
   impl: abductionbench.adapters.synpat:SynPATAdapter
-  sample_size: 300
   options:
     noise_level: "0.001"   # 0.001 | 0.01 | 0.05 | 0.1
     data_rows: 8

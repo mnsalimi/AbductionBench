@@ -1,7 +1,7 @@
 dataset:
   id: house_md
   impl: abductionbench.adapters.house_md:HouseMDAdapter
-  sample_size: 300   # 176 unique vignettes exist; the shortfall is reported
+  # 176 unique vignettes exist; the shortfall is reported
   notes: >-
     Kaggle release behind the table's shortened URL; per-model answer columns are
     excluded as model outputs.

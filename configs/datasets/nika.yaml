@@ -1,7 +1,6 @@
 dataset:
   id: nika
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "NIKA"
     domain: "Computing Systems: Network Troubleshooting"

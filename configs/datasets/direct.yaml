@@ -1,7 +1,6 @@
 dataset:
   id: direct
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "DiReCT"
     domain: "Healthcare: Diagnostic Reasoning"

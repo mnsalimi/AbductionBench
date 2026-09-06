@@ -1,7 +1,6 @@
 dataset:
   id: boxinggym
   impl: abductionbench.adapters.boxinggym:BoxingGymAdapter
-  sample_size: 300
   options:
     # One episode per (environment, goal, seed). The release ships ~8 usable
     # environment modules with 2-5 goals each, so this is the knob that sets

@@ -1,7 +1,6 @@
 dataset:
   id: abductionrules
   impl: abductionbench.adapters.abductionrules:AbductionRulesAdapter
-  sample_size: 300
   options:
     subsets: null   # null -> all four (Animal / Person, full and Simple)
   notes: Official test splits; one sample per (theory, observation) pair.

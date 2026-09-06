@@ -1,7 +1,6 @@
 dataset:
   id: xcopa
   impl: abductionbench.adapters.xcopa:XCopaAdapter
-  sample_size: 300
   options:
     languages: null            # null -> all 11 languages in data/
     machine_translated: false  # true -> use data-gmt/ instead of data/

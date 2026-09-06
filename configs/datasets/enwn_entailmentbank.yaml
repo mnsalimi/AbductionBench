@@ -1,7 +1,6 @@
 dataset:
   id: enwn_entailmentbank
   impl: abductionbench.adapters.enwn_entailmentbank:EnwnEntailmentBankAdapter
-  sample_size: 300
   notes: >-
     data/step/abductive only; EntailmentBank ships train-only abductive step data
     (reported), ENWN has a validation file.

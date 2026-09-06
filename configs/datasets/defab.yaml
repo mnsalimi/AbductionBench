@@ -1,7 +1,6 @@
 dataset:
   id: defab
   impl: abductionbench.adapters.defab:DeFAbAdapter
-  sample_size: 300
   options:
     subtask: selection   # selection (matches the release structure) | generation
     domains: null        # null -> every released instance set

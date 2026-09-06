@@ -1,7 +1,6 @@
 dataset:
   id: diagnosisarena
   impl: abductionbench.adapters.diagnosisarena:DiagnosisArenaAdapter
-  sample_size: 300
   options:
     subtask: generation   # generation (default) | selection (the dataset's 4-way MCQ)
   notes: >-

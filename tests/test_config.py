@@ -42,7 +42,7 @@ def test_extends_and_override(tmp_path: Path, prompt_dir: Path):
     assert config.engine.concurrency.max_parallel_tasks == 7
     # overridden by the run file
     assert config.engine.limits.input_token_budget == 42
-    assert config.datasets[0].sample_size == 300  # schema default
+    assert config.datasets[0].sample_size == 200  # schema default
 
 
 def test_env_interpolation_and_missing_env(tmp_path: Path, prompt_dir: Path):

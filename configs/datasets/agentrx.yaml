@@ -1,7 +1,7 @@
 dataset:
   id: agentrx
   impl: abductionbench.adapters.agentrx:AgentRxAdapter
-  sample_size: 300   # few annotated trajectories exist; the shortfall is reported
+  # few annotated trajectories exist; the shortfall is reported
   options:
     include_trajectory: false   # true -> add a bounded excerpt of the failing steps
     trajectory_words: 400

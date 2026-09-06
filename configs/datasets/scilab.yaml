@@ -1,7 +1,6 @@
 dataset:
   id: scilab
   impl: abductionbench.adapters.scilab:SciLabAdapter
-  sample_size: 300
   options:
     # Twelve vendored NewtonBench domains x three difficulty tiers = 36
     # laboratories; each tier hides a differently modified law.

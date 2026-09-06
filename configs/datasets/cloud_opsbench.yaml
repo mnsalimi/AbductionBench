@@ -1,7 +1,6 @@
 dataset:
   id: cloud_opsbench
   impl: abductionbench.adapters.cloud_opsbench:CloudOpsBenchAdapter
-  sample_size: 300
   options:
     evidence: tool_cache      # tool_cache (bounded slice) | symptom_only
     max_evidence_entries: 6

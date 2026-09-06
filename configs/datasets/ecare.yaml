@@ -1,7 +1,6 @@
 dataset:
   id: ecare
   impl: abductionbench.adapters.ecare:ECareAdapter
-  sample_size: 300
   options:
     # cause_selection (abductive half of Causal_Reasoning) | explanation | both
     subtask: cause_selection

@@ -1,7 +1,6 @@
 dataset:
   id: vivabench
   impl: abductionbench.adapters.vivabench:VivaBenchAdapter
-  sample_size: 300
   options:
     table: pubmed_reviewed   # pubmed_reviewed (human-reviewed) | dataset_generated
     subtask: generation      # generation | selection (uses the case's own differentials)

@@ -1,7 +1,6 @@
 dataset:
   id: rlf_kg
   impl: abductionbench.adapters.unavailable:UnavailableAdapter
-  sample_size: 300
   options:
     name: "RLF-KG (AbductiveKGR)"
     domain: "Structured Knowledge: KG Abduction"

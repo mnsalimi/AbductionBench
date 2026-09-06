@@ -1,7 +1,6 @@
 dataset:
   id: gear
   impl: abductionbench.adapters.gear:GearAdapter
-  sample_size: 300
   options:
     subtask: acre   # acre (default) | arc (not implemented; see the adapter docstring)
   notes: >-

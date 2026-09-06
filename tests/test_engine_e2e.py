@@ -746,3 +746,69 @@ def test_a_vote_no_repeat_could_parse_stays_a_failure(
     result, _ = _run(config_path)
     task = result.tasks[0]
     assert task.metrics.get("self_consistency_accuracy", 0.0) == 0.0
+
+
+def test_a_judged_dataset_gets_no_vote_only_a_spread(
+    fake_server, write_run_config, fake_dataset, tmp_path, monkeypatch
+):
+    """A plurality needs answers that can coincide.
+
+    Free-text hypotheses graded by overlap never repeat verbatim, so every
+    sample would be its own plurality of one and the "voted" score would be
+    whichever sample came first. Those datasets report the spread instead.
+    """
+    # A unique module name: tests/judged_adapter.py already exists, and a
+    # tmp_path copy of that name would shadow it for every later test.
+    adapter_src = tmp_path / "overlap_scored_adapter.py"
+    adapter_src.write_text(
+        '''
+from fake_adapter import FakeAdapter
+
+
+class OverlapScoredAdapter(FakeAdapter):
+    """Scored by overlap with a reference, the way a judged dataset is."""
+
+    primary_metric = "rouge_l"
+    objective_metrics = False
+
+    def score(self, sample, response, *, output_contract=None):
+        from abductionbench.core.metrics import rouge_l
+        from abductionbench.core.types import SampleScore
+
+        text = response.text
+        return SampleScore(
+            metrics={"rouge_l": rouge_l(text, str(sample.reference))["f"]},
+            prediction=text,
+        )
+
+    def aggregate(self, scores):
+        values = [s.metrics["rouge_l"] for s in scores]
+        return {"rouge_l": sum(values) / max(1, len(values))}
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    counter = iter(range(1000))
+    fake_server.state.responder = lambda conv, mt: f"Answer: explanation {next(counter)}"
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {
+                "id": "judged",
+                "impl": "overlap_scored_adapter:OverlapScoredAdapter",
+                "sample_size": 3,
+                "options": {"n": 3},
+            }
+        ],
+        modes={"repeats": 4},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+
+    assert task.n_scored == 12               # the repeats still happened
+    assert task.metrics["repeats"] == 4.0
+    assert "rouge_l_repeat_std" in task.metrics        # the spread is reported
+    # ... but nothing was voted on.
+    assert not any(k.startswith("self_consistency_") for k in task.metrics)

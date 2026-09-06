@@ -1,7 +1,6 @@
 dataset:
   id: abd
   impl: abductionbench.adapters.abd:ABDAdapter
-  sample_size: 300
   options:
     scenarios: null    # null -> ABD_FULL, ABD_PARTIAL, ABD_SKEPTICAL
     max_worlds: 4

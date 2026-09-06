@@ -765,7 +765,7 @@ class DatasetConfig(_Base):
     #: imports adapter code directly.
     impl: str
     enabled: bool = True
-    sample_size: int = Field(300, ge=1)
+    sample_size: int = Field(200, ge=1)
     #: Falls back to the run seed when unset.
     seed: int | None = None
     #: Per-dataset overrides of the engine's input-size policy.

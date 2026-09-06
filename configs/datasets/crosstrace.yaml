@@ -1,7 +1,6 @@
 dataset:
   id: crosstrace
   impl: abductionbench.adapters.crosstrace:CrossTraceAdapter
-  sample_size: 300
   options:
     split_file: test_ours.jsonl   # test_hypogen.jsonl excluded (duplicates the hypogen dataset)
   notes: Held-out test split; reference is the dataset's assistant turn.

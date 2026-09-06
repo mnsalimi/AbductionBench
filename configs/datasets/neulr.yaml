@@ -1,5 +1,4 @@
 dataset:
   id: neulr
   impl: abductionbench.adapters.neulr:NeuLRAdapter
-  sample_size: 300
   notes: abductive_neutral.json only (1,000 items, no official split).

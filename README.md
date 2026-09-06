@@ -53,7 +53,7 @@ cp .env.example .env    # then fill in ABENCH_API_KEY and the URLs
 set -a; . ./.env; set +a                       # or: export ABENCH_API_KEY=...
 
 abench doctor configs/runs/full.yaml           # 30 s: endpoint + batch route reachable
-abench run    configs/runs/full.yaml           # 300 samples x 42 datasets x every model
+abench run    configs/runs/full.yaml           # 200 records x 42 datasets x every model
 
 # interrupted? continue exactly where it stopped (per-sample checkpoints):
 abench run configs/runs/full.yaml --resume runs/<run-id>
@@ -256,6 +256,16 @@ So `prompt_modes: [io, cot]` with `repeats: 5` gives you four numbers per
 dataset — io, cot, and the voted version of each — for two tasks' worth of
 calls. There is a standalone `self-consistency` prompt mode, but with repeats on
 it buys nothing the io and cot tasks do not already report.
+
+**Only where a vote means something.** A plurality needs answers that can
+coincide: a label, a set, an equation. The nine datasets graded by an LLM judge
+or by overlap with a reference (`crosstrace`, `hypogen`, `uncommonsense`,
+`moose_chem2`, `hypoarena`, `hypobench`, `matter_to_mechanism`, `commonwhy`,
+`researchbench`) never produce the same free-text hypothesis twice, so every
+sample would be its own plurality of one and the "voted" score would be whichever
+sample came first. Those datasets report the spread of their repeats and no
+`self_consistency_` metrics. It is the same rule that keeps `cot` off them:
+a reasoning mode is only readable where correctness is decidable.
 
 **Cost.** Repeats multiply a run by `repeats`, and an interactive record is
 already ten to twenty calls, so it multiplies five times a lot rather than five
@@ -609,7 +619,8 @@ Policies applied uniformly, and recorded per dataset:
 * **Output budget** is not guessed per item: every request gets
   `min(32000, context_window - input_tokens_est)`, so a truncated answer means
   the model used the whole window rather than an estimate that was too small.
-* **300 samples** per dataset by a seeded shuffle; oversize prompts are replaced
+* **200 records** per dataset by a seeded shuffle (`dataset_defaults.sample_size`
+  in the run config -- one place for the whole suite); oversize prompts are replaced
   from the same shuffle rather than dropped, and shortfalls (e.g. HypoGen's 50
   test items) are reported.
 * **Skipped, never guessed**: a dataset whose data is unobtainable or whose gold

@@ -1,7 +1,6 @@
 dataset:
   id: aer
   impl: abductionbench.adapters.aer:AERAdapter
-  sample_size: 300
   options:
     doc_content: snippets   # snippets (default) | full | none
     max_docs: 12

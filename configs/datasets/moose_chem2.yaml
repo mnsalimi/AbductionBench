@@ -1,7 +1,7 @@
 dataset:
   id: moose_chem2
   impl: abductionbench.adapters.moose_chem2:MooseChem2Adapter
-  sample_size: 300   # 51 papers exist; the shortfall is reported
+  # 51 papers exist; the shortfall is reported
   options:
     granularity: finegrained   # finegrained | coarse
     survey_words: 350

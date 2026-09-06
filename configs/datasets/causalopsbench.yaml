@@ -1,7 +1,6 @@
 dataset:
   id: causalopsbench
   impl: abductionbench.adapters.causalopsbench:CausalOpsBenchAdapter
-  sample_size: 300
   options:
     episode_file: null    # null -> prefer a released 500-episode file over the 8-episode dev set
     max_timepoints: 12

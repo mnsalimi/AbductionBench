@@ -1,5 +1,5 @@
 dataset:
   id: true_detective
   impl: abductionbench.adapters.true_detective:TrueDetectiveAdapter
-  sample_size: 300   # only 191 puzzles exist; the shortfall is reported
+  # only 191 puzzles exist; the shortfall is reported
   notes: Whole dataset (no official split); long mysteries, 4-option selection.

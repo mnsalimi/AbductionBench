@@ -1,7 +1,7 @@
 dataset:
   id: aiops2025
   impl: abductionbench.adapters.aiops2025:AIOps2025Adapter
-  sample_size: 300   # 103 RCA100 cases exist; the shortfall is reported
+  # 103 RCA100 cases exist; the shortfall is reported
   options:
     alert_words: 400
     max_entities: 40

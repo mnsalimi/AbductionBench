@@ -1,7 +1,6 @@
 dataset:
   id: hypospace
   impl: abductionbench.adapters.hypospace:HypoSpaceAdapter
-  sample_size: 300
   options:
     node_counts: [3, 4]
     generator_seed: null      # null -> the run seed
