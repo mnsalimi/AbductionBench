@@ -96,6 +96,13 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
 
     primary_metric = "hypothesis_rouge_l"
 
+    primary_metric_by_mode = {
+        # The two tasks are scored by different things, so each names
+        # the metric it actually produces rather than inheriting one.
+        "generation": "hypothesis_rouge_l",
+        "selection": "accuracy",
+    }
+
     # ------------------------------------------------------------------ #
     # data
     # ------------------------------------------------------------------ #

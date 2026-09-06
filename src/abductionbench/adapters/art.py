@@ -53,6 +53,13 @@ class ARTAdapter(PooledDatasetAdapter):
     table_hypothesis_mode = "Generation / Selection (separate tasks)"
     primary_metric = "accuracy"
 
+    primary_metric_by_mode = {
+        # The two tasks are scored by different things, so each names
+        # the metric it actually produces rather than inheriting one.
+        "generation": "hypothesis_match",
+        "selection": "accuracy",
+    }
+
     @property
     def _subtask(self) -> str:
         return str(self.context.option("subtask", "selection"))

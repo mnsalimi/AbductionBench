@@ -98,6 +98,13 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     )
     primary_metric = "diagnosis_match"
 
+    primary_metric_by_mode = {
+        # The two tasks are scored by different things, so each names
+        # the metric it actually produces rather than inheriting one.
+        "generation": "diagnosis_match",
+        "selection": "accuracy",
+    }
+
     @property
     def _subtask(self) -> str:
         return str(self.context.option("subtask", "generation"))

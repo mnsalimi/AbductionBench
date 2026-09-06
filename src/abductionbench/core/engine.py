@@ -865,7 +865,7 @@ class EvaluationEngine:
         result = TaskResult(
             identity=identity,
             output_dir=output_dir,
-            primary_metric=bundle.config.primary_metric or adapter.primary_metric,
+            primary_metric=bundle.config.primary_metric or adapter.headline_metric,
             documentation=bundle.documentation,
         )
 
@@ -1148,6 +1148,22 @@ class EvaluationEngine:
 
         metrics = self._aggregate(adapter, all_scores, result, scores, reused_records)
         result.metrics = metrics
+        if result.primary_metric not in metrics and metrics:
+            # A blank headline cell is the one outcome a summary must not have:
+            # it reads as "this task failed" when the task ran fine and merely
+            # scores itself under another name. Fall back to the first metric
+            # the adapter documented that this task actually produced.
+            documented = list((bundle.documentation.metrics_description or {})
+                              if bundle.documentation else {})
+            candidates = [name for name in documented if name in metrics] or [
+                name for name in metrics if not name.startswith("n_")
+            ]
+            if candidates:
+                logger.warning(
+                    "task %s: primary metric %r was not produced; reporting %r instead",
+                    identity.slug, result.primary_metric, candidates[0],
+                )
+                result.primary_metric = candidates[0]
         checkpoint.finished = True
         store.save_checkpoint(checkpoint)
         result.checkpoint = checkpoint

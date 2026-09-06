@@ -56,6 +56,13 @@ class ECareAdapter(PooledDatasetAdapter):
     table_hypothesis_mode = "Generation / Selection (separate tasks)"
     primary_metric = "accuracy"
 
+    primary_metric_by_mode = {
+        # The two tasks are scored by different things, so each names
+        # the metric it actually produces rather than inheriting one.
+        "generation": "explanation_match",
+        "selection": "accuracy",
+    }
+
     def load_items(self) -> list[dict[str, Any]]:
         subtask = str(self.context.option("subtask", "cause_selection"))
         root = C.ensure_git_repo(

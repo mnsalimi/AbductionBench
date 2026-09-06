@@ -140,6 +140,14 @@ class DatasetAdapter(ABC):
 
     #: Which metric heads the report for this dataset.
     primary_metric: str = "accuracy"
+
+    #: Per-task headline metric, for a dataset that poses more than one task.
+    #: A benchmark run as separate generation and selection evaluations scores
+    #: them with different metrics, and the Summary cell of each has to name the
+    #: one that task actually produced.  Keys are hypothesis modes
+    #: (``"generation"`` / ``"selection"``); anything unlisted falls back to
+    #: :attr:`primary_metric`.
+    primary_metric_by_mode: dict[str, str] = {}
     #: Metrics where a *higher* value is better; used only for presentation.
     higher_is_better: bool = True
 
@@ -239,6 +247,14 @@ class DatasetAdapter(ABC):
     # ------------------------------------------------------------------ #
     # prompts -- owned by the child adapter, never by the core
     # ------------------------------------------------------------------ #
+
+    @property
+    def headline_metric(self) -> str:
+        """The metric that heads this task, given the mode it is running in."""
+        mode = self.context.modes.hypothesis_mode
+        if mode and mode in self.primary_metric_by_mode:
+            return self.primary_metric_by_mode[mode]
+        return self.primary_metric
 
     def system_prompt_for(self, sample: SampleSpec) -> str:
         """The system instruction for one sample.
