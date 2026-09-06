@@ -33,6 +33,7 @@ class TokenCounter(Protocol):
     """Counts tokens of a rendered conversation."""
 
     backend: str
+    exact: bool
 
     def count_text(self, text: str) -> int: ...
 
@@ -41,6 +42,8 @@ class TokenCounter(Protocol):
 
 class _BaseCounter:
     backend = "base"
+    #: Approximate counters need the engine to hold back more context.
+    exact = False
 
     def __init__(self, config: TokenizerConfig):
         self._config = config
@@ -108,15 +111,46 @@ class HFCounter(_BaseCounter):
             return 0
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 
+    #: Whether this counter matches what the server will count.  The engine
+    #: reserves less context when the count is exact.
+    exact = True
+
     def count_messages(self, messages: list[ChatMessage]) -> int:
         """Use the real chat template when the tokenizer ships one."""
         try:
             rendered = self._tokenizer.apply_chat_template(
                 [m.to_dict() for m in messages], tokenize=True, add_generation_prompt=True
             )
-            return len(rendered) + self._config.safety_margin_tokens
-        except Exception:  # no chat template / unexpected signature
+            count = _token_count(rendered)
+            if count is None:
+                raise TypeError(f"unexpected chat-template result: {type(rendered).__name__}")
+            return count + self._config.safety_margin_tokens
+        except Exception as exc:  # no chat template / unexpected signature
+            logger.debug("chat-template counting unavailable (%s); approximating", exc)
             return super().count_messages(messages)
+
+
+def _token_count(rendered: object) -> int | None:
+    """Number of tokens in whatever ``apply_chat_template`` returned.
+
+    The return type has changed across transformers versions: a flat list of ids
+    in 4.x, a ``BatchEncoding`` in 5.x, sometimes a batch of one.  ``len()`` on
+    the 5.x shape counts *keys* -- two -- which would tell the engine every
+    prompt is two tokens long: no prompt would ever look oversize, and every
+    request would ask for a whole context window of output and be rejected. So
+    the shape is unwrapped explicitly rather than trusted.
+    """
+    ids: object = rendered
+    if hasattr(ids, "keys") and "input_ids" in ids:  # BatchEncoding / dict
+        ids = ids["input_ids"]
+    if hasattr(ids, "tolist"):  # tensor / ndarray
+        ids = ids.tolist()
+    if isinstance(ids, (list, tuple)):
+        if ids and isinstance(ids[0], (list, tuple)):  # a batch of one
+            return len(ids[0])
+        if all(isinstance(item, int) for item in ids):
+            return len(ids)
+    return None
 
 
 class CachingCounter:
@@ -127,6 +161,7 @@ class CachingCounter:
         self._cache: dict[str, int] = {}
         self._max = max_entries
         self.backend = inner.backend
+        self.exact = getattr(inner, "exact", False)
 
     def count_text(self, text: str) -> int:
         if len(text) > 4096:  # long unique bodies are not worth caching

@@ -304,7 +304,15 @@ class BatchingConfig(_Base):
     #: this suite: a 2,040-token estimate was 2,049 tokens at the server, which
     #: is enough to overshoot a 16,384-token window by one token and lose the
     #: whole batch the request travelled in.
-    context_reserve_fraction: float = Field(0.05, ge=0, le=0.5)
+    #: Used when token counts are only approximate (tiktoken, heuristic).
+    #: Measured against this server: a tiktoken count of a 28k-token prompt was
+    #: ~6% under what the model's own tokenizer made it, so 5% was not enough
+    #: and requests overshot the window by a token or two -- which rejects the
+    #: whole batch they travelled in.
+    context_reserve_fraction: float = Field(0.12, ge=0, le=0.5)
+    #: Used when the counter is the model's own tokenizer, so the only
+    #: uncertainty left is the handful of tokens the server's template adds.
+    context_reserve_fraction_exact: float = Field(0.01, ge=0, le=0.5)
     #: Flat reserve, for short prompts where a fraction is nearly nothing.
     context_reserve_tokens: int = Field(128, ge=0)
     #: Group samples of similar input length together (shorter head-of-line
@@ -573,6 +581,11 @@ class EngineConfig(_Base):
 
     output_root: Path = Path("runs")
     data_root: Path = Path("data")
+    #: Timezone the run id's timestamp is written in.  A run id names a
+    #: directory here and a folder on the backup remote, and those names are
+    #: read by people: they should say when the run started in the timezone
+    #: those people are in, not in UTC.  Any IANA name, or "UTC".
+    run_id_timezone: str = "UTC"
     concurrency: ConcurrencyConfig = Field(default_factory=ConcurrencyConfig)
     batching: BatchingConfig = Field(default_factory=BatchingConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)

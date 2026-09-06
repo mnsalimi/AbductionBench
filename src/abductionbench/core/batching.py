@@ -37,17 +37,24 @@ def quantize_max_tokens(value: int, quantum: int) -> int:
     return max(quantum, int(math.floor(value / quantum) * quantum))
 
 
-def context_reserve(input_tokens: int, batching: BatchingConfig) -> int:
+def context_reserve(
+    input_tokens: int, batching: BatchingConfig, *, exact_tokens: bool = False
+) -> int:
     """Tokens held back from the output budget to absorb count disagreement.
 
     Proportional, because the gap between our count and the server's grows with
     the prompt: a flat slack that is ample for a 200-token prompt is nothing for
-    a 12,000-token one.
+    a 12,000-token one.  ``exact_tokens`` says the count came from the model's
+    own tokenizer, in which case almost nothing needs holding back -- the
+    reserve exists to absorb counting error, so it should shrink when the
+    counting stops being a guess.
     """
-    return int(
-        batching.context_reserve_tokens
-        + batching.context_reserve_fraction * max(0, input_tokens)
+    fraction = (
+        batching.context_reserve_fraction_exact
+        if exact_tokens
+        else batching.context_reserve_fraction
     )
+    return int(batching.context_reserve_tokens + fraction * max(0, input_tokens))
 
 
 def resolve_sampling(
@@ -58,6 +65,7 @@ def resolve_sampling(
     batching: BatchingConfig,
     context_window: int | None = None,
     input_tokens: int = 0,
+    exact_tokens: bool = False,
 ) -> SamplingParams:
     """Compose the effective decoding parameters for one sample.
 
@@ -83,14 +91,19 @@ def resolve_sampling(
         # own chat template, so its count of the same prompt is higher than
         # ours, and a request that overshoots the window by even one token is
         # rejected -- taking the whole batch it travelled in with it.
-        reserve = context_reserve(input_tokens, batching)
+        reserve = context_reserve(input_tokens, batching, exact_tokens=exact_tokens)
         max_tokens = min(max_tokens, context_window - input_tokens - reserve)
     max_tokens = quantize_max_tokens(max_tokens, batching.max_tokens_quantum)
     max_tokens = min(max_tokens, model_sampling.max_tokens_cap)
     if context_window:
         max_tokens = min(
             max_tokens,
-            max(1, context_window - input_tokens - context_reserve(input_tokens, batching)),
+            max(
+                1,
+                context_window
+                - input_tokens
+                - context_reserve(input_tokens, batching, exact_tokens=exact_tokens),
+            ),
         )
     max_tokens = max(1, max_tokens)
 

@@ -326,3 +326,54 @@ def test_unmatched_glob_reports_where_it_looked(tmp_path: Path, prompt_dir: Path
     )
     with pytest.raises(ConfigError, match="searched relative to"):
         load_run_config(run)
+
+
+def test_run_ids_are_stamped_in_the_configured_timezone(tmp_path):
+    """A run id names a directory and a backup folder that people read."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from abductionbench.core.engine import EvaluationEngine
+
+    class _Stub:
+        """Just enough engine to exercise the run-id stamping."""
+
+        def __init__(self, zone):
+            from abductionbench.core.config import EngineConfig
+
+            self.engine_cfg = EngineConfig(run_id_timezone=zone)
+
+        _run_id_tz = EvaluationEngine._run_id_tz
+        _default_run_id = EvaluationEngine._default_run_id
+
+    tehran = _Stub("Asia/Tehran")._default_run_id("full")
+    utc = _Stub("UTC")._default_run_id("full")
+    assert tehran.endswith("_full") and utc.endswith("_full")
+
+    # Tehran is UTC+03:30, so the two stamps differ by 3h30m.
+    fmt = "%Y%m%d-%H%M%S"
+    delta = datetime.strptime(tehran.split("_")[0], fmt) - datetime.strptime(
+        utc.split("_")[0], fmt
+    )
+    assert 3 * 3600 + 25 * 60 <= delta.total_seconds() <= 3 * 3600 + 35 * 60
+
+    # And it really is Tehran's wall clock, not an arbitrary offset.
+    expected = datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y%m%d-%H%M")
+    assert tehran.startswith(expected)
+    assert datetime.now(timezone.utc).strftime("%Y%m%d-%H%M") in utc
+
+
+def test_an_unusable_timezone_falls_back_to_utc_rather_than_failing(caplog):
+    """A run that cannot start is worse than one named in the wrong timezone."""
+    from datetime import timezone
+
+    from abductionbench.core.config import EngineConfig
+    from abductionbench.core.engine import EvaluationEngine
+
+    class _Stub:
+        def __init__(self):
+            self.engine_cfg = EngineConfig(run_id_timezone="Mars/Olympus_Mons")
+
+        _run_id_tz = EvaluationEngine._run_id_tz
+
+    assert _Stub()._run_id_tz() is timezone.utc

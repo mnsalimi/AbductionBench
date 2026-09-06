@@ -3,6 +3,9 @@
 # `extends:` this file and override only what they need.
 # ---------------------------------------------------------------------------
 engine:
+  # Run ids are stamped in this timezone: a run id names a directory here
+  # and a folder on the backup remote, and both are read by people in Tehran.
+  run_id_timezone: Asia/Tehran
   output_root: runs          # one directory per run
   data_root: data            # materialized datasets and caches
 

@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import batching as batching_mod
 from .adapter import AdapterContext, DatasetAdapter, SkippedDataset
@@ -206,7 +207,15 @@ class EvaluationEngine:
         )
         self.registry = PromptRegistry(list(config.prompts.template_dirs))
         self.renderer = PromptRenderer(self.registry, config.prompts)
-        self.token_counter = build_token_counter(self.engine_cfg.tokenizer)
+        tokenizer_cfg = self.engine_cfg.tokenizer
+        if not tokenizer_cfg.hf_model and config.models:
+            # Count with the tokenizer of the model being evaluated. Nothing
+            # else can be exact, and an inexact count against a context window
+            # is what makes a request overshoot it.
+            tokenizer_cfg = tokenizer_cfg.model_copy(
+                update={"hf_model": config.models[0].model_name}
+            )
+        self.token_counter = build_token_counter(tokenizer_cfg)
         self.retry_policy = RetryPolicy(self.engine_cfg.retry)
         self._clients: dict[str, ModelClient] = {}
         self._global_batch_sem = asyncio.Semaphore(
@@ -221,9 +230,28 @@ class EvaluationEngine:
         #: benchmark formulation that justifies each (specification item 15).
         self._introduced_modes: list[dict[str, str]] = []
 
-    @staticmethod
-    def _default_run_id(name: str) -> str:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    def _run_id_tz(self):
+        """The timezone a new run id is stamped in.
+
+        Falls back to UTC with a warning rather than failing a run over a
+        timezone name -- a run that cannot start is worse than one named in the
+        wrong timezone, and the fallback says which happened.
+        """
+        name = (self.engine_cfg.run_id_timezone or "UTC").strip()
+        if name.upper() == "UTC":
+            return timezone.utc
+        try:
+            return ZoneInfo(name)
+        except Exception as exc:  # noqa: BLE001 - unknown zone, or no tzdata
+            logger.warning(
+                "engine.run_id_timezone=%r is not a usable timezone (%s); "
+                "stamping run ids in UTC",
+                name, exc,
+            )
+            return timezone.utc
+
+    def _default_run_id(self, name: str) -> str:
+        stamp = datetime.now(self._run_id_tz()).strftime("%Y%m%d-%H%M%S")
         safe = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in name).strip("-")
         return f"{stamp}_{safe or 'run'}"
 
@@ -901,6 +929,7 @@ class EvaluationEngine:
                 batching=self.engine_cfg.batching,
                 context_window=model.limits.context_window,
                 input_tokens=tokens,
+                exact_tokens=getattr(self.token_counter, "exact", False),
             )
             if prompt_set.modes.prompt_mode == SELF_CONSISTENCY:
                 # A vote needs the k samples to be able to differ, so the
@@ -1336,7 +1365,9 @@ class EvaluationEngine:
                 tokens = self.token_counter.count_messages(episode["messages"])
                 window = model.limits.context_window
                 room = window - tokens - batching_mod.context_reserve(
-                    tokens, self.engine_cfg.batching
+                    tokens,
+                    self.engine_cfg.batching,
+                    exact_tokens=getattr(self.token_counter, "exact", False),
                 ) if window else min_answer_tokens
                 if window and room < min_answer_tokens:
                     # An episode's transcript grows with every turn, and a long
@@ -1355,6 +1386,7 @@ class EvaluationEngine:
                     batching=self.engine_cfg.batching,
                     context_window=model.limits.context_window,
                     input_tokens=tokens,
+                    exact_tokens=getattr(self.token_counter, "exact", False),
                 )
                 turn_prompts.append(
                     RenderedPrompt(
