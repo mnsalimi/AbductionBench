@@ -3309,3 +3309,6 @@ eval_point: 141, 295, 113, 1
 19:07:48 INFO    abductionbench.core.engine: 2 episode(s) ran out of context after 6 turn(s); ending them there
 19:08:47 INFO    abductionbench.core.engine: 7 episode(s) ran out of context after 1 turn(s); ending them there
 19:09:32 INFO    abductionbench.core.sync: artifact sync ok (interval) in 762.6s -> gdrive:AbductionBench/20260906-140511_full
+19:18:52 INFO    abductionbench.core.engine: 4 episode(s) ran out of context after 2 turn(s); ending them there
+19:19:46 INFO    abductionbench.core.sync: artifact sync ok (interval) in 554.3s -> gdrive:AbductionBench/20260906-140511_full
+19:22:28 INFO    abductionbench.core.engine: 1 episode(s) ran out of context after 16 turn(s); ending them there

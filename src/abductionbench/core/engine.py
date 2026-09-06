@@ -45,7 +45,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import batching as batching_mod
-from .adapter import AdapterContext, DatasetAdapter, SkippedDataset
+from .adapter import AdapterContext, DatasetAdapter, SkippedDataset, replace_sample
 from .checkpoint import RecordStore, TaskCheckpoint
 from .client import BatchResult, ModelClient, RawChoice
 from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
@@ -791,7 +791,14 @@ class EvaluationEngine:
                     sample.sample_id,
                 )
                 continue
-            for candidate in fresh[:1]:
+            # One replacement *item* can be several requests -- BOV asks about
+            # each hypothesis, self-consistency asks k times -- and they only
+            # mean anything together. Take the whole group, not its first
+            # request, or the reduction would rebuild an item from a fragment.
+            first_group = fresh[0].group_id or fresh[0].sample_id
+            for candidate in fresh:
+                if (candidate.group_id or candidate.sample_id) != first_group:
+                    break
                 attempted.add(candidate.sample_id)
                 queue.append(candidate)
                 prompt_set.replacements_used += 1
@@ -915,12 +922,22 @@ class EvaluationEngine:
         group_size = bundle.config.batch_group_size or model.endpoint.batch.group_size
 
         # Compose model-specific sampling params for every prompt.
+        # The prompt set is built once and shared by every model, so its samples
+        # are shared too -- and an interactive episode writes its transcript and
+        # final state onto the sample it ran. Two models evaluating the same
+        # dataset concurrently would then score each other's episodes. Each task
+        # gets its own copy of the metadata it is about to write into.
+        entries = [
+            (replace_sample(sample, metadata=dict(sample.metadata)), messages, tokens)
+            for sample, messages, tokens in prompt_set.entries
+        ]
+
         rendered: list[RenderedPrompt] = []
         clamped: list[tuple[str, int, int]] = []
         no_room: list[tuple[str, int]] = []
         # The least room worth sending a request for.
         min_answer_tokens = max(64, self.engine_cfg.batching.max_tokens_quantum)
-        for sample, messages, tokens in prompt_set.entries:
+        for sample, messages, tokens in entries:
             contract = sample.metadata.get("_output_contract", prompt_set.output_contract)
             sampling = batching_mod.resolve_sampling(
                 per_sample_overrides=sample.sampling_overrides,
@@ -945,7 +962,22 @@ class EvaluationEngine:
                     stop=sampling.stop,
                     extra=sampling.extra,
                 )
-            if sampling.max_tokens < min_answer_tokens:
+            # Skip only when the *window* is what leaves no room -- not when a
+            # small max_tokens_cap does. Comparing the final budget would skip
+            # every prompt for a model whose cap is below one quantum, which is
+            # a configuration choice, not a prompt that cannot be answered.
+            room = (
+                model.limits.context_window
+                - tokens
+                - batching_mod.context_reserve(
+                    tokens,
+                    self.engine_cfg.batching,
+                    exact_tokens=getattr(self.token_counter, "exact", False),
+                )
+                if model.limits.context_window
+                else min_answer_tokens
+            )
+            if room < min(min_answer_tokens, model.sampling.max_tokens_cap):
                 # The prompt fits the dataset's input budget but leaves this
                 # model no room to answer in. Sending it earns a 400 that takes
                 # the whole batch down with it, so it is skipped and reported:
@@ -989,7 +1021,10 @@ class EvaluationEngine:
                 context_window=model.limits.context_window,
             )
 
-        result.n_planned = len(rendered)
+        # Includes the prompts skipped for having no room to answer: they were
+        # part of what this task set out to evaluate, so leaving them out would
+        # let coverage read 1.0 for a task that only managed four items in five.
+        result.n_planned = len(rendered) + len(no_room)
         self._clamped_output_budgets = len(clamped)
         if clamped:
             worst = min(clamped, key=lambda item: item[2])

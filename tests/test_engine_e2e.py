@@ -584,7 +584,11 @@ def test_a_prompt_with_no_room_to_answer_is_skipped_not_sent(
     )
     result, _ = _run(config_path)
     task = result.tasks[0]
-    assert task.n_planned == 0
+    # They count as planned -- the task set out to evaluate them -- so coverage
+    # reports the loss instead of hiding it behind an empty denominator.
+    assert task.n_planned == 4
+    assert task.n_scored == 0
     assert task.n_skipped == 4
+    assert task.metrics["coverage"] == 0.0
     # Nothing was sent, so nothing could fail.
     assert task.n_error == 0

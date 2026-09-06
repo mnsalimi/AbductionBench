@@ -200,3 +200,49 @@ def test_an_episode_that_runs_out_of_context_ends_rather_than_failing(
     assert all(row["metadata"]["context_exhausted"] for row in rows)
     # It stopped well before the 40-turn limit, because the window ran out first.
     assert all(0 < row["metadata"]["turns_used"] < 40 for row in rows)
+
+
+def test_two_models_do_not_score_each_others_episodes(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    """The prompt set is shared by every model; per-episode state must not be.
+
+    Both models see the same SampleSpec objects. If an episode writes its
+    transcript onto the sample it ran, the second model overwrites the first's
+    before the first is scored -- and the first model is graded on the second
+    model's episode. With two models running concurrently, silently.
+    """
+    monkeypatch.syspath_prepend(str(tmp_path))
+    endpoint = {
+        "base_url": fake_server.base_url,
+        "api_key": "test-key",
+        "batch": {"enabled": True, "path": "/v1/chat/completions/batch", "group_size": 4},
+    }
+    models = [
+        {
+            "id": f"model-{index}",
+            "model_name": "test/model",
+            "endpoint": endpoint,
+            "sampling": {"max_tokens_default": 256, "max_tokens_cap": 256},
+            "limits": {"max_parallel_batches": 2, "context_window": 4096},
+        }
+        for index in (1, 2)
+    ]
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        models=models,
+        datasets=[
+            {
+                "id": "episodes",
+                "impl": "test_interactive_engine:EchoEnvironmentAdapter",
+                "sample_size": 3,
+                "options": {},
+            }
+        ],
+    )
+    result = _run(config_path)
+    assert len(result.tasks) == 2
+    for task in result.tasks:
+        # Each model's episodes ran to their own environment's demands.
+        assert task.metrics["solved"] == 1.0, task.identity.model_id
+        assert task.metrics["turns"] == 2.0

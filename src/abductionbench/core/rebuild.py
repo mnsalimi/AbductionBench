@@ -96,6 +96,24 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                 # Recompute aggregates from stored per-sample metrics so a
                 # rebuild reflects the records on disk, and fall back to the
                 # stored metrics.json when no adapter is available.
+                # A mode that asks one item as several requests writes both the
+                # members and the folded result. Averaging them together would
+                # make a rebuilt report disagree with the run that produced it:
+                # a BOV item would count once per hypothesis, a vote once per
+                # vote. Members of a reduced group are dropped here.
+                reduced_groups = {
+                    str(rec.get("sample_id"))
+                    for rec in records
+                    if (rec.get("metadata") or {}).get("reduced")
+                }
+                if reduced_groups:
+                    records = [
+                        rec
+                        for rec in records
+                        if (rec.get("metadata") or {}).get("reduced")
+                        or str(rec.get("group_id") or "") not in reduced_groups
+                    ]
+
                 scores = [
                     SampleScore(
                         metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},

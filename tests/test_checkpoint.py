@@ -111,3 +111,44 @@ def test_rebuilt_report_is_not_inflated_by_a_rerun(tmp_path: Path):
     for _ in range(3):  # three passes over the same two samples
         store.append_many([_record("a", ResponseStatus.OK), _record("b", ResponseStatus.OK)])
     assert len(dedupe_records(store.existing())) == 2
+
+
+def test_report_does_not_average_a_group_with_its_own_reduction(tmp_path):
+    """A rebuilt report must agree with the run that produced it.
+
+    A BOV or self-consistency task writes both the per-request members and the
+    folded result. Averaging them together counts the item once per hypothesis
+    or once per vote, so a rebuilt workbook would quietly disagree with the run.
+    """
+    import json
+
+    from abductionbench.core.checkpoint import dedupe_records
+
+    records = [
+        # Three BOV members of one item, each scored on its own question...
+        {"sample_id": "i1#bov0", "group_id": "i1", "prompt_fingerprint": "a",
+         "status": "ok", "metrics": {"set_f1": 0.0}, "metadata": {}},
+        {"sample_id": "i1#bov1", "group_id": "i1", "prompt_fingerprint": "b",
+         "status": "ok", "metrics": {"set_f1": 0.0}, "metadata": {}},
+        {"sample_id": "i1#bov2", "group_id": "i1", "prompt_fingerprint": "c",
+         "status": "ok", "metrics": {"set_f1": 0.0}, "metadata": {}},
+        # ... and the reduction, which is the item's actual score.
+        {"sample_id": "i1", "group_id": "i1", "prompt_fingerprint": "reduced::i1",
+         "status": "ok", "metrics": {"set_f1": 1.0}, "metadata": {"reduced": True}},
+    ]
+    path = tmp_path / "records.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
+
+    kept = dedupe_records(
+        [json.loads(line) for line in path.read_text().splitlines()]
+    )
+    reduced_groups = {
+        str(r.get("sample_id")) for r in kept if (r.get("metadata") or {}).get("reduced")
+    }
+    scored = [
+        r for r in kept
+        if (r.get("metadata") or {}).get("reduced")
+        or str(r.get("group_id") or "") not in reduced_groups
+    ]
+    assert len(scored) == 1
+    assert scored[0]["metrics"]["set_f1"] == 1.0

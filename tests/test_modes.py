@@ -452,3 +452,51 @@ def test_every_shipped_adapter_justifies_the_modes_it_adds():
                 if reason and "bug in the adapter" in reason:
                     unjustified.append(f"{module_info.name}:{mode}")
     assert unjustified == []
+
+
+# --------------------------------------------------------------------------- #
+# a replacement item is a whole item, not its first request
+# --------------------------------------------------------------------------- #
+
+
+class _Replaceable(_Selection):
+    """A selection dataset with a spare item to replace an oversize one."""
+
+    def build_samples(self):
+        return [self._item("s1", "the lawn is wet")]
+
+    def replacement_samples(self, count, exclude):
+        spare = self._item("s2", "the pavement is dry")
+        return self.expand_for_modes([spare])
+
+    @staticmethod
+    def _item(sample_id, observation):
+        return SampleSpec(
+            sample_id=sample_id,
+            fields={
+                "observation": observation,
+                "options": ["it rained", "the sprinkler ran", "a pipe burst"],
+                "option_labels": ["A", "B", "C"],
+            },
+            reference={"gold_labels": ["A", "B"]},
+            task_kind="selection",
+        )
+
+
+def test_a_bov_replacement_brings_all_of_its_hypotheses():
+    """Taking only the first request would rebuild the item from a fragment."""
+    adapter = _adapter(TaskModes(selection_mode="BOV"), cls=_Replaceable)
+    replacements = adapter.replacement_samples(1, set())
+    # One replacement item, three hypotheses, one group.
+    assert len(replacements) == 3
+    assert len({s.group_id for s in replacements}) == 1
+    assert [s.metadata["bov_label"] for s in replacements] == ["A", "B", "C"]
+
+
+def test_a_self_consistency_replacement_brings_all_of_its_votes():
+    adapter = _adapter(
+        TaskModes(prompt_mode="self-consistency", self_consistency_n=4), cls=_Replaceable
+    )
+    replacements = adapter.replacement_samples(1, set())
+    assert len(replacements) == 4
+    assert len({s.group_id for s in replacements}) == 1
