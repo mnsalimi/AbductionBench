@@ -394,22 +394,44 @@ Measured on this suite (Qwen3.5-2B, 200 records, io + cot, repeats 3):
 | calls whose prompt is a byte-identical re-send | **80%** (the repeats) |
 
 So the run is decode-bound, and four fifths of its prefill work is duplicated.
-That points at three server flags and nothing about the prompts:
+That points at server flags and nothing about the prompts:
 
 ```bash
 vllm serve Qwen/Qwen3.5-2B --host 127.0.0.1 --port 18001 \
   --dtype bfloat16 \
   --max-model-len 32768 \
-  --max-num-seqs 64 \            # was 8: decode 64 sequences per step, not 8
-  --enable-prefix-caching \      # the 80% of duplicate prompts prefill for free
-  --gpu-memory-utilization 0.85 \ # was 0.12: KV cache is what buys concurrency
-  --api-key "$ABENCH_API_KEY"
+  --max-num-seqs 64 \             # was 8: decode 64 sequences per step, not 8
+  --enable-prefix-caching \       # the 80% of duplicate prompts prefill for free
+  --gpu-memory-utilization 0.35 \ # was 0.12: KV cache is what buys concurrency
+  --api-key "$ABENCH_API_KEY"      # CUDA graphs on (no --enforce-eager)
 
-export ABENCH_GROUP_SIZE=64       # a batch should fill the scheduler exactly
+export ABENCH_GROUP_SIZE=64        # a batch should fill the scheduler exactly
 ```
 
 `ABENCH_GROUP_SIZE` must track `--max-num-seqs`: a larger batch only queues
-inside vLLM, a smaller one leaves the GPU idle.
+inside vLLM, a smaller one leaves the GPU idle.  On this box the flags above are
+set in `/workspace/vllm_serving/qwen3.5-2b/.env` (`MAX_NUM_SEQS`,
+`ENABLE_PREFIX_CACHING`, `GPU_MEMORY_UTILIZATION`, `ENFORCE_EAGER=0`); 0.35
+utilisation is 2.1 M KV tokens, exactly 64 x 32,768, so the cache matches the
+scheduler instead of over-reserving the GPU.
+
+**Measured, same task before and after** (`aer`, cot, 24 records, one repeat):
+
+| | wall clock | set_f1 | scored |
+|---|---|---|---|
+| `--max-num-seqs 8`, no prefix cache, util 0.12 | 275.5 s | 0.6510 | 24/24 |
+| `--max-num-seqs 64`, prefix cache, util 0.35 | **157.1 s** | 0.6694 | 24/24 |
+
+**1.75x**, and the freed headroom is larger than the number suggests: with the
+same server, tripling the task to 72 prompts (repeats 3) cost 161.2 s -- 3x the
+work for 3% more wall clock.
+
+**Two levers that were measured and rejected.** Raising
+`engine.concurrency.max_parallel_tasks` from 2 to 6 on six tasks made the run
+*slower* (532 s -> 621 s): the GPU was already the constraint at ~48 concurrent
+sequences, so extra tasks only shared decode slots. Raising the per-model
+`max_parallel_batches` has the same ceiling. The client-side concurrency
+defaults are therefore left alone.
 
 **What this does and does not change.** Prefix caching is exact KV reuse -- the
 same arithmetic, so the same distribution. Raising `--max-num-seqs` changes

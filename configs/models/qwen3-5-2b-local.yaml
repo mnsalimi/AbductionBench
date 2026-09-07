@@ -3,7 +3,7 @@
 #
 # The serving model on this box changes; this file records what is actually up:
 #   vllm serve Qwen/Qwen3.5-2B --host 127.0.0.1 --port 18001
-#     --max-model-len 32768 --max-num-seqs 8
+#     --max-model-len 32768 --max-num-seqs 64 --enable-prefix-caching
 # Both of those flags are load-bearing below -- the context window and the batch
 # group size are read straight off them.
 #
@@ -15,7 +15,8 @@ model:
   id: qwen3-5-2b-local
   model_name: Qwen/Qwen3.5-2B
   description: >-
-    Qwen3.5-2B served by vLLM with MAX_MODEL_LEN=16384 and MAX_NUM_SEQS=8.
+    Qwen3.5-2B served by vLLM with MAX_MODEL_LEN=32768 and MAX_NUM_SEQS=64,
+    prefix caching on and CUDA graphs enabled.
   # Returns content directly and leaves `reasoning` null.
   reasoning_model: false
 
