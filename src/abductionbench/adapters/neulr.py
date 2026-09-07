@@ -35,6 +35,14 @@ class NeuLRAdapter(PooledDatasetAdapter):
         "argument go through."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one missing fact"
+    answer_constraints = (
+        "output exactly one missing fact",
+        "the answer must be a single fact, not a rule",
+        "output only the missing fact",
+        "do not explain your reasoning",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "exact_match"

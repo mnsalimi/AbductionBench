@@ -115,23 +115,44 @@ class PooledDatasetAdapter(DatasetAdapter):
 
     # -- prompts: mechanics here, wording in the dataset's own adapter --- #
 
+    #: What a well-formed answer looks like for this dataset, in its own terms
+    #: ("one short sentence", "a single diagnosis").  Rendered into the closing
+    #: line.  A sample may override it with an ``answer_format`` field.
+    answer_format: str = ""
+
+    #: What the answer must and must not do, one clause per item, rendered as a
+    #: "Requirements:" list.  Declared per dataset because the constraints are
+    #: the dataset's ("write exactly one sentence", "do not restate the
+    #: observation"), and declared as *data* because that is what keeps them
+    #: comparable: every generation task in the suite states its shape the same
+    #: way, so a difference in score is a difference in difficulty rather than
+    #: in how firmly the instruction was worded.
+    answer_constraints: tuple[str, ...] = ()
+
+    #: Heading above the candidate list, in the dataset's own words.
+    options_heading: str = ""
+
     def prompt_parts(self, sample: SampleSpec) -> PromptParts:
         """The dataset-owned content of this sample's prompt.
 
-        The default reads the fields adapters already produce.  An adapter with
-        a prompt published by its own benchmark overrides this and returns that
-        wording instead.
+        The default reads the fields adapters already produce, falling back to
+        the class-level answer shape.  An adapter whose prompt is published by
+        its own benchmark -- every interactive one -- overrides this and returns
+        that wording instead.
         """
         fields = sample.fields
+        constraints = fields.get("constraints")
         return PromptParts(
             system=self.system_prompt_for(sample),
             observation=str(fields.get("observation", "") or ""),
             context=str(fields.get("context", "") or ""),
             question=str(fields.get("question", "") or ""),
             instructions=str(fields.get("instructions", "") or ""),
-            answer_format=str(fields.get("answer_format", "") or ""),
+            answer_format=str(fields.get("answer_format") or self.answer_format or ""),
             options=[str(o) for o in (fields.get("options") or [])],
             option_labels=[str(o) for o in (fields.get("option_labels") or [])],
+            options_heading=str(fields.get("options_heading") or self.options_heading or ""),
+            constraints=[str(c) for c in (constraints or self.answer_constraints)],
         )
 
     def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:

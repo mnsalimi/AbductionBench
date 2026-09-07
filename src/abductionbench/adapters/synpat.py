@@ -88,6 +88,14 @@ class SynPATAdapter(PooledDatasetAdapter):
         "and state its corrected form, in the symbols the system uses."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one equation in the given symbols"
+    answer_constraints = (
+        "output exactly one equation",
+        "use only the symbols given",
+        "output only the equation",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "symbolic_match"

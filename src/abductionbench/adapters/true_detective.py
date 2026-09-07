@@ -42,6 +42,8 @@ class TrueDetectiveAdapter(PooledDatasetAdapter):
         "puzzles are designed so that the obvious reading is usually wrong."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"

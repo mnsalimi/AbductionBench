@@ -26,7 +26,9 @@ from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score
 
 REPO_URL = "https://github.com/cambridgeltl/xcopa"
-LABELS = ["A", "B"]
+#: Numbered, from the one house helper, so the label the model sees and
+#: the label the gold refers to cannot drift apart.
+LABELS = C.choice_labels(2)
 
 
 class XCopaAdapter(PooledDatasetAdapter):
@@ -42,6 +44,8 @@ class XCopaAdapter(PooledDatasetAdapter):
         "language's context."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"

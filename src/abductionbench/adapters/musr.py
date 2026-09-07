@@ -41,6 +41,8 @@ class MuSRAdapter(PooledDatasetAdapter):
         "establishes them -- the culprit is the suspect all three converge on."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"
@@ -82,7 +84,7 @@ class MuSRAdapter(PooledDatasetAdapter):
             return None
         if not 0 <= answer < len(choices):
             return None
-        labels = C.letter_labels(len(choices))
+        labels = C.choice_labels(len(choices))
         return SampleSpec(
             sample_id=C.stable_id("musr", item["instance"], item["question_index"]),
             fields={

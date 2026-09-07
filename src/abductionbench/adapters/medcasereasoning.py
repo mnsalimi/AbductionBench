@@ -38,6 +38,14 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
         "evidence in the case rather than prior probability alone."
     )
     data_delivery_mode = "static"
+
+    answer_format = "a single diagnosis"
+    answer_constraints = (
+        "give exactly one diagnosis",
+        "output only the diagnosis name",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "diagnosis_match"

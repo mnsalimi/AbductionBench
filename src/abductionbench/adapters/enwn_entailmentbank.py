@@ -47,6 +47,14 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
         "conclusion."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one missing premise"
+    answer_constraints = (
+        "output exactly one premise",
+        "output only the premise",
+        "do not restate the hypothesis or the given premises",
+        "do not explain your reasoning",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "exact_match"

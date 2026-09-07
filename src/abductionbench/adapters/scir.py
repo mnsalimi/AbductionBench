@@ -45,6 +45,8 @@ class SciRAdapter(PooledDatasetAdapter):
         "pattern in the data."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"

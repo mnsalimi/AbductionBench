@@ -42,6 +42,14 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
         "should be measured next."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one mechanism"
+    answer_constraints = (
+        "state one mechanism, not several",
+        "name the physical or chemical process responsible",
+        "do not restate the observation",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = False
     selection_cardinality = None
     primary_metric = "hypothesis_judged"

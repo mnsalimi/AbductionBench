@@ -30,7 +30,9 @@ from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score, text_match_score
 
 REPO_URL = "https://github.com/Waste-Wood/e-CARE"
-LABELS = ["A", "B"]
+#: Numbered, from the one house helper, so the label the model sees and
+#: the label the gold refers to cannot drift apart.
+LABELS = C.choice_labels(2)
 
 
 class ECareAdapter(PooledDatasetAdapter):
@@ -46,6 +48,17 @@ class ECareAdapter(PooledDatasetAdapter):
         "similarity of wording."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one short factual statement"
+    answer_constraints = (
+        "write exactly one sentence",
+        "name the underlying property, rule or definition",
+        "use plain factual wording",
+        "do not refer to the cause and effect themselves",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)

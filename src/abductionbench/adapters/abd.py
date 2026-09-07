@@ -48,6 +48,14 @@ class ABDAdapter(PooledDatasetAdapter):
         "predicate vocabulary: an explanation outside it does not count."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one formula"
+    answer_constraints = (
+        "output exactly one formula",
+        "use only the symbols given",
+        "output only the formula",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "formula_match"

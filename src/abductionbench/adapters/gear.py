@@ -35,7 +35,9 @@ from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score
 
 REPO_URL = "https://github.com/KaiyuHe998/GEAR-Abduction_evaluation"
-LABELS = ["A", "B", "C"]
+#: Numbered, from the one house helper, so the label the model sees and
+#: the label the gold refers to cannot drift apart.
+LABELS = C.choice_labels(3)
 OUTCOMES = ["on", "off", "undetermined"]
 
 
@@ -53,6 +55,8 @@ class GearAdapter(PooledDatasetAdapter):
         "evidence is incomplete."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"

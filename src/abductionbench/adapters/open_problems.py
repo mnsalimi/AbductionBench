@@ -105,6 +105,11 @@ class OpenProblemsAdapter(PooledDatasetAdapter):
         "confident guess."
     )
     data_delivery_mode = "static"
+
+    answer_constraints = (
+        "output only the answer, with nothing before or after it",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     _repeats = 1

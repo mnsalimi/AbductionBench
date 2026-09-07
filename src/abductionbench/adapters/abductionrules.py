@@ -44,6 +44,15 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
         "same subject-predicate form the rules use."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one fact"
+    answer_constraints = (
+        "output exactly one fact",
+        "output only the fact",
+        "do not output a list",
+        "do not explain",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "exact_match"

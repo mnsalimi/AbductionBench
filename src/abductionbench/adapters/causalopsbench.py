@@ -42,6 +42,14 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
         "that together explain the observed symptoms."
     )
     data_delivery_mode = "static"
+
+    answer_format = "the faulty component"
+    answer_constraints = (
+        "name only the component",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate faulty components:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "component_match"

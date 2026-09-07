@@ -41,6 +41,14 @@ class CommonWhyAdapter(PooledDatasetAdapter):
         "entity. The explanation should be the property that actually rules the action out."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one short sentence"
+    answer_constraints = (
+        "write exactly one sentence",
+        "give the reason itself",
+        "do not restate the observation",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = False
     selection_cardinality = None
     primary_metric = "explanation_judged"

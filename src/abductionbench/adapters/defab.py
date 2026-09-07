@@ -54,6 +54,8 @@ class DeFAbAdapter(PooledDatasetAdapter):
         "respecting the theory's defeaters. More than one addition can be required."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Candidate explanations:"
     objective_metrics = True
     selection_cardinality = "multi"
     primary_metric = "accuracy"
@@ -130,7 +132,7 @@ class DeFAbAdapter(PooledDatasetAdapter):
             )
 
         ordered = sorted(set(candidates))
-        labels = C.letter_labels(len(ordered))
+        labels = C.choice_labels(len(ordered))
         gold_labels = [labels[ordered.index(text)] for text in gold if text in ordered]
         if not gold_labels:
             return None

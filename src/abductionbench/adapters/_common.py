@@ -354,8 +354,24 @@ def as_list(value: Any) -> list[Any]:
 
 
 def letter_labels(count: int, start: str = "A") -> list[str]:
+    """``["A", "B", ...]``.
+
+    Kept for datasets whose *source data* keys its options by letter, where the
+    gold answer refers to that key: changing the label shown there would desync
+    it from the gold.  Everything else uses :func:`choice_labels`.
+    """
     first = ord(start)
     return [chr(first + index) for index in range(count)]
+
+
+def choice_labels(count: int) -> list[str]:
+    """``["1", "2", ...]`` -- the house label for a list of candidate hypotheses.
+
+    Numbers, not letters, and one helper rather than a constant per adapter,
+    so that a dataset's *displayed* labels and its *gold* label cannot drift
+    apart: both come from here.
+    """
+    return [str(index + 1) for index in range(count)]
 
 
 def stable_id(*parts: Any) -> str:

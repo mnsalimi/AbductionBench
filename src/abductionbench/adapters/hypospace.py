@@ -52,6 +52,14 @@ class HypoSpaceAdapter(PooledDatasetAdapter):
         "one."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one hypothesis per line"
+    answer_constraints = (
+        "put each hypothesis on its own line",
+        "make every hypothesis different from the others",
+        "output only the hypotheses",
+        "do not number or explain them",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "distinct_valid_rate"

@@ -46,6 +46,14 @@ class AIOps2025Adapter(PooledDatasetAdapter):
         "component that reported an anomaly downstream of it."
     )
     data_delivery_mode = "static"
+
+    answer_format = "the root cause"
+    answer_constraints = (
+        "write exactly one sentence",
+        "name only the root cause",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate root causes:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "root_cause_match"

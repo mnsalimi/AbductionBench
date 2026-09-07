@@ -43,6 +43,15 @@ class DiagnosisArenaAdapter(PooledDatasetAdapter):
         "State the final diagnosis that explains the case as a whole."
     )
     data_delivery_mode = "static"
+
+    answer_format = "a single diagnosis"
+    answer_constraints = (
+        "give exactly one diagnosis",
+        "output only the diagnosis name",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate diagnoses:"
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)

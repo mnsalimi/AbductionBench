@@ -44,6 +44,14 @@ class HypoArenaAdapter(PooledDatasetAdapter):
         "what is going on, not a restatement of the observation."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one hypothesis"
+    answer_constraints = (
+        "state one hypothesis, not several",
+        "make it specific and checkable against the observations",
+        "do not restate the observation",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = False
     selection_cardinality = None
     primary_metric = "hypothesis_judged"

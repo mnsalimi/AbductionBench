@@ -46,6 +46,15 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "everything disclosed so far."
     )
     data_delivery_mode = "sequential"
+
+    answer_format = "a single diagnosis"
+    answer_constraints = (
+        "give exactly one diagnosis",
+        "output only the diagnosis name",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate diagnoses:"
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)
@@ -109,7 +118,7 @@ class MedUPSAdapter(PooledDatasetAdapter):
             if len(distractors) < 3:
                 return None
             options = sorted({diagnosis, *distractors})
-            labels = C.letter_labels(len(options))
+            labels = C.choice_labels(len(options))
             return SampleSpec(
                 sample_id=C.stable_id("medups", case_index, item.get("chunk_number", "")),
                 fields={

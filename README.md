@@ -349,6 +349,60 @@ examiner prompt, EvoClinician's actor prompt, Cloud-OpsBench's RCA prompt.
 harness prompting a model of its own, not a dataset being evaluated, so its
 wording stays swappable configuration.
 
+## Prompts: one structure, so the data is what differs
+
+**Static and sequential datasets get prompts written for this suite**, not the
+ones their papers published. The reason is comparability: if each dataset
+inherited its authors' wording, a score gap could just as easily be a gap in how
+firmly the instruction was phrased. So the structure is fixed once in
+`adapters/_prompting.py` and only the dataset's own nouns vary.
+
+**Interactive datasets are the exception** and keep the prompts their own
+benchmark publishes -- an environment's action grammar is part of the benchmark,
+not a style choice. That is why `ddxplus`, `med_inquire`, `medqdx` and
+`vivabench` still label their options `A`, `B`, `C`.
+
+Every static/sequential prompt is assembled the same way:
+
+```
+[system]   what this dataset's task is, in its own terms
+
+[user]     Observation:  <the evidence>
+           Question:     <the dataset's question, if it asks one>
+           Answer options:                     <-- numbered, never lettered
+           1. ...
+           2. ...
+           Answer directly. Do not explain your reasoning.     <-- io
+             (or: Work through the evidence step by step...)   <-- cot
+           Requirements:                        <-- generation tasks
+           - write exactly one sentence
+           - do not restate the observation
+           Select exactly one hypothesis.       <-- selection tasks
+           Answer with only one of: 1, 2 or 3, on the last line, as:
+           Answer: 1
+```
+
+Three pieces are dataset-owned and declared as **data**, so the same constraint
+reads identically everywhere it applies (`tools/declare_answer_shapes.py` is the
+one-shot table that set all 34):
+
+| attribute | what it says |
+|---|---|
+| `answer_format` | what a well-formed answer is (`"one short sentence"`), rendered into the closing line |
+| `answer_constraints` | what the answer must and must not do, one clause each, rendered as `Requirements:` |
+| `options_heading` | what the candidate list is called (`"Answer options:"`, `"Candidate diagnoses:"`) |
+
+**Options are numbered.** One helper (`_common.choice_labels`) produces both the
+labels shown and the labels the gold refers to, so they cannot drift apart --
+which is what a per-adapter `LABELS = ["A", "B"]` constant risked.
+
+**The `Answer:` marker is load-bearing, not decoration.** A numbered label is
+much easier to confuse with a number that appears in reasoning than a letter
+was, and the marker is what lets the parser take the label the model
+*submitted* rather than the last digit it happened to write. Measured across
+xcopa, ecare, musr, true_detective and aer in both io and cot:
+`parse_failure_rate` 0.0 on nine of ten tasks and 0.1 on the tenth.
+
 ## Interactive and sequential benchmarks
 
 A benchmark marked `interactive` in the dataset table is executed as a loop, not

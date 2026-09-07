@@ -46,6 +46,8 @@ class AgentRxAdapter(PooledDatasetAdapter):
         "behaviour, not a downstream symptom of it."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Candidate root causes:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"
@@ -110,7 +112,7 @@ class AgentRxAdapter(PooledDatasetAdapter):
             ]
             context_parts.append(C.clip_words("Observed problems during the run:\n" + "\n".join(steps), words))
         options = list(self._categories)
-        labels = C.letter_labels(len(options))
+        labels = C.choice_labels(len(options))
         return SampleSpec(
             sample_id=C.stable_id("agentrx", item.get("collection"), item.get("trajectory_id", index)),
             fields={

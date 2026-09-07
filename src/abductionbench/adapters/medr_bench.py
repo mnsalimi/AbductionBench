@@ -44,6 +44,14 @@ class MedRBenchAdapter(PooledDatasetAdapter):
         "disease, the common look-alike is not the answer."
     )
     data_delivery_mode = "static"
+
+    answer_format = "a single diagnosis"
+    answer_constraints = (
+        "give exactly one diagnosis",
+        "output only the diagnosis name",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "diagnosis_match"

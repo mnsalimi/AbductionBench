@@ -52,6 +52,16 @@ class ProofWriterAdapter(PooledDatasetAdapter):
         "and would complete the proof."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one fact per line, or None"
+    answer_constraints = (
+        "output only the missing facts",
+        "each missing fact must be a single fact, not a rule",
+        "if several single facts would each work, output all of them",
+        "put each answer on its own line",
+        "if there is no valid single missing fact, output exactly: None",
+        "do not explain your reasoning",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "exact_match"

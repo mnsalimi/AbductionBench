@@ -47,6 +47,8 @@ class AERAdapter(PooledDatasetAdapter):
         "merely preceded or accompanied it. Several candidates can be direct causes."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Candidate explanations:"
     objective_metrics = True
     selection_cardinality = "multi"
     primary_metric = "set_f1"
@@ -113,7 +115,7 @@ class AERAdapter(PooledDatasetAdapter):
             for part in str(item.get("golden_answer", "")).split(",")
             if part.strip()
         ]
-        labels = C.letter_labels(len(options))
+        labels = C.choice_labels(len(options))
         if not event or len(options) < 2 or not gold:
             return None
         if not set(gold) <= set(labels):

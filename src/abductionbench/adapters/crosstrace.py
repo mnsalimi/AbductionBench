@@ -44,6 +44,14 @@ class CrossTraceAdapter(PooledDatasetAdapter):
         "mechanism, not a call for further research."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one short hypothesis"
+    answer_constraints = (
+        "write exactly one sentence",
+        "name the underlying fault, not its symptoms",
+        "do not restate the observation",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = False
     selection_cardinality = None
     primary_metric = "insight_judged"

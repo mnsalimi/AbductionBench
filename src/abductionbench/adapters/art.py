@@ -27,7 +27,9 @@ from ._base import PooledDatasetAdapter, selection_score, text_match_score
 
 REPO_URL = "https://github.com/allenai/abductive-commonsense-reasoning"
 BASE = "https://storage.googleapis.com/ai2-mosaic/public/abductive-commonsense-reasoning-iclr2020"
-LABELS = ["A", "B"]
+#: Numbered, from the one house helper, so the label the model sees and
+#: the label the gold refers to cannot drift apart.
+LABELS = C.choice_labels(2)
 
 
 class ARTAdapter(PooledDatasetAdapter):
@@ -43,6 +45,19 @@ class ARTAdapter(PooledDatasetAdapter):
         "thing to have happened, not the most dramatic."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one short sentence"
+    answer_constraints = (
+        "write exactly one sentence",
+        "output only the missing intermediate event or state",
+        "keep it short, plain and concrete",
+        "make it plausible with both observations",
+        "do not restate either observation",
+        "do not add extra causes, background detail or consequences",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Answer options:"
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)
