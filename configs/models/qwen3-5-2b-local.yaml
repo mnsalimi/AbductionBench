@@ -28,9 +28,16 @@ model:
       enabled: true
       base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18001}
       path: /v1/chat/completions/batch
-      # MAX_NUM_SEQS=8, so a batch of 8 fills the scheduler exactly; a larger
-      # batch would only queue inside vLLM.
-      group_size: 8
+      # A batch should fill the server's scheduler exactly: larger and the
+      # surplus only queues inside vLLM, smaller and the GPU idles. So this
+      # tracks --max-num-seqs, and both come from one place:
+      #
+      #   vllm serve ... --max-num-seqs 64
+      #   export ABENCH_GROUP_SIZE=64
+      #
+      # Raising them is the main throughput lever for this suite, which is
+      # decode-bound (measured: 37M output tokens against 8.7M input).
+      group_size: ${env:ABENCH_GROUP_SIZE|8}
     discovery:
       base_url_command: null
       batch_base_url_command: null

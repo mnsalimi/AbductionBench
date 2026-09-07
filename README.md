@@ -382,6 +382,49 @@ so in its own caveats.
 `options.delivery: static` runs an interactive benchmark in its single-turn form
 as an ablation — useful for asking what the interaction actually buys.
 
+## Making a run faster without touching quality
+
+Measured on this suite (Qwen3.5-2B, 200 records, io + cot, repeats 3):
+
+| | |
+|---|---|
+| output tokens | 37.0 M |
+| input tokens | 8.7 M |
+| | **4.2x more decode than prefill** |
+| calls whose prompt is a byte-identical re-send | **80%** (the repeats) |
+
+So the run is decode-bound, and four fifths of its prefill work is duplicated.
+That points at three server flags and nothing about the prompts:
+
+```bash
+vllm serve Qwen/Qwen3.5-2B --host 127.0.0.1 --port 18001 \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --max-num-seqs 64 \            # was 8: decode 64 sequences per step, not 8
+  --enable-prefix-caching \      # the 80% of duplicate prompts prefill for free
+  --gpu-memory-utilization 0.85 \ # was 0.12: KV cache is what buys concurrency
+  --api-key "$ABENCH_API_KEY"
+
+export ABENCH_GROUP_SIZE=64       # a batch should fill the scheduler exactly
+```
+
+`ABENCH_GROUP_SIZE` must track `--max-num-seqs`: a larger batch only queues
+inside vLLM, a smaller one leaves the GPU idle.
+
+**What this does and does not change.** Prefix caching is exact KV reuse -- the
+same arithmetic, so the same distribution. Raising `--max-num-seqs` changes
+which sequences share a decode step, and batched inference is not numerically
+batch-invariant, so individual answers can come out differently; nothing is
+degraded, and at the temperature repeats are drawn at the answers already vary
+between runs. Neither touches a prompt, a token budget, or a stop condition.
+
+**What is *not* free**, and is therefore not done here: capping `max_tokens`
+below the context window. It is the largest single speedup available -- 93% of
+BoxingGym's answers and 21% of `abd`'s CoT answers run to the 32,000-token cap
+and are cut off -- but of the answers that *do* finish on their own, 9% exceed
+8,192 tokens and 16% exceed 2,048. A cap would truncate real answers, so it is a
+trade to make deliberately, with those numbers in view, not a free win.
+
 ## Models and batching
 
 Each model is one file in `configs/models/`, with **its own batch group size**:
