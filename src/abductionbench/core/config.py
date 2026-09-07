@@ -777,6 +777,14 @@ class DatasetConfig(_Base):
     seed: int | None = None
     #: Per-dataset overrides of the engine's input-size policy.
     input_token_budget: int | None = None
+    #: Per-dataset override of the model's output-token cap.  Most datasets want
+    #: the model's 32,000; a few carry records long enough that the *answer* is
+    #: what runs out of room, and truncating those measures the budget rather
+    #: than the model.  This raises the ask -- the model's context window is
+    #: still the hard limit, so asking for 64,000 against a 32,768-token window
+    #: yields what the window holds and the shortfall is logged as an
+    #: output-budget clamp.
+    max_output_tokens: int | None = Field(default=None, ge=1)
     #: Per-dataset override of a model's batch group size, when a dataset's
     #: items are unusually long.
     batch_group_size: int | None = None

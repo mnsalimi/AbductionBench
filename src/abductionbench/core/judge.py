@@ -83,7 +83,15 @@ class JudgeStage:
                 f"({sorted(clients)}); add it to the run's model list"
             )
         self.client = clients[config.model]
-        self.template = registry.get(config.template)
+        self.registry = registry
+        self.default_template = registry.get(config.template)
+        #: Resolved per adapter: a dataset whose task has its own grading
+        #: criteria gets its own judge prompt, because "is this the same
+        #: hypothesis?" and "does this explanation make the outcome less
+        #: surprising?" are different questions and a single generic judge
+        #: answers neither well.  Adapters that declare nothing keep the
+        #: configured default.
+        self.template = self.default_template
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
         if config.cache and self._cache_path.exists():
@@ -94,12 +102,33 @@ class JudgeStage:
 
     # ------------------------------------------------------------------ #
 
+    def _template_for(self, adapter: DatasetAdapter):
+        """The judge prompt this dataset is graded with.
+
+        An unknown id is a configuration mistake in the adapter, not a reason
+        to abandon the judged metric, so it falls back to the configured
+        default and says so once.
+        """
+        wanted = getattr(adapter, "judge_template", None)
+        if not wanted or wanted == self.default_template.id:
+            return self.default_template
+        try:
+            return self.registry.get(wanted)
+        except Exception as exc:  # noqa: BLE001 - a bad id must not lose the metric
+            logger.warning(
+                "adapter %s asks for judge template %r which is unavailable (%s); "
+                "grading with %s instead",
+                adapter.dataset_id, wanted, exc, self.default_template.id,
+            )
+            return self.default_template
+
     async def apply(
         self,
         adapter: DatasetAdapter,
         scored: list[tuple[SampleSpec, ModelResponse, SampleScore]],
     ) -> list[tuple[SampleSpec, ModelResponse, SampleScore]]:
         """Judge what the adapter asks to be judged; return updated scores."""
+        self.template = self._template_for(adapter)
         pending: list[tuple[int, dict[str, Any], str]] = []
         for index, (sample, response, score) in enumerate(scored):
             try:

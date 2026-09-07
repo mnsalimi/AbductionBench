@@ -43,7 +43,7 @@ class CommonWhyAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
     objective_metrics = False
     selection_cardinality = None
-    primary_metric = "explanation_rouge_l"
+    primary_metric = "explanation_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(

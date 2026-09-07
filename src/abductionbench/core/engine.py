@@ -1062,6 +1062,7 @@ class EvaluationEngine:
                 context_window=model.limits.context_window,
                 input_tokens=tokens,
                 exact_tokens=getattr(self.token_counter, "exact", False),
+                max_output_tokens=bundle.config.max_output_tokens,
             )
             mode_temperature = prompt_set.modes.sampling_temperature
             if mode_temperature is not None:
@@ -1099,12 +1100,13 @@ class EvaluationEngine:
                 # the sample is fine, this model's window is too small for it.
                 no_room.append((sample.sample_id, tokens))
                 continue
-            if sampling.max_tokens < model.sampling.max_tokens_cap:
+            asked = bundle.config.max_output_tokens or model.sampling.max_tokens_cap
+            if sampling.max_tokens < asked:
                 # The window, not the cap, is what limits this request. Counted
-                # so a dataset whose prompts crowd out the answer is visible.
-                clamped.append(
-                    (sample.sample_id, model.sampling.max_tokens_cap, sampling.max_tokens)
-                )
+                # so a dataset whose prompts crowd out the answer is visible --
+                # and against what *this* dataset asked for, which a dataset
+                # with its own max_output_tokens has raised.
+                clamped.append((sample.sample_id, asked, sampling.max_tokens))
             rendered.append(
                 RenderedPrompt(
                     sample=sample,
@@ -1244,6 +1246,7 @@ class EvaluationEngine:
                 pairs = await self._run_episodes(
                     adapter, pending, client=client, store=store, use_batch=use_batch,
                     checkpoint=checkpoint, model=model, group_size=group_size,
+                    max_output_tokens=bundle.config.max_output_tokens,
                 )
             records: list[EvalRecord] = []
             for prompt, response in pairs:
@@ -1449,6 +1452,7 @@ class EvaluationEngine:
         checkpoint: TaskCheckpoint,
         model: ModelConfig,
         group_size: int,
+        max_output_tokens: int | None = None,
     ) -> list[tuple[RenderedPrompt, ModelResponse]]:
         """Drive an interactive benchmark to completion, one turn at a time.
 
@@ -1537,6 +1541,7 @@ class EvaluationEngine:
                     context_window=model.limits.context_window,
                     input_tokens=tokens,
                     exact_tokens=getattr(self.token_counter, "exact", False),
+                    max_output_tokens=max_output_tokens,
                 )
                 turn_prompts.append(
                     RenderedPrompt(
@@ -1886,6 +1891,8 @@ class EvaluationEngine:
         result: TaskResult,
         *,
         votable: bool = True,
+        judged: bool = False,
+        higher_is_better: bool = True,
     ) -> dict[str, float]:
         """How much the repeats of one record disagreed with each other.
 
@@ -1934,7 +1941,14 @@ class EvaluationEngine:
         # verbatim, so every sample would be its own plurality of one and the
         # "voted" score would just be whichever sample happened to come first.
         # Those datasets report the spread of their repeats and nothing else.
+        # What they get instead is Best-of-N, below.
         if not votable:
+            if judged:
+                out.update(
+                    EvaluationEngine._best_of_n_metrics(
+                        repeated, result.primary_metric, higher_is_better
+                    )
+                )
             return out
 
         # A vote is a plurality over k samples of the same question, and the
@@ -1951,6 +1965,38 @@ class EvaluationEngine:
                 )
             )
             out["self_consistency_n_records"] = float(len(voted_scores))
+        return out
+
+    @staticmethod
+    def _best_of_n_metrics(
+        repeated: list[list[tuple[SampleSpec, SampleScore]]],
+        primary: str,
+        higher_is_better: bool,
+    ) -> dict[str, float]:
+        """Best-of-N: per record, the repeat the judge scored highest.
+
+        The counterpart of self-consistency for a task with no checkable
+        answer.  A vote needs answers that can coincide, and free-text
+        hypotheses never repeat verbatim -- so instead of asking which answer
+        the repeats agreed on, this asks which of them was *best*, and reports
+        that.  It is the same k samples either way; nothing is bought twice.
+
+        Read off the judged primary metric, so it means "best as the judge
+        scored it" and not "best by string overlap".  ``higher_is_better``
+        respects a primary metric that is an error.
+        """
+        picks: list[SampleScore] = []
+        for members in repeated:
+            scored = [score for _s, score in members if primary in score.metrics]
+            if not scored:
+                continue
+            chooser = max if higher_is_better else min
+            picks.append(chooser(scored, key=lambda score: score.metrics[primary]))
+        if not picks:
+            return {}
+        out = aggregate_mean_metrics([score.metrics for score in picks], prefix="best_of_n_")
+        out["best_of_n_n_records"] = float(len(picks))
+        out["best_of_n_n"] = float(max(len(members) for members in repeated))
         return out
 
     @staticmethod
@@ -2011,7 +2057,15 @@ class EvaluationEngine:
         # A dataset whose answers are graded by an LLM judge, or by overlap with
         # a reference, has no discrete answer space for a vote to be taken over.
         metrics.update(
-            self._repeat_metrics(fresh, result, votable=adapter.objective_metrics)
+            self._repeat_metrics(
+                fresh,
+                result,
+                votable=adapter.objective_metrics,
+                # A dataset with no checkable answer is judged, and its repeats
+                # are reported as Best-of-N rather than as a vote.
+                judged=not adapter.objective_metrics,
+                higher_is_better=adapter.higher_is_better,
+            )
         )
 
         planned = max(1, result.n_planned)

@@ -4,4 +4,10 @@ dataset:
   options:
     scenarios: null    # null -> ABD_FULL, ABD_PARTIAL, ABD_SKEPTICAL
     max_worlds: 4
+  # ABD's records are long derivations, and the answer -- a formula with its
+  # working -- is what runs out of room rather than the prompt. 32,000 output
+  # tokens truncated real answers, so this dataset asks for twice that. It is
+  # an ask, not a promise: the model's context window is still the hard limit,
+  # and the shortfall against it is logged as an output-budget clamp.
+  max_output_tokens: 64000
   notes: Abduction benchmark of concept-synth; gold alpha read from the instance archive.

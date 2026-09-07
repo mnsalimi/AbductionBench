@@ -66,6 +66,7 @@ def resolve_sampling(
     context_window: int | None = None,
     input_tokens: int = 0,
     exact_tokens: bool = False,
+    max_output_tokens: int | None = None,
 ) -> SamplingParams:
     """Compose the effective decoding parameters for one sample.
 
@@ -74,17 +75,26 @@ def resolve_sampling(
 
         max_tokens = min(max_tokens_cap, context_window - input_tokens_est)
 
-    with ``max_tokens_cap`` fixed at 32,000 for every dataset.  An adapter's own
+    with ``max_tokens_cap`` at 32,000 by default.  An adapter's own
     idea of how long an answer should be is ignored, deliberately: a budget
     guessed per task is what produced truncated answers that then had to be
     re-issued, and a truncation is only informative when the model actually had
     the whole window to work in.  The result is rounded down onto the batching
     grid so prompts of similar length can still share one batch call.
 
+    ``max_output_tokens`` raises (or lowers) that cap for one dataset.  A few
+    benchmarks -- BoxingGym's experiment transcripts, ABD's derivations -- carry
+    records long enough that the answer, not the prompt, is what runs out of
+    room, and truncating those measures the budget instead of the model.  It can
+    only ask, though: the window is still the hard limit, so a dataset asking
+    for more output than ``context_window - input`` gets what the window holds
+    (the engine logs the shortfall as an output-budget clamp).
+
     Everything except the budget still layers model defaults → template hints →
     per-sample overrides.
     """
-    max_tokens = int(model_sampling.max_tokens_cap)
+    cap = int(max_output_tokens or model_sampling.max_tokens_cap)
+    max_tokens = cap
     if context_window:
         # The whole remaining window, less a reserve. The reserve is not
         # cosmetic: the server tokenizes with a different tokenizer and adds its
@@ -94,7 +104,7 @@ def resolve_sampling(
         reserve = context_reserve(input_tokens, batching, exact_tokens=exact_tokens)
         max_tokens = min(max_tokens, context_window - input_tokens - reserve)
     max_tokens = quantize_max_tokens(max_tokens, batching.max_tokens_quantum)
-    max_tokens = min(max_tokens, model_sampling.max_tokens_cap)
+    max_tokens = min(max_tokens, cap)
     if context_window:
         max_tokens = min(
             max_tokens,

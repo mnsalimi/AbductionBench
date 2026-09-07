@@ -173,6 +173,13 @@ class DatasetAdapter(ABC):
     #: can only be credited or penalised when correctness is decidable.
     objective_metrics: bool = False
 
+    #: Judge prompt this dataset is graded with, when the judge stage is on.
+    #: ``None`` keeps ``engine.judge.template``.  A dataset whose grading
+    #: criteria are its own -- "does this explanation make the outcome less
+    #: surprising?" is not "is this the same diagnosis?" -- names its own
+    #: template here, so the judged metric is as auditable as the main prompt.
+    judge_template: str | None = None
+
     #: For selection datasets, how many hypotheses the task admits:
     #:
     #: ``"single"``    exactly one is correct  -> SCS, BOV
@@ -424,10 +431,18 @@ class DatasetAdapter(ABC):
         reported once as a skipped *mode* rather than producing a task whose
         numbers would not mean what the column says.
         """
-        if modes.prompt_mode != "io" and not cls.objective_metrics:
+        # CoT is offered for every dataset: how an answer is *elicited* is
+        # independent of how it is graded, and asking a judged generation task
+        # to reason first is exactly as meaningful as asking a labelled one to.
+        # A *vote*, on the other hand, needs answers that can coincide, so
+        # self-consistency stays restricted to datasets with a checkable
+        # answer; the judged ones report Best-of-N over the same repeats
+        # instead (see EvaluationEngine._best_of_n_metrics).
+        if modes.prompt_mode == SELF_CONSISTENCY and not cls.objective_metrics:
             return (
-                f"prompt_mode={modes.prompt_mode} applies only to datasets with objectively "
-                "verifiable metrics; this one is not scored statistically"
+                "self-consistency needs answers that can coincide, which free-text "
+                "hypotheses graded by a judge do not; this dataset reports Best-of-N "
+                "over its repeats instead"
             )
         if modes.selection_mode is None:
             return None
@@ -635,9 +650,25 @@ class DatasetAdapter(ABC):
 
         ``verdict`` is a :class:`~abductionbench.core.judge.JudgeVerdict`; it is
         duck-typed here so this module stays independent of the judge stage.
-        Default: return the score unchanged.
+
+        The default records the verdict as a ``judged`` metric rather than
+        discarding it: an adapter that asked for a sample to be judged has
+        already paid for the call, and dropping the answer would leave the
+        judged metric silently missing.  Adapters that want a differently named
+        or differently shaped metric override this.
         """
-        return score
+        score_value = getattr(verdict, "score", None)
+        metrics = dict(score.metrics)
+        metrics["judged"] = (
+            float(score_value) if score_value is not None
+            else (1.0 if getattr(verdict, "positive", False) else 0.0)
+        )
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details={**score.details, "judge_label": getattr(verdict, "label", None)},
+        )
 
     # ------------------------------------------------------------------ #
     # documentation

@@ -124,13 +124,29 @@ def test_slug_is_filesystem_safe_and_distinct_per_combination():
 # --------------------------------------------------------------------------- #
 
 
-def test_reasoning_modes_are_only_for_objectively_scored_datasets():
+def test_cot_is_offered_to_every_dataset_but_the_vote_is_not():
+    """Eliciting and grading are independent.
+
+    Asking a judged generation task to reason before answering is as meaningful
+    as asking a labelled one to, so CoT is offered everywhere.  A *plurality*
+    is different: it needs answers that can coincide, which free-text
+    hypotheses do not, so self-consistency stays restricted -- those datasets
+    report Best-of-N over the same repeats instead.
+    """
+
     class Subjective(_Selection):
         objective_metrics = False
 
     assert Subjective.supports_modes(TaskModes(prompt_mode="io")) is None
-    problem = Subjective.supports_modes(TaskModes(prompt_mode="cot"))
-    assert problem and "objectively verifiable" in problem
+    assert Subjective.supports_modes(TaskModes(prompt_mode="cot")) is None
+    problem = Subjective.supports_modes(TaskModes(prompt_mode="self-consistency"))
+    assert problem and "Best-of-N" in problem
+
+    class Objective(_Selection):
+        objective_metrics = True
+
+    for mode in ("io", "cot", "self-consistency"):
+        assert Objective.supports_modes(TaskModes(prompt_mode=mode)) is None
 
 
 def test_a_multi_answer_benchmark_is_never_offered_single_choice():
@@ -554,3 +570,51 @@ def test_the_record_behind_a_request_survives_every_expansion():
     adapter = _adapter(TaskModes(repeats=2, selection_mode="BOV"))
     for sample in adapter.expand_for_modes(adapter.build_samples()):
         assert evaluation_item_id(sample) == "s1"
+
+
+# --------------------------------------------------------------------------- #
+# Best-of-N: what a judged dataset gets instead of a vote
+# --------------------------------------------------------------------------- #
+
+
+def _member(prediction: str, **metrics):
+    from abductionbench.core.types import SampleScore, SampleSpec
+
+    return (
+        SampleSpec(sample_id=f"s-{prediction}", fields={}, reference={}),
+        SampleScore(metrics=metrics, prediction=prediction, parse_ok=True),
+    )
+
+
+def test_best_of_n_reports_the_repeat_the_judge_scored_highest():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [
+        _member("weak", hypothesis_judged=0.0, token_f1=0.9),
+        _member("best", hypothesis_judged=1.0, token_f1=0.2),
+        _member("mid", hypothesis_judged=0.0, token_f1=0.5),
+    ]
+    out = EvaluationEngine._best_of_n_metrics([record], "hypothesis_judged", True)
+
+    assert out["best_of_n_hypothesis_judged"] == 1.0
+    # Every metric of the winning repeat travels with it -- including the ones
+    # that were *worse* there, which is the point of reporting best-of-n rather
+    # than the best value of each metric separately.
+    assert out["best_of_n_token_f1"] == 0.2
+    assert out["best_of_n_n_records"] == 1.0
+    assert out["best_of_n_n"] == 3.0
+
+
+def test_best_of_n_minimises_a_metric_that_is_an_error():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [_member("a", err=0.8), _member("b", err=0.1), _member("c", err=0.5)]
+    assert EvaluationEngine._best_of_n_metrics([record], "err", False)["best_of_n_err"] == 0.1
+    assert EvaluationEngine._best_of_n_metrics([record], "err", True)["best_of_n_err"] == 0.8
+
+
+def test_best_of_n_is_silent_when_the_metric_is_missing():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [_member("a", other=1.0), _member("b", other=0.0)]
+    assert EvaluationEngine._best_of_n_metrics([record], "hypothesis_judged", True) == {}

@@ -11,6 +11,11 @@ dataset:
     experiments: 10
     questions: 5
     # environments: [death_process, irt]   # subset, for a quick check
+  # An episode is a growing transcript of experiments and their results, and
+  # the prediction at the end is long. 93% of its answers ran to the 32,000
+  # cap, which measures the budget rather than the model, so it asks for
+  # twice that -- bounded, as always, by the model's context window.
+  max_output_tokens: 64000
   notes: >-
     Runs the benchmark's real simulators (BoxingGym ships no item file). Each
     episode is experimentation followed by prediction, scored by the release's

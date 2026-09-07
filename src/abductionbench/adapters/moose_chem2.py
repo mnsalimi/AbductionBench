@@ -47,7 +47,7 @@ class MooseChem2Adapter(PooledDatasetAdapter):
     selection_cardinality = None
     hypothesis_modes = ("generation",)
     table_hypothesis_mode = "Generation & Selection (separate tasks)"
-    primary_metric = "hypothesis_rouge_l"
+    primary_metric = "hypothesis_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(

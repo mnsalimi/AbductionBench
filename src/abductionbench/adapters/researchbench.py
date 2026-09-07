@@ -94,7 +94,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     }
     table_hypothesis_mode = "Generation / Selection (separate tasks)"
 
-    primary_metric = "hypothesis_rouge_l"
+    primary_metric = "hypothesis_judged"
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
@@ -282,6 +282,19 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        """Record the verdict under the name this adapter's primary metric uses."""
+        metrics = dict(score.metrics)
+        metrics["hypothesis_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details={**score.details, "judge_label": getattr(verdict, "label", None)},
+        )
 
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
