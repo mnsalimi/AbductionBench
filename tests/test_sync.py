@@ -315,3 +315,53 @@ def test_a_file_growing_during_upload_still_reaches_the_remote(tmp_path: Path):
 
     assert (remote / "run-1" / "events.jsonl").exists()
     assert syncer.stats.failures == 0
+
+
+def test_a_run_can_be_continued_from_its_backup_after_the_directory_is_gone(
+    fake_server, write_run_config, fake_dataset, tmp_path
+):
+    """The reason for backing a run up: this box's filesystem may not survive.
+
+    Continuing needs the records -- they are what says which samples are already
+    answered -- so a resume whose local directory has vanished pulls it back
+    from the remote first.
+    """
+    import asyncio
+
+    from abductionbench.cli import _resolve_resume
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.engine import EvaluationEngine
+
+    def _run(path):
+        config = load_run_config(path)
+        engine = EvaluationEngine(config)
+        return asyncio.run(engine.run()), engine
+
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=4, sample_size=4)],
+        engine={"sync": {"enabled": True, "remote_path": str(remote), "interval_s": 0.2}},
+    )
+    result, engine = _run(config_path)
+    engine.flush_sync()
+    assert result.tasks[0].n_scored == 4
+
+    # The box is recycled: the local run directory is gone, the backup is not.
+    shutil.rmtree(result.run_dir)
+    assert not result.run_dir.exists()
+    assert (remote / result.run_id / "datasets").exists()
+
+    config = load_run_config(config_path)
+    restored = _resolve_resume(config, result.run_id)
+    assert restored == result.run_dir
+    assert list(restored.rglob("records.jsonl")), "the records came back"
+
+    # And the run continues from them without re-asking anything.
+    calls_before = fake_server.state.requests
+    engine2 = EvaluationEngine(config, run_id=result.run_id, run_dir=restored)
+    continued = asyncio.run(engine2.run())
+    assert continued.tasks[0].n_reused == 4
+    assert continued.tasks[0].n_scored == 4
+    assert fake_server.state.requests - calls_before <= 2   # only the endpoint probe

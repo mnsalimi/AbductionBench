@@ -816,7 +816,7 @@ class ModesConfig(_Base):
     #:
     #: This is not self-consistency: nothing is voted on and nothing is folded
     #: away.  It multiplies the cost of a run by ``repeats``.
-    repeats: int = Field(5, ge=1)
+    repeats: int = Field(3, ge=1)
     #: Per-delivery-mode override.  An interactive record is already many calls
     #: -- an episode is ten to twenty turns -- so repeating it five times costs
     #: five times a lot rather than five times a little: measured on this suite,

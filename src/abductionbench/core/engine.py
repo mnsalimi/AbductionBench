@@ -236,6 +236,35 @@ class EvaluationEngine:
         #: benchmark formulation that justifies each (specification item 15).
         self._introduced_modes: list[dict[str, str]] = []
 
+    def _dump_resolved_config(self) -> None:
+        """Write what this pass is running, without erasing what earlier ones ran.
+
+        Continuing a run with a changed config -- a dataset added, a prompt mode
+        added -- would otherwise overwrite the record of what the first pass
+        actually used, and the records on disk would no longer be explained by
+        the config sitting next to them.  Each pass that differs is kept as
+        ``run_config.resolved.<n>.yaml``.
+        """
+        primary = self.run_dir / "run_config.resolved.yaml"
+        if not primary.exists():
+            dump_resolved(self.config, primary)
+            return
+        current = self.run_dir / ".run_config.current.yaml"
+        dump_resolved(self.config, current)
+        if current.read_bytes() == primary.read_bytes():
+            current.unlink()
+            return
+        index = 2
+        while (self.run_dir / f"run_config.resolved.{index}.yaml").exists():
+            index += 1
+        target = self.run_dir / f"run_config.resolved.{index}.yaml"
+        current.replace(target)
+        logger.info(
+            "continuing with a changed configuration; this pass is recorded in %s "
+            "(the original stays in run_config.resolved.yaml)",
+            target.name,
+        )
+
     def _run_id_tz(self):
         """The timezone a new run id is stamped in.
 
@@ -270,7 +299,7 @@ class EvaluationEngine:
         result = RunResult(
             run_id=self.run_id, run_dir=self.run_dir, config=self.config, started_at=time.time()
         )
-        dump_resolved(self.config, self.run_dir / "run_config.resolved.yaml")
+        self._dump_resolved_config()
         self.sync.start()
         logger.info(
             "run %s: %d model(s) x %d dataset(s), output=%s",

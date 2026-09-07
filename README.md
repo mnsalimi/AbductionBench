@@ -55,8 +55,8 @@ set -a; . ./.env; set +a                       # or: export ABENCH_API_KEY=...
 abench doctor configs/runs/full.yaml           # 30 s: endpoint + batch route reachable
 abench run    configs/runs/full.yaml           # 200 records x 42 datasets x every model
 
-# interrupted? continue exactly where it stopped (per-sample checkpoints):
-abench run configs/runs/full.yaml --resume runs/<run-id>
+# interrupted? continue it by name -- the folder name, the same one on Drive:
+abench run configs/runs/full.yaml --resume 20260907-101530_full
 ```
 
 `configs/runs/full.yaml` is the single place that decides scope: it picks up
@@ -68,6 +68,38 @@ The dataset table's "Generation / Selection (separate tasks)" datasets each plan
 two tasks, and interactive benchmarks plan one episode per item rather than one
 prompt, so a full run is more than one task per dataset — `abench run ...
 --dry-run` prints the exact plan before anything is sent.
+
+## Continuing a run
+
+```bash
+abench run configs/runs/full.yaml --resume 20260907-101530_full
+```
+
+The argument is the **run id** — the name of the directory under `runs/`, which
+is also the name of the folder on Drive, which is also what the run printed when
+it started. A path works too, for a run kept somewhere else.
+
+What continuing does:
+
+* **Already-answered samples are reused, not paid for again.** Every record's
+  answer is checkpointed with a fingerprint of the exact request that produced
+  it (model, mode, messages, sampling), so a sample is only reused when the same
+  question would be asked again.
+* **Anything new in the config is run.** Add a dataset, a model, a prompt mode,
+  raise `repeats` — the new work has no checkpoint and runs in full while
+  everything else is skipped. This is the normal way to grow a run: launch a
+  small one, then continue it wider.
+* **Changing a config does not erase the record of what already ran.** The
+  original `run_config.resolved.yaml` stays; each later pass that differs is
+  written next to it as `run_config.resolved.2.yaml` and so on, so the records on
+  disk are always explained by a config that is still there.
+* **A missing directory is restored from the backup first.** If `runs/<id>` is
+  not here but the run was mirrored to `engine.sync.remote_path`, it is pulled
+  back before continuing — which is the point of the backup: this box's
+  filesystem is not guaranteed to survive, and continuing needs the records.
+  Nothing is written to the remote and nothing local is deleted.
+* An unknown id lists the runs that *are* available rather than starting a new
+  run under that name.
 
 ## Backing up a run (incremental, off the hot path)
 
@@ -220,7 +252,7 @@ modes:
   hypothesis_modes: [generation, selection]
   self_consistency_n: 5
   self_consistency_temperature: 0.7
-  repeats: 5                           # each record asked 5 times
+  repeats: 3                           # each record asked 3 times
   repeats_by_delivery: {interactive: 1, sequential: 1}
   repeat_temperature: 0.7
 ```
@@ -252,7 +284,7 @@ repeat_agreement              0.00   ← they never all agreed
 accuracy_repeat_std           0.49   ← and this is how much they moved
 ```
 
-So `prompt_modes: [io, cot]` with `repeats: 5` gives you four numbers per
+So `prompt_modes: [io, cot]` with `repeats: 3` gives you four numbers per
 dataset — io, cot, and the voted version of each — for two tasks' worth of
 calls. There is a standalone `self-consistency` prompt mode, but with repeats on
 it buys nothing the io and cot tasks do not already report.
@@ -269,9 +301,11 @@ a reasoning mode is only readable where correctness is decidable.
 
 **Cost.** Repeats multiply a run by `repeats`, and an interactive record is
 already ten to twenty calls, so it multiplies five times a lot rather than five
-times a little. Measured on this suite: `repeats: 5` everywhere is ~112,000
-calls, of which ~25,500 are interactive *episodes* — roughly 75 hours against
-about an hour for every static dataset combined. Hence
+times a little. Measured on this suite: repeating the interactive
+datasets is what costs: at 200 records, `repeats: 3` on the static datasets plus
+1 on the interactive ones is ~37,000 calls, while repeating the interactive ones
+too would add tens of thousands of *episodes* — tens of hours against about an
+hour for every static dataset combined. Hence
 `repeats_by_delivery: {interactive: 1}` by default. Raise it deliberately.
 
 **`io` / `cot` / `self-consistency`.** `io` asks for the answer and nothing

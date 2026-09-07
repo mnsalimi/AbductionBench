@@ -812,3 +812,134 @@ class OverlapScoredAdapter(FakeAdapter):
     assert "rouge_l_repeat_std" in task.metrics        # the spread is reported
     # ... but nothing was voted on.
     assert not any(k.startswith("self_consistency_") for k in task.metrics)
+
+
+# --------------------------------------------------------------------------- #
+# continuing a run: by id, with new work added, and from a backup
+# --------------------------------------------------------------------------- #
+
+
+def test_continuing_a_run_reuses_answers_and_runs_only_what_is_new(
+    fake_server, write_run_config, fake_dataset
+):
+    """The case that matters: stop, add a dataset, continue.
+
+    The first dataset's answers must be reused rather than paid for again, and
+    the dataset that did not exist before must run in full.
+    """
+    first = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("a", n=4, sample_size=4)]
+    )
+    result, _ = _run(first)
+    assert result.tasks[0].n_scored == 4
+    calls_after_first = fake_server.state.requests
+
+    # A dataset is added, and the run is continued into the same directory.
+    second = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            fake_dataset("a", n=4, sample_size=4),
+            fake_dataset("b", n=4, sample_size=4),
+        ],
+        name="test-run-2",
+    )
+    config = load_run_config(second)
+    engine = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    continued = asyncio.run(engine.run())
+
+    by_dataset = {task.identity.dataset_id: task for task in continued.tasks}
+    assert by_dataset["a"].n_reused == 4      # nothing re-asked
+    assert by_dataset["a"].n_scored == 4      # but still scored and reported
+    assert by_dataset["b"].n_reused == 0      # the new dataset ran in full
+    assert by_dataset["b"].n_scored == 4
+    # Only the new dataset cost anything.
+    assert fake_server.state.requests - calls_after_first <= 2
+
+
+def test_continuing_with_a_new_prompt_mode_runs_only_that_mode(
+    fake_server, write_run_config, fake_dataset
+):
+    first = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=4, sample_size=4)],
+        modes={"prompt_modes": ["io"]},
+    )
+    result, _ = _run(first)
+
+    second = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=4, sample_size=4)],
+        modes={"prompt_modes": ["io", "cot"]},
+        name="test-run-2",
+    )
+    config = load_run_config(second)
+    engine = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    continued = asyncio.run(engine.run())
+
+    by_mode = {task.identity.prompt_mode: task for task in continued.tasks}
+    assert by_mode["io"].n_reused == 4        # the io answers stand
+    assert by_mode["cot"].n_reused == 0       # cot is new work
+    assert by_mode["cot"].n_scored == 4
+
+
+def test_continuing_keeps_the_config_each_pass_actually_ran(
+    fake_server, write_run_config, fake_dataset
+):
+    """Otherwise the records on disk are explained by a config that never ran."""
+    first = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("a", n=2, sample_size=2)]
+    )
+    result, _ = _run(first)
+    assert (result.run_dir / "run_config.resolved.yaml").exists()
+
+    second = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("a", n=2, sample_size=2), fake_dataset("b", n=2, sample_size=2)],
+        name="test-run-2",
+    )
+    config = load_run_config(second)
+    engine = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    asyncio.run(engine.run())
+
+    # The original is untouched and the second pass is recorded beside it.
+    assert (result.run_dir / "run_config.resolved.yaml").exists()
+    assert (result.run_dir / "run_config.resolved.2.yaml").exists()
+    assert not (result.run_dir / ".run_config.current.yaml").exists()
+
+
+def test_a_run_id_resolves_to_its_directory_under_the_output_root(
+    write_run_config, fake_dataset, fake_server, tmp_path
+):
+    """A person has the folder name, not a path -- that is what Drive shows."""
+    from abductionbench.cli import _resolve_resume
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("a", n=2, sample_size=2)]
+    )
+    result, _ = _run(config_path)
+    config = load_run_config(config_path)
+
+    # By bare id...
+    assert _resolve_resume(config, result.run_id) == result.run_dir
+    # ... and by path, for a run kept somewhere else.
+    assert _resolve_resume(config, str(result.run_dir)) == result.run_dir
+
+
+def test_an_unknown_run_id_says_what_is_available_instead_of_guessing(
+    write_run_config, fake_dataset, fake_server
+):
+    import typer
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url, datasets=[fake_dataset("a", n=2, sample_size=2)]
+    )
+    result, _ = _run(config_path)
+    config = load_run_config(config_path)
+
+    from abductionbench.cli import _resolve_resume
+
+    with pytest.raises(typer.Exit):
+        _resolve_resume(config, "20200101-000000_not-a-run")
+    # The real run is still there, untouched, and no empty directory was left.
+    assert result.run_dir.exists()
+    assert not (result.run_dir.parent / "20200101-000000_not-a-run").exists()

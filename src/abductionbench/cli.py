@@ -241,6 +241,51 @@ def prepare(
     console.print(f"prepared {len(bundles) - failures}/{len(bundles)} dataset(s)")
 
 
+def _resolve_resume(run_config: RunConfig, resume: str) -> Path:
+    """The directory to continue into, given a run id or a path.
+
+    Accepts either, because the thing a person has to hand is the folder name --
+    it is what the run printed, what the run directory is called, and what the
+    folder on Drive is called. A path is accepted too, for the case where the
+    run lives somewhere other than ``engine.output_root``.
+
+    When the directory is not here but the run was backed up, it is pulled back
+    from the remote first: continuing needs the records, and after a box is
+    recycled the remote is where they are.
+    """
+    candidate = Path(resume)
+    if candidate.exists():
+        return candidate
+    # Not a path that exists: treat it as a run id under the output root.
+    if candidate.parent == Path("."):
+        candidate = Path(run_config.engine.output_root) / resume
+    if candidate.exists():
+        return candidate
+
+    from .core.sync import restore_run
+
+    console.print(
+        f"[yellow]{candidate} is not here; looking for it on "
+        f"{run_config.engine.sync.remote_path or '<no remote configured>'}[/yellow]"
+    )
+    candidate.mkdir(parents=True, exist_ok=True)
+    restored, detail = restore_run(run_config.engine.sync, candidate.name, candidate)
+    if restored:
+        console.print(f"[green]{detail}[/green]")
+        return candidate
+
+    candidate.rmdir()  # leave no empty directory behind on failure
+    available = sorted(
+        path.name
+        for path in Path(run_config.engine.output_root).glob("*")
+        if path.is_dir() and (path / "datasets").exists()
+    )
+    console.print(f"[red]cannot continue {resume!r}:[/red] {detail}")
+    if available:
+        console.print("runs available locally: " + ", ".join(available[-10:]))
+    raise typer.Exit(code=2)
+
+
 @app.command()
 def run(
     config: Path = ConfigArg,
@@ -248,8 +293,15 @@ def run(
     datasets: list[str] | None = DatasetsOpt,
     models: list[str] | None = ModelsOpt,
     run_id: str | None = typer.Option(None, help="Reuse a run id to resume into its directory."),
-    resume: Path | None = typer.Option(
-        None, help="Resume into an existing run directory (implies its run id)."
+    resume: str | None = typer.Option(
+        None,
+        help=(
+            "Continue a run: give its id -- the folder name, the same one on Drive "
+            "(e.g. 20260907-101530_full) -- or a path to its directory. Everything "
+            "already answered is reused; anything new in the config (datasets, models, "
+            "prompt modes) is run. If the directory is missing locally it is restored "
+            "from engine.sync.remote_path first."
+        ),
     ),
     dry_run: bool = typer.Option(False, help="Plan and render prompts, but call no model."),
     offline: bool = typer.Option(False, help="Fail instead of downloading datasets."),
@@ -257,7 +309,7 @@ def run(
 ) -> None:
     """Run an evaluation end to end."""
     run_config = _load(config, set_, _split_csv(datasets), _split_csv(models))
-    run_dir = Path(resume) if resume else None
+    run_dir = _resolve_resume(run_config, resume) if resume else None
     effective_run_id = run_id or (run_dir.name if run_dir else None)
 
     engine = EvaluationEngine(

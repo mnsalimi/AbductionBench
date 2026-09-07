@@ -49,7 +49,7 @@ from .config import SyncConfig
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ArtifactSync", "SyncStats"]
+__all__ = ["ArtifactSync", "SyncStats", "restore_run"]
 
 
 @dataclass(slots=True)
@@ -80,6 +80,46 @@ class SyncStats:
             "bytes_transferred": self.bytes_transferred,
             **self.extra,
         }
+
+
+def restore_run(config: SyncConfig, run_id: str, destination: Path) -> tuple[bool, str]:
+    """Pull a run's artifacts back from the remote.  Returns (restored, detail).
+
+    The point of backing a run up is being able to continue it: this box's
+    filesystem is not guaranteed to survive, so the copy on the remote is
+    sometimes the only one left.  Continuing needs the records -- they are what
+    tells the engine which samples are already answered -- so a resume whose
+    local directory is missing looks for it on the remote before giving up.
+
+    Nothing is deleted locally and nothing is written remotely; ``copy`` in one
+    direction only, so a restore can never damage either side.
+    """
+    if not config.remote_path:
+        return False, "engine.sync.remote_path is not set"
+    if shutil.which(config.rclone_binary) is None:
+        return False, f"{config.rclone_binary!r} is not on PATH"
+    base = config.remote_path.rstrip("/")
+    source = f"{base}/{run_id}" if config.per_run_subdir else base
+    command = [
+        config.rclone_binary, "copy", source, str(destination),
+        f"--transfers={config.transfers}",
+        f"--timeout={config.timeout_s}s",
+        "--retries=3", "--fast-list", "--stats=0",
+    ]
+    if config.tps_limit:
+        command.extend(["--tpslimit", str(config.tps_limit)])
+    try:
+        completed = subprocess.run(  # noqa: S603 - binary and args come from config
+            command, capture_output=True, text=True, timeout=None, check=False
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return False, f"cannot run rclone: {exc}"
+    if completed.returncode != 0:
+        return False, (completed.stderr or completed.stdout or "").strip()[-300:]
+    records = list(destination.rglob("records.jsonl"))
+    if not records:
+        return False, f"{source} holds no records.jsonl -- nothing to continue from"
+    return True, f"restored {len(records)} task record file(s) from {source}"
 
 
 class ArtifactSync:

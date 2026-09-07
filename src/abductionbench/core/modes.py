@@ -135,6 +135,8 @@ class TaskModes:
     self_consistency_temperature: float = 0.7
     #: How many times each record is asked.  Every repeat is scored
     #: independently and the results are averaged; nothing is voted on.
+    #: The run config's default is 3; 1 here so a bare TaskModes is a single
+    #: call, which is what every test and preview wants.
     repeats: int = 1
     #: Temperature used once ``repeats > 1``.  Repeating a question at
     #: temperature 0 would return the same answer every time on a server that
