@@ -336,7 +336,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 "paper's own hypothesis (primary)",
                 "hypothesis_token_f1": "generation: token-level F1 against the same reference",
                 "accuracy": "selection: whether the released published hypothesis was chosen",
-                "hypothesis_judged": "LLM-judge verdict on same-hypothesis "
+                "hypothesis_judged": "(primary) LLM-judge verdict on same-hypothesis "
                 "(only when engine.judge.enabled)",
             },
             primary_metric=self.primary_metric,
@@ -351,6 +351,10 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 "repository was gated.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Access is gated: an HF account must accept the dataset's terms once at "
                 f"{ACCEPT_URL} before any file downloads. Metadata reads without it, which is "
                 "why a missing acceptance looks like a working token.",

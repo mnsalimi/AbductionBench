@@ -306,14 +306,14 @@ class EvaluationEngine:
         logger.info(
             "run %s: %d model(s) x %d dataset(s), output=%s",
             self.run_id,
-            len(self.config.models),
+            len(self.config.evaluated_models()),
             len(self.config.enabled_datasets()),
             self.run_dir,
         )
         self.events.emit(
             "run_started",
             run_id=self.run_id,
-            models=[m.id for m in self.config.models],
+            models=[m.id for m in self.config.evaluated_models()],
             datasets=[d.id for d in self.config.enabled_datasets()],
             dry_run=self.dry_run,
         )
@@ -969,7 +969,7 @@ class EvaluationEngine:
             bundle = by_key[key]
             modes = bundle.modes
             kinds = sorted({sample.task_kind for sample in bundle.samples})
-            for model in self.config.models:
+            for model in self.config.evaluated_models():
                 identity = TaskIdentity(
                     run_id=self.run_id,
                     dataset_id=bundle.config.id,

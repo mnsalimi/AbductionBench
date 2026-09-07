@@ -149,14 +149,14 @@ class HypoGenAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "flip_rouge_l": "ROUGE-L F against the paper's flip (primary)",
+                "flip_rouge_l": "ROUGE-L F against the paper's flip",
                 "flip_token_f1": "token F1 against the flip",
                 "spark_token_f1": "token F1 against the one-line spark, a terser view of the same "
                 "hypothesis",
-                "flip_judged": "LLM-judge verdict on idea equivalence (only when "
+                "flip_judged": "(primary) LLM-judge verdict on idea equivalence (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="flip_rouge_l",
+            primary_metric="flip_judged",
             decisions=[
                 "Used the official test split even though it has only 50 items, rather than "
                 "topping it up from train, so the evaluation stays on held-out data. The "
@@ -165,6 +165,10 @@ class HypoGenAdapter(PooledDatasetAdapter):
                 "the task retrieval rather than abduction.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Only 50 test items, so this dataset's numbers have wide error bars.",
                 "One paper has one recorded flip, but many valid hypotheses may resolve the same "
                 "limitation; overlap metrics under-credit alternatives.",

@@ -180,14 +180,14 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "hypothesis_rouge_l": "ROUGE-L F against the paper's hypothesis (primary)",
+                "hypothesis_rouge_l": "ROUGE-L F against the paper's hypothesis",
                 "hypothesis_token_f1": "token F1 against the paper's hypothesis",
                 "mechanism_rouge_l": "ROUGE-L F against the mechanism/rationale field, i.e. how "
                 "well the *mechanism* was recovered rather than the intervention alone",
-                "hypothesis_judged": "LLM-judge verdict on same-intervention-and-mechanism (only "
+                "hypothesis_judged": "(primary) LLM-judge verdict on same-intervention-and-mechanism (only "
                 "when engine.judge.enabled)",
             },
-            primary_metric="hypothesis_rouge_l",
+            primary_metric="hypothesis_judged",
             decisions=[
                 "The release is a single unsplit table, so the whole table is the population.",
                 "Withheld every answer-bearing column from the prompt and listed them explicitly "
@@ -199,6 +199,10 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
                 "interesting part.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Rows are LLM-distilled summaries of papers, so the reference hypothesis wording "
                 "is itself model-generated; overlap metrics are relative measures here.",
                 "Papers may be in pretraining data; the judge stage does not fix that.",

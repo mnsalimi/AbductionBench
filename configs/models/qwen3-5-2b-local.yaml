@@ -3,7 +3,7 @@
 #
 # The serving model on this box changes; this file records what is actually up:
 #   vllm serve Qwen/Qwen3.5-2B --host 127.0.0.1 --port 18001
-#     --max-model-len 32768 --max-num-seqs 64 --enable-prefix-caching
+#     --max-model-len 65536 --max-num-seqs 64 --enable-prefix-caching
 # Both of those flags are load-bearing below -- the context window and the batch
 # group size are read straight off them.
 #
@@ -15,7 +15,7 @@ model:
   id: qwen3-5-2b-local
   model_name: Qwen/Qwen3.5-2B
   description: >-
-    Qwen3.5-2B served by vLLM with MAX_MODEL_LEN=32768 and MAX_NUM_SEQS=64,
+    Qwen3.5-2B served by vLLM with MAX_MODEL_LEN=65536 and MAX_NUM_SEQS=64,
     prefix caching on and CUDA graphs enabled.
   # Returns content directly and leaves `reasoning` null.
   reasoning_model: false
@@ -62,4 +62,8 @@ model:
     # MAX_MODEL_LEN: prompt + generation must fit inside this. 32,768 is what
     # gives interactive episodes room to run their transcripts to the end --
     # see engine.limits.input_token_budget_by_delivery.
-    context_window: 32768
+    # 65,536 -- what the server is actually serving (MAX_MODEL_LEN=65536 in
+    # /workspace/vllm_serving/qwen3.5-2b/.env). Raised from 32,768 so the
+    # datasets that ask for a 64,000-token answer can get one; the model
+    # supports 262,144 positions natively.
+    context_window: 65536

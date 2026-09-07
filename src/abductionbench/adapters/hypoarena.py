@@ -178,13 +178,13 @@ class HypoArenaAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "best_rouge_l": "ROUGE-L F against the closest reference hypothesis (primary)",
+                "best_rouge_l": "ROUGE-L F against the closest reference hypothesis",
                 "best_token_f1": "token F1 against the closest reference hypothesis",
                 "best_rouge_l_<domain>": "the same metric restricted to one domain",
-                "hypothesis_judged": "LLM-judge verdict on same-mechanism (only when "
+                "hypothesis_judged": "(primary) LLM-judge verdict on same-mechanism (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="best_rouge_l",
+            primary_metric="hypothesis_judged",
             decisions=[
                 "No official split exists, so the whole release is the population.",
                 "Multi-reference items credit the closest reference; all listed hypotheses are "
@@ -196,6 +196,10 @@ class HypoArenaAdapter(PooledDatasetAdapter):
                 "would test it.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Reference hypotheses are long, domain-specific prose; overlap metrics are a weak "
                 "proxy here and the judge stage is strongly recommended.",
             ],

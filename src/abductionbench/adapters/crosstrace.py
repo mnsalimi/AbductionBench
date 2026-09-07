@@ -189,10 +189,10 @@ class CrossTraceAdapter(PooledDatasetAdapter):
                 "insight_token_f1": "token F1 between the answer line and the reference's 'Core "
                 "insight' line -- the hypothesis itself, separate from its reasoning",
                 "hypothesis_rouge_l_<domain>": "the primary metric per domain",
-                "insight_judged": "LLM-judge verdict on core-insight equivalence (only when "
+                "insight_judged": "(primary) LLM-judge verdict on core-insight equivalence (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="hypothesis_rouge_l",
+            primary_metric="insight_judged",
             decisions=[
                 "Used only the user turn's content as the observation and ignored the dataset's "
                 "own system prompt, so prompt wording stays under this framework's configuration.",
@@ -201,6 +201,10 @@ class CrossTraceAdapter(PooledDatasetAdapter):
                 "max_tokens=1280, matched to the reference length rather than a flat default.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "References are extracted from papers with a confidence score (metadata records "
                 "explicitness/extraction_confidence); low-confidence items have noisier gold text.",
                 "Overlap with the reference rewards mimicking its structure; the judge stage is "

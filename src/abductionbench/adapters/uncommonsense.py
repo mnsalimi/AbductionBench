@@ -167,13 +167,13 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "best_rouge_l": "ROUGE-L F against the closest human explanation (primary)",
+                "best_rouge_l": "ROUGE-L F against the closest human explanation",
                 "best_token_f1": "token F1 against the closest human explanation",
                 "mean_rouge_l": "mean ROUGE-L over all human explanations, a stricter view",
-                "plausibility_judged": "LLM-judge verdict on whether the explanation makes the "
-                "outcome plausible (only when engine.judge.enabled)",
+                "plausibility_judged": "(primary) LLM-judge verdict on whether the explanation makes the "
+                "outcome plausible",
             },
-            primary_metric="best_rouge_l",
+            primary_metric="plausibility_judged",
             decisions=[
                 "Used the validation split: the release has no test split.",
                 "Scored against human_explanations only; the gpt4_explanations and "
@@ -185,6 +185,10 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
                 "outcome as the surprising observation to be explained.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Valid explanations here are open-ended and lexically diverse, so overlap metrics "
                 "systematically understate quality; the judge stage is the meaningful measure "
                 "and this dataset's overlap scores are best read as relative, not absolute.",

@@ -255,13 +255,13 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 + self.sampling_note()
             ),
             metrics_description={
-                "best_rouge_l": "ROUGE-L F against the closest known hypothesis (primary)",
+                "best_rouge_l": "ROUGE-L F against the closest known hypothesis",
                 "best_token_f1": "token F1 against the closest known hypothesis",
                 "best_rouge_l_<task>": "the primary metric restricted to one task",
-                "hypothesis_judged": "LLM-judge verdict on same-pattern-same-direction (only when "
+                "hypothesis_judged": "(primary) LLM-judge verdict on same-pattern-same-direction (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="best_rouge_l",
+            primary_metric="hypothesis_judged",
             decisions=[
                 "Used train examples as the evidence shown to the model (test/val are held out "
                 "for the classification task the dataset was built for, and a hypothesis is "
@@ -275,6 +275,10 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 "best match among them.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "known_hypotheses are literature claims, not an exhaustive answer key: a model may "
                 "state a valid pattern that no reference mentions and be under-credited. The judge "
                 "stage mitigates but does not remove this.",

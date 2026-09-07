@@ -170,16 +170,16 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the two popularity strata are pooled before drawing",
             metrics_description={
-                "explanation_rouge_l": "ROUGE-L F against the gold explanation (primary)",
+                "explanation_rouge_l": "ROUGE-L F against the gold explanation",
                 "explanation_token_f1": "token F1 against the gold explanation",
                 "explanation_rouge_l_head/_longtail": "the primary metric per popularity stratum",
                 "popularity_gap": "head minus long-tail score -- how much entity popularity helps",
                 "rule_token_f1": "token F1 against the general inference rule, i.e. whether the "
                 "answer articulates the underlying principle",
-                "explanation_judged": "LLM-judge verdict on same-reason (only when "
+                "explanation_judged": "(primary) LLM-judge verdict on same-reason (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="explanation_rouge_l",
+            primary_metric="explanation_judged",
             decisions=[
                 "Pooled Head and Longtail and report both separately plus the gap, since the "
                 "head/tail contrast is what this dataset is for.",
@@ -188,6 +188,10 @@ class CommonWhyAdapter(PooledDatasetAdapter):
                 "No official split exists; the pooled files are the population.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Gold explanations are templated ('Because X died before Y, while Z occurred in "
                 "Y'), so overlap metrics reward matching that template as much as the underlying "
                 "reasoning; the judge stage is a better measure of the latter.",

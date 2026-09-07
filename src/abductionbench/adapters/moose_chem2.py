@@ -193,10 +193,10 @@ class MooseChem2Adapter(PooledDatasetAdapter):
                 "coarse_rouge_l": "ROUGE-L against the paper's Main hypothesis",
                 "fine_rouge_l": "ROUGE-L against the Finegrained Hypothesis -- the gap between the "
                 "two shows whether a model got the idea but not the methodology",
-                "hypothesis_judged": "LLM-judge verdict on same-core-mechanism (only when "
+                "hypothesis_judged": "(primary) LLM-judge verdict on same-core-mechanism (only when "
                 "engine.judge.enabled)",
             },
-            primary_metric="hypothesis_rouge_l",
+            primary_metric="hypothesis_judged",
             decisions=[
                 "Took the data from the repository's own workbook; the linked Google-Drive archive "
                 "contains the authors' run checkpoints and analysis outputs, not gold data.",
@@ -207,6 +207,10 @@ class MooseChem2Adapter(PooledDatasetAdapter):
                 "No selection mode: the release provides no candidate hypothesis sets.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Only 51 papers, so this dataset reports far fewer than the 300-sample target.",
                 "Fine-grained references are long paragraphs; ROUGE-L rewards verbosity, so read "
                 "it together with the judged metric.",

@@ -717,6 +717,13 @@ class ModelConfig(_Base):
     limits: ModelLimitsConfig = Field(default_factory=ModelLimitsConfig)
     #: Free-form notes surfaced in the run documentation.
     notes: dict[str, Any] = Field(default_factory=dict)
+    #: Serve this model to the judge stage without evaluating it.  The judge
+    #: has to be one of the run's models -- that is how the run reaches it --
+    #: but grading is not being measured, so a judge listed like any other
+    #: model would silently double the run and report scores for a model
+    #: nobody asked about.  ``engine.judge.model`` should name a model with
+    #: this set.
+    judge_only: bool = False
 
     @property
     def slug(self) -> str:
@@ -905,6 +912,15 @@ class RunConfig(_Base):
     def enabled_datasets(self) -> list[DatasetConfig]:
         return [d for d in self.datasets if d.enabled]
 
+    def evaluated_models(self) -> list[ModelConfig]:
+        """The models the run measures -- everything but a judge-only entry.
+
+        A judge has to appear in ``models:`` for the run to have a client for
+        it, but it is grading, not being graded: planning tasks for it would
+        double the run and report a column nobody asked for.
+        """
+        return [m for m in self.models if not m.judge_only]
+
     def model_by_id(self, model_id: str) -> ModelConfig:
         for model in self.models:
             if model.id == model_id:
@@ -1040,7 +1056,13 @@ def load_run_config(
 
     if model_filter:
         wanted = set(model_filter)
-        body["models"] = [m for m in body["models"] if m.get("id") in wanted]
+        # A judge-only model survives the filter. `--models` picks which models
+        # are *measured*; dropping the judge with it would silently disable the
+        # judged metrics of every dataset that has no answer key, turning a
+        # narrowing of scope into a change of what is being computed.
+        body["models"] = [
+            m for m in body["models"] if m.get("id") in wanted or m.get("judge_only")
+        ]
         missing = wanted - {m.get("id") for m in body["models"]}
         if missing:
             raise ConfigError(f"--models refers to unknown model ids: {sorted(missing)}")

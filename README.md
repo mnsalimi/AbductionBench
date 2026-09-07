@@ -447,6 +447,45 @@ and are cut off -- but of the answers that *do* finish on their own, 9% exceed
 8,192 tokens and 16% exceed 2,048. A cap would truncate real answers, so it is a
 trade to make deliberately, with those numbers in view, not a free win.
 
+## The judge is a different model
+
+Datasets with no answer key are graded by an LLM judge, not by overlap with a
+reference. Two models are served on the one GPU:
+
+| | model | port | window | role |
+|---|---|---|---|---|
+| under test | `Qwen/Qwen3.5-2B` | 18001 | 65,536 | answers |
+| judge | `openai/gpt-oss-120b` | 18004 | 65,536 | grades |
+
+**Why two.** Grading a model's answers with that same model scores its own
+reasoning. The judge is therefore a 117B-parameter model and the model under
+test is a 2B one, and they are separate servers.
+
+**Why the judge is in `models:`.** The run needs a client to reach it. It is
+marked `judge_only: true` in `configs/models/gpt-oss-120b-local.yaml`, so
+`evaluated_models()` leaves it out of task planning -- otherwise it would double
+the run and report a column nobody asked for. `--models` also never filters it
+out: that flag narrows what is *measured*, and dropping the judge with it would
+silently switch off the judged metric of every dataset that has no answer key.
+
+**Sharing one 95.6 GiB card.** gpt-oss-120b's weights are 60.8 GiB in MXFP4, so
+the split is deliberate and the start order matters -- restart Qwen first so it
+shrinks, then start the judge, which needs its whole budget free to pass vLLM's
+check:
+
+```
+qwen3.5-2b     GPU_MEMORY_UTILIZATION=0.20  ->  19 GiB  (~10 GiB KV = 1.04M tokens)
+gpt-oss-120b   GPU_MEMORY_UTILIZATION=0.78  ->  75 GiB  (~11 GiB KV =  158k tokens)
+```
+
+`MAX_NUM_BATCHED_TOKENS=8192` on the judge is load-bearing: without it vLLM
+profiles a forward pass at the full 65,536 tokens, and that activation peak
+consumed the entire budget -- startup died with *"No available memory for the
+cache blocks"* at 0.78 utilisation with 60.8 GiB of weights.
+
+Both `.env` files under `/workspace/vllm_serving/` carry these numbers and the
+reasoning; timestamped backups sit beside them.
+
 ## Models and batching
 
 Each model is one file in `configs/models/`, with **its own batch group size**:
