@@ -25,6 +25,8 @@ Outputs written under a run directory:
 
 from __future__ import annotations
 
+import os
+
 import logging
 import textwrap
 from datetime import datetime, timezone
@@ -293,6 +295,13 @@ def _safe_sheet_name(name: str, used: set[str]) -> str:
     return candidate
 
 
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` in one step, for the same reason the workbook is staged."""
+    staged = path.with_name(path.name + ".partial")
+    staged.write_text(text, encoding="utf-8")
+    os.replace(staged, path)
+
+
 def write_reports(result: RunResult) -> dict[str, Path]:
     """Write every report artifact for a finished run.  Returns paths by name."""
     reporting = result.config.engine.reporting
@@ -332,8 +341,14 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             written["metrics_csv"] = path
 
     excel_path = reports_dir / reporting.excel_filename
+    # Written to a sibling temp file and renamed into place.  Reports are now
+    # rewritten while the run is still going, so something else -- the backup's
+    # rsync pass, or a person double-clicking the file -- can be reading this
+    # path at the moment it is written.  A rename is atomic, so a reader sees
+    # either the previous complete workbook or the new one, never a half of one.
+    staged = excel_path.with_name(excel_path.name + ".partial")
     try:
-        with pd.ExcelWriter(excel_path, engine="xlsxwriter") as writer:
+        with pd.ExcelWriter(staged, engine="xlsxwriter") as writer:
             used: set[str] = set()
             _write_sheet(writer, _pivot(summary), _safe_sheet_name("Summary", used), index=True)
             _write_sheet(writer, summary, _safe_sheet_name("Summary_Long", used))
@@ -365,8 +380,10 @@ def write_reports(result: RunResult) -> dict[str, Path]:
                     _write_sheet(
                         writer, frame, _safe_sheet_name(f"S_{dataset_id}", used)
                     )
+        os.replace(staged, excel_path)
         written["excel"] = excel_path
     except Exception as exc:  # noqa: BLE001 - never lose a run over a report
+        staged.unlink(missing_ok=True)
         logger.exception("failed to write Excel workbook: %s", exc)
 
     if reporting.write_run_documentation:
@@ -378,7 +395,7 @@ def write_reports(result: RunResult) -> dict[str, Path]:
                 logger.warning("could not write documentation for %s: %s", task.identity.slug, exc)
 
     report_path = result.run_dir / "RUN_REPORT.md"
-    report_path.write_text(_render_run_report(result, summary), encoding="utf-8")
+    _write_text_atomic(report_path, _render_run_report(result, summary))
     written["run_report"] = report_path
     logger.info("reports written to %s", reports_dir)
     return written

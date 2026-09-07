@@ -38,7 +38,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -228,6 +228,8 @@ class EvaluationEngine:
             self.engine_cfg.concurrency.max_parallel_batches_global
         )
         self._model_sems: dict[str, asyncio.Semaphore] = {}
+        #: Serialises interim report writes (see _report_interim).
+        self._report_lock = asyncio.Lock()
         self._scoring_sem = asyncio.Semaphore(self.engine_cfg.concurrency.scoring_workers)
         self._batch_disabled: set[str] = set()
         #: Mode combinations a dataset declined, reported rather than dropped.
@@ -390,26 +392,34 @@ class EvaluationEngine:
 
             semaphore = asyncio.Semaphore(self.engine_cfg.concurrency.max_parallel_tasks)
 
-            async def _guarded(identity, prompt_set, model, bundle) -> TaskResult:
-                async with semaphore:
-                    return await self._run_task(identity, prompt_set, model, bundle)
+            # How many tasks each dataset still owes.  A dataset is finished
+            # when its count reaches zero, which is when its results are worth
+            # reporting -- see _report_interim.
+            outstanding: dict[str, int] = {}
+            for identity, _ps, _m, _b in tasks:
+                outstanding[identity.dataset_id] = outstanding.get(identity.dataset_id, 0) + 1
 
-            gathered = await asyncio.gather(
-                *(_guarded(*task) for task in tasks), return_exceptions=True
-            )
-            for task, outcome in zip(tasks, gathered, strict=True):
-                identity = task[0]
-                if isinstance(outcome, TaskResult):
-                    result.tasks.append(outcome)
-                elif isinstance(outcome, BaseException):
-                    logger.exception("task %s crashed: %s", identity.slug, outcome)
-                    result.tasks.append(
-                        TaskResult(
-                            identity=identity,
-                            output_dir=self._task_dir(identity),
-                            failure=f"{type(outcome).__name__}: {outcome}",
-                        )
+            async def _guarded(identity, prompt_set, model, bundle) -> None:
+                try:
+                    async with semaphore:
+                        outcome = await self._run_task(identity, prompt_set, model, bundle)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:  # noqa: BLE001 - one task must not end the run
+                    logger.exception("task %s crashed: %s", identity.slug, exc)
+                    outcome = TaskResult(
+                        identity=identity,
+                        output_dir=self._task_dir(identity),
+                        failure=f"{type(exc).__name__}: {exc}",
                     )
+                # Appended as each task lands rather than after every task has,
+                # so an interim report can see the run's progress so far.
+                result.tasks.append(outcome)
+                outstanding[identity.dataset_id] -= 1
+                if outstanding[identity.dataset_id] <= 0:
+                    await self._report_interim(result, identity.dataset_id)
+
+            await asyncio.gather(*(_guarded(*task) for task in tasks))
         finally:
             for client in self._clients.values():
                 await client.aclose()
@@ -426,6 +436,67 @@ class EvaluationEngine:
                 duration_s=round(result.duration_s, 1),
             )
         return result
+
+    async def _report_interim(self, result: RunResult, dataset_id: str) -> None:
+        """Rewrite the report set now that ``dataset_id`` has no tasks left.
+
+        A full run is many hours of API calls.  Writing the sheets only once,
+        after the last dataset, means the results of the first are invisible for
+        that whole time -- and an interrupted run leaves no workbook at all.  So
+        every dataset that finishes triggers a complete rewrite covering every
+        task finished so far: the workbook grows a dataset at a time, and the
+        write at the end of the run is simply the last one.
+
+        Three things make this safe to do from inside the run:
+
+        * a lock, because two datasets can finish while one report is being
+          written, and xlsxwriter would otherwise interleave two workbooks;
+        * a worker thread, because building the workbook is blocking CPU work
+          and would otherwise stall every in-flight batch on the event loop;
+        * a broad ``except``, because a run that produced results must never be
+          lost to a failure in describing them.
+        """
+        reporting = self.engine_cfg.reporting
+        if self.dry_run or not reporting.interim_after_each_dataset:
+            return
+        from .reporting import write_reports
+
+        async with self._report_lock:
+            # `finished_at` is what the report calls the run's duration, and it
+            # is still 0 mid-run; a copy dated now describes the elapsed time
+            # honestly without pretending the run is over.
+            # The lists are copied, not shared: the report is built in a
+            # worker thread while other tasks are still appending to
+            # `result.tasks`, and iterating a list that grows underneath you
+            # raises.
+            snapshot = replace(
+                result,
+                finished_at=time.time(),
+                tasks=list(result.tasks),
+                skipped_datasets=list(result.skipped_datasets),
+                skipped_modes=list(result.skipped_modes),
+                introduced_modes=list(result.introduced_modes),
+                endpoint_reports=list(result.endpoint_reports),
+            )
+            try:
+                written = await asyncio.to_thread(write_reports, snapshot)
+            except Exception as exc:  # noqa: BLE001 - never lose a run over a report
+                logger.warning(
+                    "interim report after dataset %s failed: %s", dataset_id, exc
+                )
+                return
+        logger.info(
+            "dataset %s complete: reports updated with %d task(s) so far -> %s",
+            dataset_id,
+            len(snapshot.tasks),
+            written.get("excel", "-"),
+        )
+        self.events.emit(
+            "interim_report_written",
+            run_id=self.run_id,
+            dataset_id=dataset_id,
+            tasks_so_far=len(snapshot.tasks),
+        )
 
     def flush_sync(self) -> dict[str, Any]:
         """Upload once more, after reports have been written."""

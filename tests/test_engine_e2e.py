@@ -943,3 +943,104 @@ def test_an_unknown_run_id_says_what_is_available_instead_of_guessing(
     # The real run is still there, untouched, and no empty directory was left.
     assert result.run_dir.exists()
     assert not (result.run_dir.parent / "20200101-000000_not-a-run").exists()
+
+
+def test_reports_are_written_as_each_dataset_finishes(
+    fake_server, write_run_config, fake_dataset, monkeypatch
+):
+    """The workbook must exist before the run ends, and grow a dataset at a time.
+
+    A full run is hours of API calls; the sheets are the only readable output,
+    so waiting for the last dataset to see the first one's results is what this
+    guards against.
+    """
+    from abductionbench.core import engine as engine_mod
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            fake_dataset("alpha", n=4, sample_size=4),
+            fake_dataset("beta", n=4, sample_size=4),
+            fake_dataset("gamma", n=4, sample_size=4),
+        ],
+    )
+
+    # Snapshot the workbook's contents at the moment of every interim write, so
+    # the assertion is about what a person could actually have opened then --
+    # not about the file that exists once the run is over.
+    seen: list[set[str]] = []
+    real = engine_mod.EvaluationEngine._report_interim
+
+    async def spy(self, result, dataset_id):
+        await real(self, result, dataset_id)
+        excel = self.run_dir / "reports" / "abductionbench_results.xlsx"
+        assert excel.exists(), "no workbook after a dataset finished"
+        seen.append({task.identity.dataset_id for task in result.tasks})
+
+    monkeypatch.setattr(engine_mod.EvaluationEngine, "_report_interim", spy)
+    result, _ = _run(config_path)
+
+    assert len(result.tasks) == 3
+    # One write per dataset that finishes, each covering every task done so
+    # far.  How many that is depends on scheduling -- three datasets this small
+    # can all land before the first report is built -- so the guarantee is
+    # monotonic growth, not one dataset per pass.
+    assert len(seen) == 3
+    assert seen[0], "the first interim report covered no dataset"
+    for earlier, later in zip(seen, seen[1:]):  # noqa: B905 - pairwise, not zipped
+        assert earlier <= later, f"a report went backwards: {earlier} then {later}"
+    assert seen[-1] == {"alpha", "beta", "gamma"}
+
+
+def test_interim_reporting_can_be_turned_off(
+    fake_server, write_run_config, fake_dataset, monkeypatch
+):
+    from abductionbench.core import engine as engine_mod
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("alpha", n=4, sample_size=4)],
+        engine={"reporting": {"interim_after_each_dataset": False}},
+    )
+    calls: list[str] = []
+    real = engine_mod.EvaluationEngine._report_interim
+
+    async def spy(self, result, dataset_id):
+        await real(self, result, dataset_id)
+        calls.append(dataset_id)
+        assert not (self.run_dir / "reports").exists()
+
+    monkeypatch.setattr(engine_mod.EvaluationEngine, "_report_interim", spy)
+    result, _ = _run(config_path)
+    assert calls == ["alpha"]  # still reached, but wrote nothing
+    assert len(result.tasks) == 1
+
+
+def test_a_crashing_task_still_lands_in_the_result(
+    fake_server, write_run_config, fake_dataset, monkeypatch
+):
+    """One task raising must not cost the run the results of the others."""
+    from abductionbench.core import engine as engine_mod
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            fake_dataset("alpha", n=4, sample_size=4),
+            fake_dataset("beta", n=4, sample_size=4),
+        ],
+    )
+    real = engine_mod.EvaluationEngine._run_task
+
+    async def boom(self, identity, prompt_set, model, bundle):
+        if identity.dataset_id == "alpha":
+            raise RuntimeError("deliberate")
+        return await real(self, identity, prompt_set, model, bundle)
+
+    monkeypatch.setattr(engine_mod.EvaluationEngine, "_run_task", boom)
+    result, _ = _run(config_path)
+
+    by_dataset = {task.identity.dataset_id: task for task in result.tasks}
+    assert set(by_dataset) == {"alpha", "beta"}
+    assert "RuntimeError: deliberate" in (by_dataset["alpha"].failure or "")
+    assert by_dataset["beta"].failure is None
+    assert by_dataset["beta"].n_scored == 4

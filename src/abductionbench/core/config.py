@@ -574,6 +574,13 @@ class ReportingConfig(_Base):
     #: than storing a preview of it.  0 means no limit (Excel will still refuse
     #: a longer cell, so the writer clamps to 32,000 when it writes).
     response_clip_chars: int = Field(32_000, ge=0)
+    #: Rewrite the whole report set every time a dataset finishes, instead of
+    #: only once at the end of the run.  A full run is many hours of API calls,
+    #: and waiting for the last dataset before any sheet exists means the
+    #: results of the first are invisible for that whole time.  Each interim
+    #: pass reports every task finished so far, so the workbook grows a dataset
+    #: at a time and the final write is just the last of them.
+    interim_after_each_dataset: bool = True
 
 
 class EngineConfig(_Base):

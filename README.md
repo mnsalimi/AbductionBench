@@ -497,6 +497,27 @@ The task directory is named for the **execution mode**, not a template:
 `io_SCS_selection_static@1.0` is io prompting, single-choice selection, the
 selection task, static delivery, adapter version 1.0.
 
+### Reports appear as the run goes, not at the end
+
+A full run is many hours of API calls, so the sheets are **rewritten every time
+a dataset finishes**, each pass covering every task completed so far. The
+workbook therefore grows a dataset at a time and exists from the first one
+onward; the write at the end of the run is simply the last of them. It is also
+why an interrupted run still has readable reports.
+
+Each pass writes the complete set -- `Summary`, `Metrics`, `Tasks`, the
+per-sample `S_<ds>` sheets, the CSVs and `RUN_REPORT.md` -- to a temp file and
+renames it into place, so the backup's upload pass, or a person opening the
+workbook, always sees a whole file rather than half of one. Building it costs
+about 9 s at 22,000 records and runs in a worker thread, off the event loop that
+is driving the batches.
+
+Set `engine.reporting.interim_after_each_dataset: false` to go back to writing
+the reports once, after the last dataset.
+
+`abench report <run-dir>` still rebuilds every report from `records.jsonl`
+alone, which is the way to regenerate sheets for a run that was killed outright.
+
 ---
 
 # Field reference
