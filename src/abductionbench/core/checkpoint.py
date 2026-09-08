@@ -219,6 +219,39 @@ class RecordStore:
             finally:
                 os.close(fd)
 
+    def update_scores(self, updates: dict[str, dict[str, Any]]) -> int:
+        """Re-write records whose score changed after they were appended.
+
+        The judge runs after a batch's records are already on disk -- they are
+        written per batch so that a crash loses nothing -- which left the
+        sample-level log showing the *pre-judge* score while the aggregate in
+        metrics.json showed the judged one. For a dataset the judge alone
+        scores, that meant every row read 0.0 next to a correct headline.
+
+        ``updates`` maps sample_id to the fields to replace (metrics,
+        prediction, details, parse_ok). Rewrites the file once, atomically, and
+        returns how many records changed. Records not mentioned are untouched,
+        so this is safe to call on a resumed task whose earlier records were
+        judged in a previous pass.
+        """
+        if not updates:
+            return 0
+        with self._lock:
+            rows = load_records(self.records_path)
+            changed = 0
+            for row in rows:
+                patch = updates.get(str(row.get("sample_id")))
+                if not patch:
+                    continue
+                row.update(patch)
+                changed += 1
+            if changed:
+                blob = b"".join(
+                    orjson.dumps(row, default=str) + b"\n" for row in rows
+                )
+                _atomic_write(self.records_path, blob)
+            return changed
+
     def save_checkpoint(self, checkpoint: TaskCheckpoint) -> None:
         checkpoint.updated_at = time.time()
         _atomic_write(self.checkpoint_path, orjson.dumps(checkpoint.to_dict(), default=str))

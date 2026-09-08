@@ -42,7 +42,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, selection_score, text_match_score
 
 REPO_ID = "ankilok/ResearchBench"
 ACCEPT_URL = f"https://huggingface.co/datasets/{REPO_ID}"
@@ -108,7 +108,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "hypothesis_rouge_l",
+        "generation": "hypothesis_judged",
         "selection": "accuracy",
     }
 
@@ -269,25 +269,18 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        reference = sample.reference or {}
-        if sample.task_kind == "selection":
-            return selection_score(
-                response,
-                labels=list(sample.fields.get("option_labels") or []),
-                gold_label=str(reference.get("gold_label", "")),
-                output_contract=output_contract,
-            )
-        gold = str(reference.get("gold", ""))
-        score = text_match_score(
+        """Parse only: the judge is what scores this dataset.
+
+        No overlap metric is emitted. The reference here is one
+        acceptable explanation among many, so similarity to it measures
+        resemblance to one particular wording rather than correctness.
+        """
+        return judged_only_score(
             response,
-            gold=gold,
+            metric="hypothesis_judged",
             output_contract=output_contract,
-            primary="hypothesis_match",
+            details={},
         )
-        # The primary metric is the overlap view, named for this dataset.
-        score.metrics["hypothesis_rouge_l"] = score.metrics.pop("rouge_l", 0.0)
-        score.metrics["hypothesis_token_f1"] = score.metrics.pop("token_f1", 0.0)
-        return score
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
@@ -295,15 +288,8 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        """Record the verdict under the name this adapter's primary metric uses."""
-        metrics = dict(score.metrics)
-        metrics["hypothesis_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "hypothesis_judged")
 
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
@@ -341,12 +327,21 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "hypothesis_rouge_l": "generation: longest-common-subsequence overlap with the "
-                "paper's own hypothesis (primary)",
-                "hypothesis_token_f1": "generation: token-level F1 against the same reference",
-                "accuracy": "selection: whether the released published hypothesis was chosen",
-                "hypothesis_judged": "(primary) LLM-judge verdict on same-hypothesis "
-                "(only when engine.judge.enabled)",
+                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis is "
+                "the same as the paper's. 1.0 when the judge affirms, 0.0 when it does not or "
+                "when the response could not be parsed. The dataset score is the mean over "
+                "repeats x records.",
+                "best_of_n_hypothesis_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "hypothesis_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
             },
             primary_metric=self.primary_metric,
             decisions=[

@@ -92,6 +92,12 @@ class JudgeStage:
         #: answers neither well.  Adapters that declare nothing keep the
         #: configured default.
         self.template = self.default_template
+        #: Verdicts that were asked for and never obtained, because the judge
+        #: endpoint failed permanently.  Read by the engine after `apply`: for
+        #: a dataset with no verifiable answer the judge *is* the score, so a
+        #: missing verdict has to be a task failure rather than a zero.
+        self.unavailable: int = 0
+        self.last_error: str = ""
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
         if config.cache and self._cache_path.exists():
@@ -175,7 +181,16 @@ class JudgeStage:
                     description=f"judge batch ({len(conversations)} item(s))",
                 )
             except EndpointError as exc:
-                logger.warning("judge batch failed permanently: %s", exc)
+                # Counted, not just logged. Swallowing this is what let an
+                # unreachable judge produce a full set of plausible-looking
+                # zeros: every sample kept its seeded 0.0 and the run reported
+                # it as if the model had answered and been wrong.
+                self.unavailable += len(chunk)
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "judge batch failed permanently, %d verdict(s) unavailable: %s",
+                    len(chunk), exc,
+                )
                 continue
             for (_index, _fields, key), choice in zip(chunk, result.choices, strict=True):
                 verdict = self._parse(choice.content or "")

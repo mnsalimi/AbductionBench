@@ -23,10 +23,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, rouge_l, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
 
 REPO_URL = "https://github.com/andrewbouras/crosstrace"
 
@@ -121,29 +121,20 @@ class CrossTraceAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        text = response.text
-        if not text.strip():
-            return unparsed_score(
-                ["hypothesis_rouge_l", "hypothesis_token_f1"], raw=text[:300]
-            )
-        gold = sample.reference["gold"]
-        insight = sample.reference.get("insight") or ""
-        # The whole response is compared with the whole reference turn, since the
-        # task asks for insight + reasoning; the insight line is scored too.
-        metrics = {
-            "hypothesis_rouge_l": rouge_l(text, gold)["f"],
-            "hypothesis_token_f1": token_f1(text, gold),
-        }
-        if insight:
-            answer_line = extract_answer_span(text, output_contract) or text
-            metrics["insight_token_f1"] = token_f1(answer_line, insight)
-        domain = sample.metadata.get("domain")
-        if domain:
-            metrics[f"hypothesis_rouge_l_{domain}"] = metrics["hypothesis_rouge_l"]
-        return SampleScore(
-            metrics=metrics,
-            prediction=text[:600],
-            details={"gold_insight": insight[:200]},
+        """Parse only: the judge is what scores this dataset.
+
+        No overlap metric is emitted. The reference here is one
+        acceptable explanation among many, so similarity to it measures
+        resemblance to one particular wording rather than correctness.
+        """
+        stratum = str(sample.metadata.get("domain", "unknown"))
+        extra = {f"insight_judged_{stratum}": 0.0}
+        return judged_only_score(
+            response,
+            metric="insight_judged",
+            output_contract=output_contract,
+            extra_metrics=extra,
+            details={},
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
@@ -167,14 +158,8 @@ class CrossTraceAdapter(PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["insight_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "insight_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -191,14 +176,23 @@ class CrossTraceAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "hypothesis_rouge_l": "ROUGE-L F between the whole response and the reference "
-                "assistant turn (primary)",
-                "hypothesis_token_f1": "token F1 against the reference turn",
-                "insight_token_f1": "token F1 between the answer line and the reference's 'Core "
-                "insight' line -- the hypothesis itself, separate from its reasoning",
-                "hypothesis_rouge_l_<domain>": "the primary metric per domain",
-                "insight_judged": "(primary) LLM-judge verdict on core-insight equivalence (only when "
-                "engine.judge.enabled)",
+                "insight_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis "
+                "names the underlying fault behind the trace. 1.0 when the judge affirms, 0.0 "
+                "when it does not or when the response could not be parsed. The dataset score is "
+                "the mean over repeats x records.",
+                "insight_judged_<domain>": "the same verdict restricted to one domain; identical definition, filtered "
+                "population",
+                "best_of_n_insight_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "insight_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
             },
             primary_metric="insight_judged",
             decisions=[

@@ -108,18 +108,32 @@ class AERAdapter(PooledDatasetAdapter):
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         event = C.normalize_whitespace(item.get("target_event"))
-        options = [C.normalize_whitespace(item.get(key)) for key in OPTION_KEYS]
-        options = [option for option in options if option]
-        gold = [
+        # Kept parallel to OPTION_KEYS, because the gold answer names options by
+        # the *letter in their key* ("A,C") while the prompt labels them by
+        # position ("1", "2", ...).  Dropping an empty option shifts every
+        # position after it, so the translation has to go through the key the
+        # release used, not through the index in the filtered list.
+        present = [
+            (key[-1], C.normalize_whitespace(item.get(key)))
+            for key in OPTION_KEYS
+            if C.normalize_whitespace(item.get(key))
+        ]
+        options = [text for _letter, text in present]
+        labels = C.choice_labels(len(options))
+        by_letter = {letter: labels[index] for index, (letter, _t) in enumerate(present)}
+        gold_letters = [
             part.strip().upper()
             for part in str(item.get("golden_answer", "")).split(",")
             if part.strip()
         ]
-        labels = C.choice_labels(len(options))
-        if not event or len(options) < 2 or not gold:
+        if not event or len(options) < 2 or not gold_letters:
             return None
-        if not set(gold) <= set(labels):
+        # An unknown letter means the row's gold points at an option the row
+        # does not carry; that item cannot be scored, so it is dropped rather
+        # than silently scored against a wrong option.
+        if not set(gold_letters) <= set(by_letter):
             return None
+        gold = [by_letter[letter] for letter in gold_letters]
         return SampleSpec(
             sample_id=C.stable_id("aer", item.get("id", index)),
             fields={
@@ -151,9 +165,12 @@ class AERAdapter(PooledDatasetAdapter):
     ) -> SampleScore:
         labels = sample.fields["option_labels"]
         answer = extract_answer_span(response.text, output_contract)
+        # Labels are numbers now, so the token pattern is alphanumeric: a
+        # letters-only pattern found nothing and every response parsed as a
+        # failure.
         found = {
             token.upper()
-            for token in re.findall(r"[A-Za-z]+", answer or "")
+            for token in re.findall(r"[A-Za-z0-9]+", answer or "")
             if token.upper() in labels
         }
         if not found:

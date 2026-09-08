@@ -55,7 +55,15 @@ from .adapter import (
 from .checkpoint import RecordStore, TaskCheckpoint
 from .client import BatchResult, ModelClient, RawChoice
 from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
-from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
+from .errors import (
+    AbenchError,
+    AdapterError,
+    AuthError,
+    ConfigError,
+    EndpointError,
+    ErrorClass,
+    TemplateError,
+)
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
 from .modes import TaskModes
@@ -332,6 +340,13 @@ class EvaluationEngine:
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
 
+            # A dataset with no answer key is scored by the judge and by
+            # nothing else, so a missing judge is a broken run, not a quieter
+            # one. Checked before any model is called: the alternative is
+            # discovering it hours in, when every judged dataset has reported
+            # whatever metric happened to survive the fallback.
+            self._require_judge_for_unverifiable()
+
             # --- Stage A: dataset bundles --------------------------------- #
             bundles = self._build_bundles()
             for bundle in bundles:
@@ -497,6 +512,51 @@ class EvaluationEngine:
             dataset_id=dataset_id,
             tasks_so_far=len(snapshot.tasks),
         )
+
+    def _require_judge_for_unverifiable(self) -> None:
+        """Fail fast if an unverifiable dataset is scheduled with no judge.
+
+        These datasets' primary metric *is* the judge's verdict.  Without the
+        stage the metric is simply absent, and the report falls back to another
+        number -- so the run would finish, look complete, and quietly answer a
+        different question than the one asked.
+        """
+        judge = self.engine_cfg.judge
+        needing: list[str] = []
+        for dataset_cfg in self.config.enabled_datasets():
+            try:
+                adapter_cls = resolve_adapter(dataset_cfg.impl)
+            except Exception:  # noqa: BLE001 - a bad impl is reported later
+                continue
+            if not adapter_cls.objective_metrics:
+                needing.append(dataset_cfg.id)
+        if not needing:
+            return
+
+        if not judge.enabled:
+            raise ConfigError(
+                f"{len(needing)} dataset(s) have no verifiable answer and are scored by the "
+                f"LLM judge alone ({', '.join(sorted(needing)[:5])}"
+                f"{', ...' if len(needing) > 5 else ''}), but engine.judge.enabled is false. "
+                "Set engine.judge.enabled: true and engine.judge.model, or disable those "
+                "datasets -- running them without the judge reports no score for them."
+            )
+        known = {model.id for model in self.config.models}
+        if judge.model not in known:
+            raise ConfigError(
+                f"engine.judge.model={judge.model!r} is not one of the run's models "
+                f"({sorted(known)}), and {len(needing)} dataset(s) are scored by the judge "
+                f"alone. Add the judge to `models:` (with judge_only: true so it is not "
+                f"itself evaluated)."
+            )
+        judge_model = self.config.model_by_id(judge.model)
+        if not judge_model.judge_only and len(self.config.evaluated_models()) > 1:
+            logger.warning(
+                "engine.judge.model=%r is also being evaluated in this run; a model that "
+                "grades its own answers scores its own reasoning. Mark it judge_only, or "
+                "point the judge at a different model.",
+                judge.model,
+            )
 
     def flush_sync(self) -> dict[str, Any]:
         """Upload once more, after reports have been written."""
@@ -696,7 +756,16 @@ class EvaluationEngine:
             adapter.prepare()
             samples = list(adapter.build_samples())
             if not samples:
-                raise SkippedDataset("adapter produced no samples")
+                # Reported, not silent -- but the reason has to be actionable:
+                # "no samples" almost always means make_sample rejected every
+                # row, and the usual cause is the adapter disagreeing with the
+                # release about a field name or a label convention (AER's gold
+                # names options by key letter while the prompt numbers them).
+                raise SkippedDataset(
+                    "adapter produced no samples: make_sample rejected every item. "
+                    "Check the adapter against the release's field names and its "
+                    "gold-answer/option-label convention."
+                )
             # One evaluation item can need several requests: BOV asks about each
             # hypothesis separately, self-consistency asks k times. Expanding
             # here rather than inside a base class means every adapter gets the
@@ -1325,10 +1394,54 @@ class EvaluationEngine:
                     retry_policy=self.retry_policy,
                     cache_dir=output_dir / "judge_cache",
                 )
+                before = {
+                    sample.sample_id: score for sample, _r, score in scores
+                }
                 scores = await judge.apply(adapter, scores)
-            except Exception as exc:  # noqa: BLE001 - judging is best-effort
+                # The records were written per batch, before judging; bring the
+                # sample-level log up to date so a row shows the score its
+                # dataset is actually reported on.
+                rewritten = store.update_scores({
+                    sample.sample_id: {
+                        "metrics": dict(score.metrics),
+                        "prediction": score.prediction,
+                        "details": dict(score.details),
+                        "parse_ok": score.parse_ok,
+                    }
+                    for sample, _response, score in scores
+                    if before.get(sample.sample_id) is not score
+                })
+                if rewritten:
+                    logger.info(
+                        "task %s: %d sample record(s) updated with the judge's verdict",
+                        identity.slug, rewritten,
+                    )
+                if judge.unavailable:
+                    # Verdicts were asked for and never came back. `apply`
+                    # applies whatever it did obtain, so partial results are
+                    # kept -- but the task cannot be reported as scored.
+                    raise EndpointError(
+                        f"{judge.unavailable} judge verdict(s) unavailable "
+                        f"({judge.last_error})"
+                    )
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("task %s: judge stage failed: %s", identity.slug, exc)
                 checkpoint.notes["judge_error"] = str(exc)
+                if not adapter.objective_metrics:
+                    # For this dataset the judge IS the score. Its seeded 0.0
+                    # would otherwise be reported as if the model had got
+                    # everything wrong, which is indistinguishable from a
+                    # genuine zero -- and that is how an unreachable judge
+                    # produced a full set of plausible-looking zeros. The task
+                    # fails instead, and `abench run --resume` will retry it.
+                    result.failure = (
+                        f"judge stage failed and this dataset has no verifiable answer, so "
+                        f"there is no score without it: {type(exc).__name__}: {exc}"
+                    )
+                    logger.error(
+                        "task %s: refusing to report a judged metric the judge never "
+                        "produced; the task is marked failed", identity.slug,
+                    )
 
         # Fold in reused records so metrics cover the whole planned set.
         reused_scores = [

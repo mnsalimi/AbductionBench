@@ -210,6 +210,63 @@ def unparsed_score(metric_names: Sequence[str], **details: Any) -> SampleScore:
     )
 
 
+def judged_only_score(
+    response: ModelResponse,
+    *,
+    metric: str,
+    output_contract: dict[str, Any] | None = None,
+    extra_metrics: dict[str, float] | None = None,
+    details: dict[str, Any] | None = None,
+) -> SampleScore:
+    """Score for a generation task that only an LLM judge can grade.
+
+    These datasets have no answer key: the reference is one human-written
+    explanation among many that would have been just as good.  Character and
+    n-gram overlap with it is not a weak measure of correctness, it is a
+    measure of something else -- it punishes a correct paraphrase and rewards a
+    wrong sentence that reuses the reference's words -- so none is emitted.
+
+    What this produces is the *parse*: the extracted answer as ``prediction``,
+    which is what the judge is handed, and ``metric`` seeded at 0.0 so the
+    number always exists.  :meth:`DatasetAdapter.apply_judge` overwrites it
+    with the verdict.  Seeding rather than omitting matters: an empty response
+    is never sent to the judge, and it should score zero rather than vanish
+    from the mean.
+    """
+    answer = extract_answer_span(response.text, output_contract)
+    if not answer:
+        return unparsed_score([metric], **(details or {}))
+    metrics = {metric: 0.0}
+    metrics.update(extra_metrics or {})
+    return SampleScore(metrics=metrics, prediction=answer, details=details or {})
+
+
+def apply_judged_metric(score: SampleScore, verdict: Any, metric: str) -> SampleScore:
+    """Fold a judge verdict into ``metric`` and every stratum of it.
+
+    A dataset that reports its score per domain, per task or per popularity
+    stratum seeds those alongside the base metric (``hypothesis_judged`` and
+    ``hypothesis_judged_chemistry``).  They are the same verdict viewed through
+    a filter, so one rule sets them all rather than each adapter remembering
+    which strata it declared.
+    """
+    value = getattr(verdict, "score", None)
+    value = float(value) if value is not None else (
+        1.0 if getattr(verdict, "positive", False) else 0.0
+    )
+    metrics = dict(score.metrics)
+    for name in list(metrics):
+        if name == metric or name.startswith(f"{metric}_"):
+            metrics[name] = value
+    metrics[metric] = value
+    return SampleScore(
+        metrics=metrics,
+        prediction=score.prediction,
+        parse_ok=score.parse_ok,
+        details={**score.details, "judge_label": getattr(verdict, "label", None)},
+    )
+
+
 def selection_score(
     response: ModelResponse,
     *,

@@ -17,10 +17,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import extract_answer_span, rouge_l, token_f1
+from ..core.metrics import extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
 
 REPO_ID = "UniverseTBD/hypogen-dr1"
 
@@ -102,18 +102,18 @@ class HypoGenAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        answer = extract_answer_span(response.text, output_contract)
-        if not answer:
-            return unparsed_score(["flip_rouge_l", "flip_token_f1"], raw=response.text[:300])
-        gold = sample.reference["gold"]
-        metrics = {
-            "flip_rouge_l": rouge_l(answer, gold)["f"],
-            "flip_token_f1": token_f1(answer, gold),
-        }
-        spark = sample.reference.get("spark")
-        if spark:
-            metrics["spark_token_f1"] = token_f1(answer, spark)
-        return SampleScore(metrics=metrics, prediction=answer[:600], details={"gold": gold[:300]})
+        """Parse only: the judge is what scores this dataset.
+
+        No overlap metric is emitted. The reference here is one
+        acceptable explanation among many, so similarity to it measures
+        resemblance to one particular wording rather than correctness.
+        """
+        return judged_only_score(
+            response,
+            metric="flip_judged",
+            output_contract=output_contract,
+            details={},
+        )
 
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
@@ -133,14 +133,8 @@ class HypoGenAdapter(PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["flip_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "flip_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -157,12 +151,21 @@ class HypoGenAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "flip_rouge_l": "ROUGE-L F against the paper's flip",
-                "flip_token_f1": "token F1 against the flip",
-                "spark_token_f1": "token F1 against the one-line spark, a terser view of the same "
-                "hypothesis",
-                "flip_judged": "(primary) LLM-judge verdict on idea equivalence (only when "
-                "engine.judge.enabled)",
+                "flip_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis "
+                "states the paper's flip -- the condition that reverses the outcome. 1.0 when the "
+                "judge affirms, 0.0 when it does not or when the response could not be parsed. "
+                "The dataset score is the mean over repeats x records.",
+                "best_of_n_flip_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "flip_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
             },
             primary_metric="flip_judged",
             decisions=[

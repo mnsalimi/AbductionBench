@@ -20,10 +20,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, rouge_l, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
 
 REPO_URL = "https://github.com/faezemoradik/CommonWhyDataset"
 STRATA = ("Head", "Longtail")
@@ -109,27 +109,26 @@ class CommonWhyAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        answer = extract_answer_span(response.text, output_contract)
-        if not answer:
-            return unparsed_score(
-                ["explanation_rouge_l", "explanation_token_f1"], raw=response.text[:300]
-            )
-        gold = sample.reference["gold"]
-        stratum = sample.metadata.get("stratum", "unknown")
-        metrics = {
-            "explanation_rouge_l": rouge_l(answer, gold)["f"],
-            "explanation_token_f1": token_f1(answer, gold),
-            f"explanation_rouge_l_{stratum.lower()}": rouge_l(answer, gold)["f"],
-        }
-        rule = sample.reference.get("rule")
-        if rule:
-            metrics["rule_token_f1"] = token_f1(answer, rule)
-        return SampleScore(metrics=metrics, prediction=answer[:400], details={"gold": gold[:300]})
+        """Parse only: the judge is what scores this dataset.
+
+        No overlap metric is emitted. The reference here is one
+        acceptable explanation among many, so similarity to it measures
+        resemblance to one particular wording rather than correctness.
+        """
+        stratum = str(sample.metadata.get("stratum", "unknown")).lower()
+        extra = {f"explanation_judged_{stratum}": 0.0}
+        return judged_only_score(
+            response,
+            metric="explanation_judged",
+            output_contract=output_contract,
+            extra_metrics=extra,
+            details={},
+        )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
-        head = metrics.get("explanation_rouge_l_head")
-        tail = metrics.get("explanation_rouge_l_longtail")
+        head = metrics.get("explanation_judged_head")
+        tail = metrics.get("explanation_judged_longtail")
         if head is not None and tail is not None:
             metrics["popularity_gap"] = head - tail
         return metrics
@@ -152,14 +151,8 @@ class CommonWhyAdapter(PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["explanation_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "explanation_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -178,14 +171,26 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the two popularity strata are pooled before drawing",
             metrics_description={
-                "explanation_rouge_l": "ROUGE-L F against the gold explanation",
-                "explanation_token_f1": "token F1 against the gold explanation",
-                "explanation_rouge_l_head/_longtail": "the primary metric per popularity stratum",
-                "popularity_gap": "head minus long-tail score -- how much entity popularity helps",
-                "rule_token_f1": "token F1 against the general inference rule, i.e. whether the "
-                "answer articulates the underlying principle",
-                "explanation_judged": "(primary) LLM-judge verdict on same-reason (only when "
-                "engine.judge.enabled)",
+                "explanation_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the explanation "
+                "gives a valid reason for the event. 1.0 when the judge affirms, 0.0 when it does "
+                "not or when the response could not be parsed. The dataset score is the mean over "
+                "repeats x records.",
+                "explanation_judged_<stratum>": "the same verdict restricted to one stratum; identical definition, filtered "
+                "population",
+                "best_of_n_explanation_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "explanation_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
+                "popularity_gap": "(closer to 0 is better) explanation_judged_head minus "
+                "explanation_judged_longtail: how much better the model does on common events "
+                "than on rare ones.",
             },
             primary_metric="explanation_judged",
             decisions=[

@@ -22,10 +22,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, rouge_l, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
 
 REPO_URL = "https://github.com/ZonglinY/MOOSE-Chem2"
 
@@ -131,23 +131,17 @@ class MooseChem2Adapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        answer = extract_answer_span(response.text, output_contract) or response.text
-        if not answer.strip():
-            return unparsed_score(
-                ["hypothesis_rouge_l", "hypothesis_token_f1"], raw=response.text[:200]
-            )
-        gold = sample.reference["gold"]
-        metrics = {
-            "hypothesis_rouge_l": rouge_l(answer, gold)["f"],
-            "hypothesis_token_f1": token_f1(answer, gold),
-        }
-        # Report against both granularities when both exist, since a model may
-        # match the coarse idea without the methodology detail.
-        if sample.reference.get("coarse") and sample.reference.get("fine"):
-            metrics["coarse_rouge_l"] = rouge_l(answer, sample.reference["coarse"])["f"]
-            metrics["fine_rouge_l"] = rouge_l(answer, sample.reference["fine"])["f"]
-        return SampleScore(
-            metrics=metrics, prediction=answer[:600], details={"gold": gold[:300]}
+        """Parse only: the judge is what scores this dataset.
+
+        No overlap metric is emitted. The reference here is one
+        acceptable explanation among many, so similarity to it measures
+        resemblance to one particular wording rather than correctness.
+        """
+        return judged_only_score(
+            response,
+            metric="hypothesis_judged",
+            output_contract=output_contract,
+            details={},
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
@@ -171,14 +165,8 @@ class MooseChem2Adapter(PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["hypothesis_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "hypothesis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -195,14 +183,21 @@ class MooseChem2Adapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "hypothesis_rouge_l": "ROUGE-L F against the scored granularity's gold hypothesis "
-                "(primary)",
-                "hypothesis_token_f1": "token F1 against that gold hypothesis",
-                "coarse_rouge_l": "ROUGE-L against the paper's Main hypothesis",
-                "fine_rouge_l": "ROUGE-L against the Finegrained Hypothesis -- the gap between the "
-                "two shows whether a model got the idea but not the methodology",
-                "hypothesis_judged": "(primary) LLM-judge verdict on same-core-mechanism (only when "
-                "engine.judge.enabled)",
+                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis "
+                "matches the paper's at the scored granularity. 1.0 when the judge affirms, 0.0 "
+                "when it does not or when the response could not be parsed. The dataset score is "
+                "the mean over repeats x records.",
+                "best_of_n_hypothesis_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "hypothesis_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
             },
             primary_metric="hypothesis_judged",
             decisions=[
