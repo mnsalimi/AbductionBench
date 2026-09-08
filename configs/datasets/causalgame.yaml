@@ -1,18 +1,29 @@
 dataset:
   id: causalgame
-  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  impl: abductionbench.adapters.causalgame:CausalGameAdapter
   options:
-    name: "CausalGame"
-    domain: "Causal Science: Experimental Reasoning"
-    processing_mode: "Generation"
-    source_url: "https://causalgame.github.io/"
-    reason: "interactive game server, no released environment"
-    detail: >-
-      The project publishes an agent harness (agent/, api/, experiments/) that plays
-      against a live server at causalgame.github.io; the environment itself is not
-      released, so there is nothing to run locally and no static items with gold
-      answers either. Interactivity is not the obstacle -- seven other interactive
-      benchmarks in this suite run their own environments; the obstacle is that this
-      one's environment is not distributed.
+    # The environment is a service the release ships. Start it from a clone:
+    #   git clone --depth 1 https://github.com/viewsetting/CausalGame.git
+    #   cd CausalGame && python -m venv .venv
+    #   .venv/bin/pip install -r api/requirements.txt
+    #   .venv/bin/uvicorn api.app:app --host 127.0.0.1 --port 8000
+    # If it is not up, the dataset is skipped with those commands in the
+    # reason rather than being called unavailable.
+    base_url: ${env:ABENCH_CAUSALGAME_URL|http://127.0.0.1:8000}
+    # Where the scenario prompts live. Cloned on demand when absent.
+    repo_dir: null
+    # null -> all 14 released scenarios. A subset, for a quick check:
+    #   scenarios: [antenna_trap, weather_noise]
+    scenarios: null
+    # Recorded deployments shown in the opening prompt. The release's own
+    # history_count is 50, and the *_no_history variants ship none.
+    history_shown: 50
 
-  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
+  # 14 scenarios, so the suite-wide 200 is not the binding number here.
+  sample_size: 14
+
+  notes: >-
+    Runs the project's own FastAPI simulator locally. Each episode is one
+    scenario: experiments within the release's deployment budget, then a single
+    irreversible submission scored on a 1,000-drone fleet. Primary metric is
+    victory_rate -- the simulator's verdict, not a judge's.

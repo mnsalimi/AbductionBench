@@ -1,19 +1,36 @@
 dataset:
   id: nika
-  impl: abductionbench.adapters.unavailable:UnavailableAdapter
+  impl: abductionbench.adapters.nika:NikaAdapter
   options:
-    name: "NIKA"
-    domain: "Computing Systems: Network Troubleshooting"
-    processing_mode: "Generation"
-    source_url: "https://github.com/sands-lab/nika"
-    reason: "requires a running network emulator"
-    detail: >-
-      The repository ships fault-injection specifications
-      (benchmark/releases/*.yaml, benchmark/working/pool/*.yaml) and the code to
-      drive an emulated network, but no recorded telemetry: an item's observations
-      exist only once the emulator has been stood up, which needs privileged
-      networking this container cannot provide (no kernel modules, no netns/tc).
-      Unlike Cloud-OpsBench, which ships a recorded tool cache that can be replayed,
-      NIKA records nothing to replay.
+    # NIKA's cases and their root-cause ground truth ship with the repository;
+    # the OBSERVATIONS do not -- they exist only while the emulator is running,
+    # which is the point of the benchmark. Two prerequisites are needed, and
+    # this container has neither (no docker/podman, and cap_net_admin dropped
+    # so `unshare --net` is refused):
+    #
+    #   * a container runtime (Kathara runs one container per network device)
+    #   * CAP_NET_ADMIN + network namespaces, for the virtual links
+    #
+    # On a host that has both:
+    #   git clone https://github.com/sands-lab/nika && cd nika
+    #   nika env run dc-clos-bgp
+    #   nika agent run --agent <yours>        # starts the session MCP gateway
+    # then point this run at it:
+    #   export ABENCH_NIKA_GATEWAY_URL=http://<host>:<port>
+    #   export ABENCH_NIKA_SESSION_ID=<session id>
+    #
+    # Without them the dataset is skipped with that requirement spelled out,
+    # rather than being reported as an unavailable benchmark.
+    gateway_url: ${env:ABENCH_NIKA_GATEWAY_URL|}
+    session_id: ${env:ABENCH_NIKA_SESSION_ID|}
+    # Where the case files live. Cloned on demand when absent.
+    repo_dir: null
+    # null -> the newest release directory, and its own default split.
+    release: null
+    split: null
 
-  notes: "Reported as skipped with a reason; see the Skipped sheet of the report."
+  notes: >-
+    Interactive network incident diagnosis through NIKA's own MCP tools, scored
+    with the release's rule-based rca_f1 over {resource_id, fault_type} pairs.
+    The release sets judge_allowed: false, so no judge is involved. Needs a
+    reachable NIKA deployment; see options above for the exact setup.

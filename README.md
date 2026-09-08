@@ -804,19 +804,35 @@ python tools/dataset_catalogue.py                               # regenerate doc
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
 decisions cannot drift from the code. Current state: **49 datasets configured,
-42 evaluable, 6 declared unavailable with a reason, 1 (`researchbench`) waiting
-on a Hugging Face gate** — the 48 from the original table plus
+43 evaluable, 4 declared unavailable with a reason, 1 (`nika`) waiting on a
+container runtime, 1 (`researchbench`) waiting on a Hugging Face gate** — the 48 from the original table plus
 `open_problems_2024`, built here.
 
-Nine of the interactive benchmarks run their real environment; see
+Ten of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
-Interactivity is no longer a reason to skip anything. What is still skipped is
-skipped for reasons that have nothing to do with it: **CausalGame**'s
-environment is not distributed (its harness plays against the authors' server),
-**NIKA** records no telemetry to replay and needs privileged networking to
-generate any, **BioVerge** ships its items only inside an 11.9 GB corpus
-archive, and **DiReCT**, **DiscoveryBench** and **RLF-KG** are blocked on
-credentialed access, withheld gold, and an unreachable download respectively.
+Interactivity is no longer a reason to skip anything.
+
+**CausalGame** now runs. Its environment *is* distributed -- the earlier note
+here was wrong. The repository ships the simulator as a FastAPI service
+(`uvicorn api.app:app`), so the adapter starts it locally and drives its
+published API across all 14 released scenarios, scoring `victory_rate` from the
+simulator's own verdict on a 1,000-drone fleet.
+
+**NIKA** is an adapter too, and what stops it here is a named host
+prerequisite rather than the benchmark. Its cases and their root-cause ground
+truth ship with the repository, and it is scored by the release's own rule-based
+`rca_f1` (its `RELEASE.yaml` sets `judge_allowed: false`). The observations are
+live, though, and NIKA emulates with Kathará, which needs a container runtime
+and `CAP_NET_ADMIN`: neither exists in this container (no `docker`/`podman`,
+`unshare --net` refused, `cap_net_admin` dropped). Run NIKA on a host that has
+both and point `ABENCH_NIKA_GATEWAY_URL` and `ABENCH_NIKA_SESSION_ID` at it, and
+the dataset runs unchanged. Until then it is skipped with those commands in the
+reason.
+
+Still skipped for reasons of their own: **BioVerge** ships its items only inside
+an 11.9 GB corpus archive, and **DiReCT**, **DiscoveryBench** and **RLF-KG** are
+blocked on credentialed access, withheld gold, and an unreachable download
+respectively.
 
 Policies applied uniformly, and recorded per dataset:
 

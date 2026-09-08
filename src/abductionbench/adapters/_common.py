@@ -220,8 +220,44 @@ def extract_archive(archive: Path, dest: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
+def http_json(
+    method: str,
+    url: str,
+    *,
+    json_body: Any = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 120.0,
+) -> Any:
+    """One JSON request against a locally served benchmark environment.
+
+    Some benchmarks ship their environment as a service rather than as an item
+    file (CausalGame's FastAPI simulator, an MCP server behind a bridge).
+    Talking to it is part of running the benchmark, so it lives here next to
+    the download helpers rather than in each adapter.
+
+    Raises on a non-2xx, because a refused action is something the adapter has
+    to see and tell the model about.
+    """
+    import requests
+
+    response = requests.request(
+        method, url, json=json_body, headers=headers or None, timeout=timeout
+    )
+    response.raise_for_status()
+    if not response.content:
+        return {}
+    return response.json()
+
+
 def read_text(path: Path) -> str:
     return Path(path).read_text(encoding="utf-8", errors="replace")
+
+
+def read_yaml(path: Path) -> Any:
+    """Parse a YAML file -- some releases ship their case lists and manifests as YAML."""
+    import yaml
+
+    return yaml.safe_load(read_text(path))
 
 
 def read_json(path: Path) -> Any:
