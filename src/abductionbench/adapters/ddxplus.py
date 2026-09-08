@@ -63,17 +63,17 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
     data_delivery_mode = "interactive"
     objective_metrics = True
     selection_cardinality = "single"
-    hypothesis_modes = ("generation", "selection",)
+    hypothesis_modes = ("selection",)
     hypothesis_mode_options = {
-        "generation": {'subtask': 'generation'},
         "selection": {'subtask': 'selection'},
     }
     table_hypothesis_mode = "Selection"
     hypothesis_mode_justification = (
-        "DDXPlus releases, per patient, both a single GROUND-TRUTH PATHOLOGY and a "
-        "DIFFERENTIAL DIAGNOSIS list; the differential defines a closed candidate set "
-        "(selection) while the ground-truth pathology is recoverable without candidates "
-        "(generation), so the two are separate tasks over the same records."
+        "DDXPlus is a SELECTION benchmark and is run as one only. Each patient ships a "
+        "DIFFERENTIAL_DIAGNOSIS list, and that list is the candidate set -- the distractors are "
+        "the clinician-plausible conditions the case itself raises. Recovering the ground-truth "
+        "PATHOLOGY without candidates is a different task than the benchmark poses, so it is "
+        "not run."
     )
     primary_metric = "diagnosis_match"
 
@@ -86,7 +86,7 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     @property
     def _subtask(self) -> str:
-        return str(self.context.option("subtask", "generation"))
+        return str(self.context.option("subtask", "selection"))
 
     def load_items(self) -> list[dict[str, Any]]:
         data_dir = self.context.data_dir

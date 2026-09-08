@@ -76,16 +76,17 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
     data_delivery_mode = "interactive"
     objective_metrics = True
     selection_cardinality = "single"
-    hypothesis_modes = ("generation", "selection",)
+    hypothesis_modes = ("generation",)
     hypothesis_mode_options = {
         "generation": {'subtask': 'generation'},
-        "selection": {'subtask': 'selection'},
     }
     table_hypothesis_mode = "Generation"
     hypothesis_mode_justification = (
-        "The Med-Inquire test file is DiagnosisArena's release, in which each case carries "
-        "four answer options with one correct diagnosis, so a closed-set selection task is "
-        "defined by the data itself."
+        "Med-Inquire is run as interactive GENERATION only: the point of the benchmark is the "
+        "questioning -- the model asks for findings before committing to a diagnosis. Its "
+        "selection variant is NOT run, and the reason matters: the Med-Inquire test file IS "
+        "DiagnosisArena's release, so a selection task here would be DiagnosisArena's task over "
+        "DiagnosisArena's cases, scored twice."
     )
     primary_metric = "diagnosis_match"
 
@@ -354,8 +355,18 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             ],
             caveats=[
                 "SAME UNDERLYING ITEMS AS diagnosisarena: this test file is the DiagnosisArena "
-                "release re-used by EvoClinician. The two rows are one dataset viewed two ways "
-                "(here without the diagnostic work-up), not independent evidence.",
+                "release re-used by EvoClinician, so the two datasets share their cases. They "
+                "are NOT independent evidence, and a suite-level average over both counts those "
+                "cases twice.",
+                "What separates them is the task, and that is why both are kept: diagnosisarena "
+                "is run as STATIC SELECTION over the four answer options the release ships, "
+                "while med_inquire is run as INTERACTIVE GENERATION -- the model must ask for "
+                "history, examination and investigations before naming a diagnosis, with no "
+                "candidate list. The pair therefore measures what the questioning buys on the "
+                "same cases; it does not measure two datasets.",
+                "Neither is run in the other's mode: no open-ended variant of diagnosisarena, "
+                "and no selection variant here, precisely because that would be the other "
+                "dataset's task over the other dataset's cases.",
                 "Case reports are published literature and may be memorized by large models.",
                 "String matching under-credits correct paraphrases; enable engine.judge for "
                 "diagnosis_match_judged.",

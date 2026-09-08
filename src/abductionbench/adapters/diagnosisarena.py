@@ -54,16 +54,15 @@ class DiagnosisArenaAdapter(PooledDatasetAdapter):
     options_heading = "Candidate diagnoses:"
     objective_metrics = True
     selection_cardinality = "single"
-    hypothesis_modes = ("generation", "selection",)
+    hypothesis_modes = ("selection",)
     hypothesis_mode_options = {
-        "generation": {'subtask': 'generation'},
         "selection": {'subtask': 'selection'},
     }
-    table_hypothesis_mode = "Generation"
+    table_hypothesis_mode = "Selection"
     hypothesis_mode_justification = (
-        "Every DiagnosisArena case ships four answer options with one correct diagnosis "
-        "alongside the free-text gold diagnosis, so the release itself defines a closed-set "
-        "selection task over the same cases as well as the open-ended one."
+        "DiagnosisArena is run as static SELECTION only, over the four answer options the "
+        "release ships with each case. The open-ended variant would be a different benchmark "
+        "built from the same cases, and its free-text diagnosis is not what the release scores."
     )
     primary_metric = "diagnosis_match"
 
@@ -76,7 +75,7 @@ class DiagnosisArenaAdapter(PooledDatasetAdapter):
 
     @property
     def _subtask(self) -> str:
-        return str(self.context.option("subtask", "generation"))
+        return str(self.context.option("subtask", "selection"))
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -229,6 +228,10 @@ class DiagnosisArenaAdapter(PooledDatasetAdapter):
                 "Took the data from the authors' Hugging Face release; the GitHub repo is code only.",
             ],
             caveats=[
+                "SHARES ITS CASES WITH med_inquire, which re-uses this release. The two are "
+                "one set of cases evaluated two ways -- static selection over the released "
+                "answer options here, interactive generation there -- so a suite-level "
+                "average over both counts these cases twice.",
                 "SAME UNDERLYING ITEMS AS med_inquire: EvoClinician ships these 915 cases as its "
                 "Med-Inquire test file. Treat the two rows as one dataset viewed two ways, not as "
                 "independent evidence.",

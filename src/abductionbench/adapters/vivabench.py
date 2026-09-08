@@ -82,19 +82,17 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "would best account for the evidence you are given. You are given a clinical viva "
         "case. State the diagnosis that explains the presentation."
     )
-    data_delivery_mode = "interactive"
+    data_delivery_mode = "static"
     objective_metrics = True
     selection_cardinality = "single"
-    hypothesis_modes = ("generation", "selection",)
+    hypothesis_modes = ("selection",)
     hypothesis_mode_options = {
-        "generation": {'subtask': 'generation'},
         "selection": {'subtask': 'selection'},
     }
-    table_hypothesis_mode = "Generation"
+    table_hypothesis_mode = "Selection"
     hypothesis_mode_justification = (
-        "Each VivaBench case ships an explicit differential-diagnosis list next to its final "
-        "diagnosis, so choosing among the case's own differentials is a task the release "
-        "defines."
+        "VivaBench is run as static SELECTION only, over the candidate list the official GitHub "
+        "release ships with each case. Only the static selection data in that release is used."
     )
     primary_metric = "diagnosis_match"
 
@@ -107,7 +105,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     @property
     def _subtask(self) -> str:
-        return str(self.context.option("subtask", "generation"))
+        return str(self.context.option("subtask", "selection"))
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -313,8 +311,14 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             candidates = [diagnoses[0]] + [d for d in differentials if d != diagnoses[0]]
             if len(candidates) < 3:
                 return None  # not enough real distractors; item is skipped, never invented
-            ordered = sorted(set(candidates), key=lambda text: (text != diagnoses[0], text))
-            labels = C.letter_labels(len(ordered))
+            # Plain alphabetical order. The previous key sorted the gold
+            # diagnosis to the front of every item -- `text != gold` is False
+            # for the gold and True for everything else -- so the answer was
+            # always option 1 and the task could be passed without reading the
+            # case. Alphabetical is deterministic (so resume stays stable) and
+            # says nothing about which option is correct.
+            ordered = sorted(set(candidates))
+            labels = C.choice_labels(len(ordered))
             return SampleSpec(
                 sample_id=C.stable_id("viva", item.get("uid", index)),
                 fields={

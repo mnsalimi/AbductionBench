@@ -618,3 +618,59 @@ def test_best_of_n_is_silent_when_the_metric_is_missing():
 
     record = [_member("a", other=1.0), _member("b", other=0.0)]
     assert EvaluationEngine._best_of_n_metrics([record], "hypothesis_judged", True) == {}
+
+
+# --------------------------------------------------------------------------- #
+# requirement 3: each dataset runs only the mode its benchmark defines
+# --------------------------------------------------------------------------- #
+
+
+def test_the_five_corrected_datasets_offer_one_mode_each():
+    """These were each running a mode the benchmark does not pose.
+
+    Every extra mode is a task invented here rather than evaluated: an
+    open-ended DiagnosisArena, a candidate-free DDXPlus, a multiple-choice
+    MedUPS. They are declared, not merely unconfigured, so `abench run` cannot
+    schedule them by widening `modes.hypothesis_modes`.
+    """
+    from abductionbench.core.registry import resolve_adapter
+
+    expected = {
+        "abductionbench.adapters.ddxplus:DDXPlusAdapter": ("selection", "interactive"),
+        "abductionbench.adapters.diagnosisarena:DiagnosisArenaAdapter": ("selection", "static"),
+        "abductionbench.adapters.med_inquire:MedInquireAdapter": ("generation", "interactive"),
+        "abductionbench.adapters.medups:MedUPSAdapter": ("generation", "sequential"),
+        "abductionbench.adapters.vivabench:VivaBenchAdapter": ("selection", "static"),
+    }
+    for impl, (mode, delivery) in expected.items():
+        adapter = resolve_adapter(impl)
+        assert adapter.hypothesis_modes == (mode,), f"{impl} offers {adapter.hypothesis_modes}"
+        assert adapter.data_delivery_mode == delivery, impl
+        # and the one mode it offers is the one its options select by default
+        assert list(adapter.hypothesis_mode_options) == [mode], impl
+
+
+def test_medups_reads_the_mid_stream_release():
+    from abductionbench.adapters import medups
+
+    assert medups.REPO_ID == "oriel9p/MedUPS_mid_stream"
+    # No multiple-choice adaptation survives: no distractor keys, no cardinality.
+    assert not hasattr(medups, "DISTRACTOR_KEYS")
+    assert medups.MedUPSAdapter.selection_cardinality is None
+
+
+def test_vivabench_does_not_sort_the_answer_to_the_front():
+    """The old ordering key put the gold option first on every single item."""
+    from abductionbench.adapters._common import choice_labels
+
+    gold = "Pneumonia"
+    candidates = [gold, "Asthma", "COPD", "Heart failure"]
+    ordered = sorted(set(candidates))
+    labels = choice_labels(len(ordered))
+    assert labels[ordered.index(gold)] != "1", (
+        "alphabetical ordering must not coincide with gold-first for this case"
+    )
+    # The bug, for the record: this key is False for the gold and True for
+    # everything else, so the gold always sorted to index 0.
+    biased = sorted(set(candidates), key=lambda text: (text != gold, text))
+    assert biased.index(gold) == 0

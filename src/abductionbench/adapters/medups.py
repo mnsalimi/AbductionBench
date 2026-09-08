@@ -1,8 +1,7 @@
 """MedUPS: diagnostic reasoning in uncommon medical cases.
 
 Source: https://huggingface.co/collections/oriel9p/medups
-Data:   ``oriel9p/MedUPS_final_diagnosis`` (525 test cases) and
-        ``oriel9p/MedUPS_mid_stream`` (mid-stream question answering)
+Data:   ``oriel9p/MedUPS_mid_stream`` -- the split the paper evaluates
 
 The collection URL is not itself a dataset repository, so the adapter targets
 the collection's constituent datasets by id.  Only the **final-diagnosis**
@@ -26,11 +25,10 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import PooledDatasetAdapter, text_match_score
 
-REPO_ID = "oriel9p/MedUPS_final_diagnosis"
+REPO_ID = "oriel9p/MedUPS_mid_stream"
 COLLECTION_URL = "https://huggingface.co/collections/oriel9p/medups"
-DISTRACTOR_KEYS = tuple(f"distractor{index}" for index in range(1, 6))
 
 
 class MedUPSAdapter(PooledDatasetAdapter):
@@ -54,19 +52,19 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "do not explain why",
         "do not use introductory phrases or commentary",
     )
-    options_heading = "Candidate diagnoses:"
     objective_metrics = True
-    selection_cardinality = "single"
-    hypothesis_modes = ("generation", "selection",)
+    selection_cardinality = None
+    hypothesis_modes = ("generation",)
     hypothesis_mode_options = {
         "generation": {'subtask': 'generation'},
-        "selection": {'subtask': 'selection'},
     }
     table_hypothesis_mode = "Generation"
     hypothesis_mode_justification = (
-        "MedUPS ships a six-option multiple-choice item per case alongside the free-text "
-        "diagnosis, so selection among the released candidates is a task the benchmark "
-        "defines rather than one imposed here."
+        "MedUPS is run as GENERATION only, from MedUPS_mid_stream, which is the split the paper "
+        "evaluates: the diagnosis is made part-way through the case, before the record is "
+        "complete. The final-diagnosis multiple-choice adaptation is not run and no distractors "
+        "are added -- both would replace the benchmark's under-specified-diagnosis task with an "
+        "easier closed-set one."
     )
     primary_metric = "diagnosis_match"
 
@@ -91,63 +89,65 @@ class MedUPSAdapter(PooledDatasetAdapter):
         files = C.find_files(root, ["*.jsonl"])
         found = C.pick_split_file(files)
         if not found:
-            raise SkippedDataset("no MedUPS final-diagnosis split file found")
+            raise SkippedDataset("no MedUPS mid-stream split file found")
         path, split = found
         rows = C.read_jsonl(path)
         if not rows:
             raise SkippedDataset(f"{path} contained no rows")
-        self.split_used = f"{split} ({len(rows)} cases) of MedUPS_final_diagnosis"
-        return rows
+        # The release ships its own validity judgements per row, and rows it
+        # marks invalid have an unreliable gold answer -- the question was not
+        # answerable from the revealed context, or the reference answer did not
+        # address it. Scoring against those measures the release's noise.
+        usable = [
+            row
+            for row in rows
+            if str(row.get("question_judgment", "")).lower() == "valid"
+            and str(row.get("model_response_judgment", "")).lower() == "valid"
+        ]
+        if not usable:
+            raise SkippedDataset(
+                f"{path} has {len(rows)} rows but none are marked valid by the release's "
+                "own question_judgment/model_response_judgment fields"
+            )
+        self.dropped_invalid = len(rows) - len(usable)
+        self.split_used = (
+            f"{split} ({len(usable)} of {len(rows)} questions) of MedUPS_mid_stream"
+        )
+        return usable
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
-        presentation = C.normalize_whitespace(
-            item.get("clean text") or item.get("case_presentation") or item.get("Case presentation")
+        """One mid-stream question: the case so far, and what to infer from it.
+
+        This is the paper's task. The case is revealed only up to
+        ``answer_chunk_num``, so the diagnosis has to be inferred from an
+        incomplete record -- which is the point, and what the final-diagnosis
+        subset (a complete case, one published answer) does not test.
+        """
+        revealed = C.normalize_whitespace(item.get("context_chunks"))
+        question = C.normalize_whitespace(item.get("question"))
+        # `final_answer` is the concise form of the same answer `answer` gives
+        # at length; a diagnosis is what is being scored, not an essay.
+        gold = C.normalize_whitespace(item.get("final_answer")) or C.normalize_whitespace(
+            item.get("answer")
         )
-        diagnosis = C.normalize_whitespace(item.get("final diagnosis"))
-        if not presentation or not diagnosis:
+        if not revealed or not question or not gold:
             return None
-        # Some cases carry figure references without the figures; keep the text.
-        case_index = item.get("case_presentation_index", index)
-
-        if self._subtask == "selection":
-            distractors = [
-                C.normalize_whitespace(item.get(key))
-                for key in DISTRACTOR_KEYS
-                if C.normalize_whitespace(item.get(key))
-            ]
-            if len(distractors) < 3:
-                return None
-            options = sorted({diagnosis, *distractors})
-            labels = C.choice_labels(len(options))
-            return SampleSpec(
-                sample_id=C.stable_id("medups", case_index, item.get("chunk_number", "")),
-                fields={
-                    "observation": presentation,
-                    "question": "Which diagnosis best explains this case?",
-                    "options": options,
-                    "option_labels": labels,
-                },
-                reference={"gold_label": labels[options.index(diagnosis)], "gold": diagnosis},
-                task_kind="selection",
-                max_tokens=1024,
-                metadata={"case_index": case_index, "subtask": "selection"},
-            )
-
         return SampleSpec(
-            sample_id=C.stable_id("medups", case_index, item.get("chunk_number", "")),
+            sample_id=C.stable_id(
+                "medups", item.get("case_id", index), item.get("answer_chunk_num", "")
+            ),
             fields={
-                "observation": presentation,
-                "question": "What is the final diagnosis for this patient?",
-                "instructions": (
-                    "Name the specific diagnosis. These are uncommon presentations, so do not "
-                    "default to the most common disease that fits loosely."
-                ),
+                "observation": revealed,
+                "question": question,
             },
-            reference={"gold": diagnosis},
+            reference={"gold": gold, "long_answer": C.normalize_whitespace(item.get("answer"))},
             task_kind="generation",
-            # Long case narratives; short answer with reasoning headroom.
-            max_tokens=1024,
-            metadata={"case_index": case_index, "subtask": "generation"},
+            metadata={
+                "case_id": item.get("case_id"),
+                "revealed_chunks": item.get("context_length"),
+                "answer_chunk": item.get("answer_chunk_num"),
+                "subtask": "generation",
+            },
         )
 
     def score(
@@ -157,14 +157,6 @@ class MedUPSAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        if sample.task_kind == "selection":
-            return selection_score(
-                response,
-                labels=sample.fields["option_labels"],
-                gold_label=sample.reference["gold_label"],
-                output_contract=output_contract,
-                metric_name="accuracy",
-            )
         return text_match_score(
             response,
             gold=sample.reference["gold"],
@@ -175,7 +167,7 @@ class MedUPSAdapter(PooledDatasetAdapter):
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
     ) -> dict[str, Any] | None:
-        if sample.task_kind != "generation" or not response.text:
+        if not response.text:
             return None
         return {
             "candidate": extract_answer_span(response.text, None)[:600],
@@ -205,10 +197,10 @@ class MedUPSAdapter(PooledDatasetAdapter):
             processing_mode="Generation (default) / Selection",
             split_used=self.split_used,
             abductive_subset=(
-                "The final-diagnosis subset only (case presentation -> published diagnosis). The "
-                "MedUPS_mid_stream subset asks generated follow-up questions of many kinds (risk "
-                "factors, next tests, prognosis) that are not uniformly abductive, so it is "
-                "excluded rather than partially guessed at."
+                "The mid-stream subset: the case is revealed only up to a chunk boundary and "
+                "the model is asked what follows from what it has seen. Inferring from an "
+                "incomplete record is the benchmark's task, and it is what the "
+                "final-diagnosis subset (a whole case, one published answer) does not test."
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
@@ -224,14 +216,28 @@ class MedUPSAdapter(PooledDatasetAdapter):
             primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_match",
             decisions=[
                 "The suite's URL points at a Hugging Face *collection*, which is not a loadable "
-                "dataset; resolved it to its member datasets and used MedUPS_final_diagnosis.",
-                "Used the official test split (525 cases).",
+                "dataset; resolved it to its member datasets and used MedUPS_mid_stream, which is "
+                "the split the paper evaluates.",
+                "Scored against `final_answer`, the concise form of the same answer that "
+                "`answer` gives at length: a diagnosis is what is being judged, not an essay.",
+                "No multiple-choice adaptation and no synthesised distractors: turning this into "
+                "a closed-set choice would replace the under-specified-diagnosis task with an "
+                "easier one.",
+                "Used the official test split of MedUPS_mid_stream.",
                 "Withheld and never scored against cot / final_answer / raw_response / "
                 "diagnosis_match: these are the authors' own model outputs, not gold data.",
                 "The selection subtask uses the five retrieved ICD distractors shipped with each "
                 "case; no distractors are invented.",
             ],
             caveats=[
+                "Mid-stream questions are heterogeneous: alongside "
+                "what-is-the-diagnosis they ask for risk factors, expected findings and "
+                "next investigations. Not every item is abduction in the narrow sense, so "
+                "this dataset measures mid-stream clinical inference rather than "
+                "diagnosis-from-observation alone.",
+                "Rows the release marks invalid by its own question_judgment or "
+                "model_response_judgment fields are dropped: their reference answer does "
+                "not reliably answer the question asked.",
                 "Cases are published reports of uncommon presentations and may be memorized.",
                 "Cases can appear more than once with different chunk_number values; the sample "
                 "id includes the chunk so duplicates are visible in the records.",
