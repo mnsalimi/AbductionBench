@@ -244,7 +244,11 @@ class HypoSpaceAdapter(PooledDatasetAdapter):
                 "(deterministic), then " + self.sampling_note()
             ),
             metrics_description={
-                "distinct_valid_rate": "distinct compatible graphs proposed, divided by how many "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "distinct_valid_rate": "(PRIMARY, higher is better) distinct compatible graphs proposed, divided by how many "
                 "could have been proposed (min(requested, number compatible)) -- primary; this is "
                 "hypothesis-space coverage",
                 "validity": "share of proposed graphs that are compatible with all observations",

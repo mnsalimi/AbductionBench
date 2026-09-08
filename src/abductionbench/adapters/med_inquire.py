@@ -332,14 +332,18 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "diagnosis_match": "1 if the answer equals or contains the gold diagnosis (or a "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer equals or contains the gold diagnosis (or a "
                 "parenthesized abbreviation the dataset itself gives)",
                 "exact_match": "strict normalized equality with the gold diagnosis",
                 "token_f1": "bag-of-tokens F1 against the gold diagnosis",
                 "rouge_l": "LCS F-measure against the gold diagnosis",
                 "diagnosis_match_judged": "LLM-judge verdict on semantic equivalence (only when "
                 "engine.judge.enabled)",
-                "accuracy": "selection subtask: 1 if the chosen option letter is correct",
+                "accuracy": "(PRIMARY, higher is better) selection subtask: 1 if the chosen option letter is correct",
             },
             primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_match",
             decisions=[

@@ -150,7 +150,11 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "diagnosis_match": "1 if the answer equals or contains the gold diagnosis (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer equals or contains the gold diagnosis (primary)",
                 "exact_match": "strict normalized equality with the gold diagnosis",
                 "token_f1": "bag-of-tokens F1 against the gold diagnosis",
                 "rouge_l": "LCS F-measure against the gold diagnosis",

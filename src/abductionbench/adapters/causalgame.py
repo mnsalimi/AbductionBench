@@ -446,6 +446,10 @@ class CausalGameAdapter(PooledDatasetAdapter):
                 "the 14 scenarios are the benchmark."
             ),
             metrics_description={
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
                 "victory_rate": (
                     "(PRIMARY, higher is better, 0-1) fraction of episodes whose submitted design "
                     "beat the scenario's win threshold on the 1,000-drone evaluation fleet. The "

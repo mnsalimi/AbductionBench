@@ -379,7 +379,11 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "root_cause_match": "1 if the response names the gold root cause (underscore/space "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "root_cause_match": "(PRIMARY, higher is better) 1 if the response names the gold root cause (underscore/space "
                 "variants accepted) -- primary",
                 "fault_object_match": "1 if the response names the affected object",
                 "taxonomy_match": "1 if the response names the gold fault taxonomy class",

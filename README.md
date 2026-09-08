@@ -720,7 +720,7 @@ squeezed budget cannot look like a clean result.
 | `parse_failure_rate` | fraction whose response yielded no prediction |
 | `truncation_rate` | fraction that stopped at the token budget. **Not retried** — a truncated answer is a result, and the budget is already the whole remaining context window |
 | `empty_response_rate` | fraction that returned no content at all |
-| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the 32,000-token ceiling — i.e. where the prompt crowded out the answer |
+| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the dataset's output-token ceiling — i.e. where the prompt crowded out the answer. The ceiling is 32,000 by default and 64,000 for `abd` and `boxinggym` (`max_output_tokens` in their dataset files) |
 | `batch_latency_s_mean`, `completion_tokens_mean` | cost and length, per sample |
 | `<primary>_strict` | the primary metric with unscored samples counted as zero |
 
@@ -734,25 +734,41 @@ squeezed budget cannot look like a clean result.
 | `repeats` | how many times each record was asked (`modes.repeats`) |
 | `repeat_agreement` | fraction of records whose repeats all agreed |
 | `<primary>_repeat_std` | typical spread of the primary metric within one record |
+| `self_consistency_<metric>` | **verifiable datasets.** The metric recomputed on the plurality answer over the `repeats` samples of each record. Read off those samples — no extra calls. The winning answer's score *is* the score of any repeat that produced it, so nothing is re-scored |
+| `best_of_n_<metric>` | **unverifiable datasets.** The metric of the repeat the judge scored highest, averaged over records. Also read off the same samples. Every metric of the winning repeat travels with it, including the ones that were worse there — that is what makes it best-of-*n* rather than the best value of each metric separately |
+| `best_of_n_n`, `best_of_n_n_records` | how many repeats each record had, and how many records contributed |
+
+**Which of the two a dataset gets is not a setting.** A plurality needs answers
+that can coincide, and free-text hypotheses never repeat verbatim, so a vote
+there would be a plurality of one. Datasets whose answers are checkable
+(`objective_metrics = True`) report `self_consistency_`; datasets scored by the
+judge report `best_of_n_`. Both come out of the same `modes.repeats` calls.
 
 ### Answer-shape metrics
 
 The general shapes almost every dataset reduces to. A dataset's own metric names
 are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
-`hypothesis_rouge_l`, `flip_token_f1`, ...), and mean the same thing about that
-dataset's answer.
+`formula_match`, ...), and mean the same thing about that dataset's answer.
 
 | metric | meaning |
 |---|---|
 | `accuracy` | fraction of selection items where the chosen label was the gold label |
 | `exact_match` | normalized string equality with the gold answer |
 | `match` | equality *or* containment of an accepted gold form — the lenient view |
-| `token_f1` | bag-of-tokens F1 against the gold answer |
-| `rouge_l` | longest-common-subsequence F-measure against the gold answer |
+| `token_f1` | bag-of-tokens F1 against the gold answer. A **diagnostic**, never a primary metric, and not emitted at all by the datasets with no answer key |
 | `set_f1`, `set_precision`, `set_recall` | for answers that are a *set* (multi-selection, causal edge sets) |
 | `exact_set_match` | the whole set exactly right |
 | `symbolic_match` | SymPy proves the answer equivalent to the reference expression; `symbolic_match_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest |
-| `<metric>_judged` | the same judgement made by an LLM judge, only when `engine.judge.enabled` |
+| `<metric>_judged` | the same judgement made by an LLM judge. For a dataset with **no answer key this is the score**, not an extra view of it, and the run refuses to start without a configured judge. For a dataset that *has* an answer key (the diagnosis sets, `abd`) the judge is a synonym matcher over a real gold string, and the mechanical metric stands on its own |
+
+### Per-dataset metric documentation
+
+Every adapter documents its own metrics — what each measures, which is
+**primary**, and whether **higher or lower is better** — in its
+`documentation()`, and those descriptions are what the run writes into
+`Datasets` sheet and `docs/datasets.md`. They are generated from the adapters,
+so they cannot drift from the code. The shared metrics above are documented
+here and deliberately not repeated in each of the 45 adapters.
 
 ### Dataset-specific metrics
 
@@ -768,12 +784,15 @@ themselves; the ones worth knowing about here:
 | `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
 | `true_detective` | `human_agreement_spearman`, `human_solve_rate` | do models find the same puzzles hard that people do |
 | `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
-| `commonwhy` | `popularity_gap` | head vs long-tail entities |
+| `commonwhy` | `popularity_gap` | head vs long-tail entities (`explanation_judged_head` − `explanation_judged_longtail`) |
 | `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
 | `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
 | `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
 | `open_problems_2024` | `direction_accuracy`, `brier_score`, `leakage_rate`, `direction_answer_stability` | a calibrated verdict, and whether the model had simply read the answer |
+| `causalgame` | `victory_rate`, `final_score`, `deployments_used` | the simulator's own verdict against the scenario's win threshold, how close a loss was, and how much evidence was gathered first |
+| `nika` | `rca_f1`, `rca_exact` | the release's own leaderboard metric over {resource_id, fault_type} pairs; `rca_exact` is the stricter all-or-nothing reading |
+| `vivabench` | `accuracy` | selection over the release's candidate list — note the gold option is no longer sorted first, which it was until this was fixed |
 
 ## Adding a dataset
 

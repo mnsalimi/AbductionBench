@@ -205,7 +205,11 @@ class AERAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "set_f1": "F1 between the predicted and gold label sets (primary; the gold answer "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "set_f1": "(PRIMARY, higher is better) F1 between the predicted and gold label sets (primary; the gold answer "
                 "is a set, so single-label accuracy would misreport it)",
                 "exact_set_match": "1 only if the predicted set equals the gold set exactly",
                 "set_precision": "precision of the predicted labels",

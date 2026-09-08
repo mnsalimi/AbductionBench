@@ -345,7 +345,11 @@ class CausaLabAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "edge_f1": "F1 between predicted and true directed edge sets (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "edge_f1": "(PRIMARY, higher is better) F1 between predicted and true directed edge sets (primary)",
                 "edge_precision": "precision of the predicted edges -- penalizes over-claiming",
                 "edge_recall": "recall of the true edges",
                 "exact_graph_match": "1 only if the predicted edge set is exactly the true one",

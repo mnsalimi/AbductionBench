@@ -426,6 +426,10 @@ class NikaAdapter(PooledDatasetAdapter):
                 "cases and their root-cause ground truth ship with the repository."
             ),
             metrics_description={
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
                 "rca_f1": (
                     "(PRIMARY, higher is better, 0-1) F1 between the submitted "
                     "{resource_id, fault_type} pairs and the release's root_causes. This is "

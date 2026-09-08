@@ -454,7 +454,11 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "reproducible. options.episodes_per_goal sets how many instances per goal."
             ),
             metrics_description={
-                "standardized_error": "LOWER IS BETTER (primary). The release's own "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "standardized_error": "(PRIMARY, LOWER is better) LOWER IS BETTER (primary). The release's own "
                 "evaluate_predictions error, standardized by the goal's published norm_mu and "
                 "norm_sigma so environments of different scales are comparable",
                 "raw_error": "the same error before standardization",

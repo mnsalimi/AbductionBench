@@ -116,7 +116,11 @@ class NeuLRAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "exact_match": "normalized equality with the gold missing premise",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "exact_match": "(PRIMARY, higher is better) normalized equality with the gold missing premise",
                 "match": "gold premise equals or is contained in the answer",
                 "token_f1": "bag-of-tokens F1 against the gold premise",
                 "rouge_l": "LCS F-measure against the gold premise",

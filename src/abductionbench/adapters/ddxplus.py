@@ -390,11 +390,15 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "diagnosis_match": "1 if the answer names the gold condition (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer names the gold condition (primary)",
                 "exact_match": "strict normalized equality with the gold condition name",
                 "token_f1": "bag-of-tokens F1 against the gold condition name",
                 "rouge_l": "LCS F-measure against the gold condition name",
-                "accuracy": "selection subtask: 1 if the chosen candidate is the gold condition",
+                "accuracy": "(PRIMARY, higher is better) selection subtask: 1 if the chosen candidate is the gold condition",
                 "diagnosis_match_judged": "LLM-judge equivalence verdict (only when "
                 "engine.judge.enabled)",
             },

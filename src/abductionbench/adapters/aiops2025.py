@@ -220,7 +220,11 @@ class AIOps2025Adapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; only 103 cases exist, so the draw covers all of them",
             metrics_description={
-                "root_cause_match": "1 if the answer line names a gold root-cause entity (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "root_cause_match": "(PRIMARY, higher is better) 1 if the answer line names a gold root-cause entity (primary)",
                 "root_cause_mentioned": "1 if any part of the response names it -- the difference "
                 "from the primary metric shows how often the right entity was considered but not "
                 "committed to",

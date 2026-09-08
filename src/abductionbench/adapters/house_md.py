@@ -189,7 +189,11 @@ class HouseMDAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; vignettes are de-duplicated across the four workbooks first",
             metrics_description={
-                "diagnosis_match": "1 if the committed answer names the gold disease (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "diagnosis_match": "(PRIMARY, higher is better) 1 if the committed answer names the gold disease (primary)",
                 "diagnosis_in_differential": "1 if the gold disease appears anywhere in the "
                 "response -- the gap to the primary metric shows failures of commitment rather "
                 "than of recall",

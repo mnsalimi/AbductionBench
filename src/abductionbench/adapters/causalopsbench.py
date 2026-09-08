@@ -188,7 +188,11 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "component_match": "1 if the response names the faulty component (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "component_match": "(PRIMARY, higher is better) 1 if the response names the faulty component (primary)",
                 "fault_type_match": "1 if the response names the gold fault type",
                 "full_diagnosis": "1 only if both are named",
                 "component_match_<domain>": "the primary metric per simulated domain",

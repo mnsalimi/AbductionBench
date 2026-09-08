@@ -281,7 +281,11 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 f"then drawn by {self.sampling_note()}"
             ),
             metrics_description={
-                "accuracy": "1 if the selected diagnosis is the gold prognosis",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected diagnosis is the gold prognosis",
                 "accuracy_100pct/_80pct/_50pct": "accuracy at each information-completeness level",
                 "accuracy_<n>_rounds": "accuracy with n recorded inquiry rounds (inquiry_rounds mode)",
                 "information_sensitivity": "accuracy at 100% information minus accuracy at 50% -- "

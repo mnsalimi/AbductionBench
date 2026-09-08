@@ -284,7 +284,11 @@ class SynPATAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the data rows shown are chosen by a directory-seeded RNG, identical across models",
             metrics_description={
-                "symbolic_match": "1 if SymPy proves the answer equal to the gold expression up to "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "symbolic_match": "(PRIMARY, higher is better) 1 if SymPy proves the answer equal to the gold expression up to "
                 "a non-zero scalar factor (equations are expressions equal to zero) -- primary; an "
                 "undecidable comparison counts as 0",
                 "symbolic_match_decidable": "the same over items SymPy could compare",

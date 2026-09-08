@@ -242,7 +242,11 @@ class ABDAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "formula_match": "1 if the answer's formula is structurally identical to the gold "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "formula_match": "(PRIMARY, higher is better) 1 if the answer's formula is structurally identical to the gold "
                 "alpha after canonicalization (whitespace, parentheses, case) -- primary, and "
                 "strict: logically equivalent rewrites count as misses",
                 "formula_token_f1": "token F1 against the gold formula or its human-readable "

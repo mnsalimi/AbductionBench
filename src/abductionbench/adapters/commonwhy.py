@@ -171,6 +171,10 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the two popularity strata are pooled before drawing",
             metrics_description={
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
+                "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
+                "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
                 "explanation_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the explanation "
                 "gives a valid reason for the event. 1.0 when the judge affirms, 0.0 when it does "
                 "not or when the response could not be parsed. The dataset score is the mean over "

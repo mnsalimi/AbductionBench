@@ -256,6 +256,10 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 + self.sampling_note()
             ),
             metrics_description={
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
+                "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
+                "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
                 "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis "
                 "identifies the same relationship as a known one. 1.0 when the judge affirms, 0.0 "
                 "when it does not or when the response could not be parsed. The dataset score is "

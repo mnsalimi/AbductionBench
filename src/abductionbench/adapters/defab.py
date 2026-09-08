@@ -238,7 +238,11 @@ class DeFAbAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "1 if the selected candidate is the gold one (for multi-gold items, "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected candidate is the gold one (for multi-gold items, "
                 "1 only if the predicted set equals the gold set) -- primary",
                 "set_f1": "F1 between predicted and gold label sets, on multi-gold items",
                 "accuracy_level_<n>": "accuracy at inference depth n",

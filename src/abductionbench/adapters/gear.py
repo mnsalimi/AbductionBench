@@ -185,7 +185,11 @@ class GearAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; experiment sets are first flattened into one sample per test case",
             metrics_description={
-                "accuracy": "1 if the chosen outcome (on / off / undetermined) is correct (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the chosen outcome (on / off / undetermined) is correct (primary)",
                 "accuracy_<case_type>": "accuracy on direct, indirect, screen_off or potential cases",
                 "undetermined_recall": "accuracy restricted to items whose gold answer is "
                 "'undetermined' -- how well the model recognizes underdetermined evidence, i.e. "

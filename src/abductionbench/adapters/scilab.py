@@ -420,7 +420,11 @@ class SciLabAdapter(InteractiveMixin, PooledDatasetAdapter):
                 f"own bounds, seeded from the run seed ({self.context.seed}) and the item id."
             ),
             metrics_description={
-                "prediction_error": "LOWER IS BETTER (primary). Median relative error of the "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "prediction_error": "(PRIMARY, LOWER is better) LOWER IS BETTER (primary). Median relative error of the "
                 "model's predictions at settings it never tried -- the consequence its "
                 "inferred law is answerable to",
                 "within_10pct": "fraction of predictions within 10% of the true measurement",

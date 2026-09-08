@@ -177,7 +177,11 @@ class TrueDetectiveAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; with only 191 puzzles available the draw covers all of them",
             metrics_description={
-                "accuracy": "1 if the selected suspect/explanation is the gold one",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected suspect/explanation is the gold one",
                 "human_solve_rate": "mean human solve rate of the sampled puzzles (context, not "
                 "model performance)",
                 "human_agreement_spearman": "rank correlation between model correctness and human "

@@ -166,7 +166,11 @@ class SciRAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "1 if the selected causal relationship is the gold one (primary); "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected causal relationship is the gold one (primary); "
                 "'None' is one of the options, so a model that abstains correctly is credited",
                 "accuracy_<task_file>": "accuracy on one task set (the file names encode "
                 "graph size and number of connections, i.e. difficulty)",

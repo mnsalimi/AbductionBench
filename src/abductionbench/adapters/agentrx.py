@@ -174,7 +174,11 @@ class AgentRxAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "1 if the selected failure category is the root-cause failure's "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected failure category is the root-cause failure's "
                 "category (primary)",
                 "accuracy_<collection>": "accuracy per ground-truth collection "
                 "(magentic-one / tau)",

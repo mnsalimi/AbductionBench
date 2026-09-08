@@ -220,8 +220,12 @@ class ARTAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "selection: 1 if the chosen hypothesis is the annotated plausible one",
-                "hypothesis_match": "generation: answer equals or contains the reference hypothesis",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) selection: 1 if the chosen hypothesis is the annotated plausible one",
+                "hypothesis_match": "(PRIMARY, higher is better) generation: answer equals or contains the reference hypothesis",
                 "exact_match": "generation: normalized equality with the reference hypothesis",
                 "token_f1": "generation: bag-of-tokens F1 against the reference hypothesis",
                 "rouge_l": "generation: LCS F-measure against the reference hypothesis",

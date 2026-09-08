@@ -149,7 +149,11 @@ class XCopaAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the pool pools all languages, so the draw spreads across them",
             metrics_description={
-                "accuracy": "1 if the selected alternative is the gold cause",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected alternative is the gold cause",
                 "accuracy_lang_<code>": "the same metric restricted to one language",
             },
             primary_metric="accuracy",
