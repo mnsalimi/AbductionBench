@@ -400,6 +400,28 @@ def letter_labels(count: int, start: str = "A") -> list[str]:
     return [chr(first + index) for index in range(count)]
 
 
+def shuffled_options(options: Sequence[str], *, key: str, seed: int = 0) -> list[str]:
+    """Deterministic, content-independent option order.
+
+    Alphabetical order looks neutral and is not: a gold hypothesis usually
+    shares its opening words with the negatives written against it, so sorting
+    put the gold first far more often than chance (40% of ResearchBench's
+    ranking items landed on option 1 against a uniform 16.7%). A model
+    answering "1" every time would have scored 40%.
+
+    Seeding on the item's own id rather than a global counter means the order
+    depends on nothing but the item: the same item shuffles the same way on a
+    resumed run, in a different sample size, or in a different mode.
+    """
+    import hashlib
+    import random
+
+    digest = hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()
+    ordered = list(options)
+    random.Random(int(digest[:16], 16)).shuffle(ordered)
+    return ordered
+
+
 def choice_labels(count: int) -> list[str]:
     """``["1", "2", ...]`` -- the house label for a list of candidate hypotheses.
 

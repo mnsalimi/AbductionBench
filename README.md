@@ -824,7 +824,8 @@ python tools/dataset_catalogue.py                               # regenerate doc
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
 decisions cannot drift from the code. Current state: **49 datasets configured,
 43 evaluable, 4 declared unavailable with a reason, 1 (`nika`) waiting on a
-container runtime, 1 (`researchbench`) waiting on a Hugging Face gate** — the 48 from the original table plus
+container runtime, 1 (`researchbench`) needing only `HF_TOKEN` from an account
+that has accepted its gate** — the 48 from the original table plus
 `open_problems_2024`, built here.
 
 Ten of the interactive benchmarks run their real environment; see
@@ -903,6 +904,11 @@ abench run configs/runs/full.yaml -d researchbench
 
 Until then the adapter reports itself skipped with that URL and the account name
 in the reason, rather than failing obscurely. Nothing else needs changing.
+
+**Verified working** once an account has accepted: the gate check passes, the
+release's 20 files are readable, and all four tasks plan (io/cot x
+generation/selection, 600 items each). Keep the token in the environment — it is
+a credential and does not belong in a config file in this repository.
 
 ### `open_problems_2024` — the one dataset built here
 

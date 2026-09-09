@@ -317,7 +317,11 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # always option 1 and the task could be passed without reading the
             # case. Alphabetical is deterministic (so resume stays stable) and
             # says nothing about which option is correct.
-            ordered = sorted(set(candidates))
+            ordered = C.shuffled_options(
+                sorted(set(candidates)),
+                key=str(item.get("uid", index)),
+                seed=self.context.seed,
+            )
             labels = C.choice_labels(len(ordered))
             return SampleSpec(
                 sample_id=C.stable_id("viva", item.get("uid", index)),

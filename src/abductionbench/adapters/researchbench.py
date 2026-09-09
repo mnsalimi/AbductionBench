@@ -55,8 +55,23 @@ QUESTION_KEYS = ("research_question", "question", "problem", "query", "task")
 HYPOTHESIS_KEYS = ("hypothesis", "gold_hypothesis", "ground_truth_hypothesis", "answer",
                    "reference_hypothesis")
 CANDIDATE_KEYS = ("candidates", "hypotheses", "options", "candidate_hypotheses", "ranking")
+#: ``ranking.jsonl`` ships no candidate list. It ships the gold hypothesis and
+#: two sets of negatives, and the candidate set is built from them:
+#:
+#: * ``fake_negative_hypotheses`` -- 5 curated negatives per item, used by
+#:   default, giving a 6-way choice;
+#: * ``model_negative_hypotheses`` -- 10 model-written negatives, added when
+#:   ``options.include_model_negatives`` is true, giving a 16-way choice.
+#:
+#: Both are the release's own; nothing is synthesised here.
+NEGATIVE_KEYS = ("fake_negative_hypotheses",)
+MODEL_NEGATIVE_KEYS = ("model_negative_hypotheses",)
 GOLD_INDEX_KEYS = ("gold_index", "label", "answer_index", "correct_index")
-PAPER_ID_KEYS = ("paper_id", "paper", "doi", "id", "arxiv_id")
+#: The release's own ``sample_id`` first, and that ordering is load-bearing:
+#: ``doi`` is NOT unique (992 distinct across 1,367 generation rows, because a
+#: paper contributes several items), so keying on it collided and 375 items were
+#: dropped as duplicates before ever being evaluated.
+PAPER_ID_KEYS = ("sample_id", "paper_id", "paper", "doi", "id", "arxiv_id")
 
 
 def _first_present(row: dict[str, Any], keys: Sequence[str]) -> Any:
@@ -193,16 +208,57 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 f"is present. Keys in the file: {sorted(probe)[:20]}. Add the right name to "
                 "HYPOTHESIS_KEYS in adapters/researchbench.py rather than guessing a column."
             )
-        if self.subtask == "selection" and _first_present(probe, CANDIDATE_KEYS) is None:
+        if self.subtask == "selection" and not self._candidates_for(probe):
             raise SkippedDataset(
-                f"cannot find candidate hypotheses in {path.name}: none of {list(CANDIDATE_KEYS)} "
-                f"is present. Keys in the file: {sorted(probe)[:20]}."
+                f"cannot build a candidate set from {path.name}: it has neither a candidate "
+                f"list ({list(CANDIDATE_KEYS)}) nor the release's negatives "
+                f"({list(NEGATIVE_KEYS + MODEL_NEGATIVE_KEYS)}). Keys in the file: "
+                f"{sorted(probe)[:20]}."
             )
         return rows
 
     # ------------------------------------------------------------------ #
     # samples
     # ------------------------------------------------------------------ #
+
+    def _candidates_for(self, item: dict[str, Any]) -> list[str]:
+        """The option list for one ranking item, in a fixed order.
+
+        A pre-built candidate column is used when a release has one.  This one
+        does not: it ships the gold hypothesis plus its own negatives, so the
+        options are gold + negatives, sorted so that the gold's position is not
+        a function of it being the gold.
+        """
+        listed = _first_present(item, CANDIDATE_KEYS)
+        if isinstance(listed, list) and listed:
+            return [C.normalize_whitespace(str(c)) for c in listed if str(c).strip()]
+
+        gold = C.normalize_whitespace(str(_first_present(item, HYPOTHESIS_KEYS) or ""))
+        if not gold:
+            return []
+        negatives: list[str] = []
+        keys = list(NEGATIVE_KEYS)
+        if self.context.option("include_model_negatives", False):
+            keys += list(MODEL_NEGATIVE_KEYS)
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, list):
+                negatives += [
+                    C.normalize_whitespace(str(v)) for v in value if str(v).strip()
+                ]
+        pool = {gold, *negatives}
+        pool.discard("")
+        if len(pool) < 2:
+            return []
+        # A seeded shuffle, not sorted: the negatives are written against the
+        # gold and share its opening words, so alphabetical order put the gold
+        # first 40% of the time. Keyed on the item so a resumed run, a
+        # different sample size and a different mode all see the same order.
+        return C.shuffled_options(
+            sorted(pool),
+            key=str(_first_present(item, PAPER_ID_KEYS) or gold[:80]),
+            seed=self.context.seed,
+        )
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         background = C.clip_words(str(_first_present(item, BACKGROUND_KEYS) or ""), 900)
@@ -213,8 +269,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         sample_id = C.stable_id("rbench", _first_present(item, PAPER_ID_KEYS) or index, self.subtask)
 
         if self.subtask == "selection":
-            raw = _first_present(item, CANDIDATE_KEYS) or []
-            candidates = [C.normalize_whitespace(str(c)) for c in raw if str(c).strip()]
+            candidates = self._candidates_for(item)
             if len(candidates) < 2:
                 return None
             gold_index = _first_present(item, GOLD_INDEX_KEYS)
