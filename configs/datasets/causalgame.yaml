@@ -19,7 +19,8 @@ dataset:
     # history_count is 50, and the *_no_history variants ship none.
     history_shown: 50
 
-  # 14 scenarios, so the suite-wide 200 is not the binding number here.
+  # The release has exactly 14 scenarios and all of them are run, so the
+  # suite-wide dataset_defaults.sample_size does not apply here.
   sample_size: 14
 
   notes: >-
