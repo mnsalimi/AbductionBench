@@ -1,0 +1,54 @@
+# openai/gpt-oss-20b served by vLLM on this instance (127.0.0.1:18003), reached
+# without a tunnel.
+#
+# THIS MODEL IS THE JUDGE, not a model under evaluation: `judge_only: true`
+# below keeps the engine from planning tasks for it (see
+# ModelConfig.judge_only and RunConfig.evaluated_models).
+#
+# It replaced gpt-oss-120b in that role. The 120B worked, but its 60.8 GiB of
+# MXFP4 weights left so little of the card free that cuBLAS could not allocate
+# a GEMM workspace, and the engine died mid-service with
+# CUBLAS_STATUS_INTERNAL_ERROR -- which, before the judge failures were made
+# fatal, showed up as a full set of plausible-looking zeros. At 13 GiB this one
+# shares the GPU with room to spare: ~50 GiB stays free.
+model:
+  id: gpt-oss-20b-local
+  model_name: openai/gpt-oss-20b
+  description: 21B-total / 3.6B-active MoE reasoning model, MXFP4, serving the judge.
+  # Reasoning model: `content` can be null while the chain-of-thought fills
+  # `reasoning`, which is why engine.judge.max_tokens is not tight.
+  reasoning_model: true
+  judge_only: true
+
+  endpoint:
+    base_url: ${env:ABENCH_JUDGE_URL|http://127.0.0.1:18003}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_JUDGE_URL|http://127.0.0.1:18003}
+      path: /v1/chat/completions/batch
+      # Tracks MAX_NUM_SEQS=32 on the server.
+      group_size: 32
+    discovery:
+      # A fixed local address never rotates, so discovery is disabled.
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 2048
+    max_tokens_cap: 32000
+    max_tokens_floor: 64
+
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN=65536 in /workspace/vllm_serving/gpt-oss-20b/.env, the same
+    # window qwen3.5-2b is served with, so a judged answer and the answer being
+    # judged are bounded by the same context length.
+    context_window: 65536

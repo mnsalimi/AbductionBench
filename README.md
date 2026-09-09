@@ -822,10 +822,10 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **49 datasets configured,
-43 evaluable, 4 declared unavailable with a reason, 1 (`nika`) waiting on a
-container runtime, 1 (`researchbench`) needing only `HF_TOKEN` from an account
-that has accepted its gate** — the 48 from the original table plus
+decisions cannot drift from the code. Current state: **45 datasets configured,
+44 evaluable, 1 (`nika`) waiting on a container runtime this instance cannot
+provide** — `researchbench` needs only `HF_TOKEN` from an account that has
+accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
 
 Ten of the interactive benchmarks run their real environment; see
@@ -849,10 +849,16 @@ both and point `ABENCH_NIKA_GATEWAY_URL` and `ABENCH_NIKA_SESSION_ID` at it, and
 the dataset runs unchanged. Until then it is skipped with those commands in the
 reason.
 
-Still skipped for reasons of their own: **BioVerge** ships its items only inside
-an 11.9 GB corpus archive, and **DiReCT**, **DiscoveryBench** and **RLF-KG** are
-blocked on credentialed access, withheld gold, and an unreachable download
-respectively.
+**Four datasets have been removed from the suite entirely** rather than carried
+as permanent skips: **BioVerge** (items ship only inside an 11.9 GB corpus
+archive), **DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench**
+(gold hypotheses withheld on every scorable split) and **RLF-KG** (sampled query
+data is not downloadable). None of these can be obtained, so a row reporting
+them as skipped added a line to every report without ever adding a number. The
+mechanism that reported them -- `UnavailableAdapter`, which turns a dataset into
+a documented skip rather than a silent absence -- stays: it is how a *newly*
+unobtainable dataset gets reported, and `nika` uses the same idea to name its
+missing prerequisite.
 
 Policies applied uniformly, and recorded per dataset:
 

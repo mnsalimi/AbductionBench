@@ -5,8 +5,12 @@ dataset:
     # NIKA's cases and their root-cause ground truth ship with the repository;
     # the OBSERVATIONS do not -- they exist only while the emulator is running,
     # which is the point of the benchmark. Two prerequisites are needed, and
-    # this container has neither (no docker/podman, and cap_net_admin dropped
-    # so `unshare --net` is refused):
+    # this container can provide neither, and cannot be made to: `unshare -m`,
+    # `unshare -U` and `unshare -n` all return EPERM, so no container runtime
+    # (rootful or rootless) can even be installed, and the effective capability
+    # set holds neither CAP_NET_ADMIN nor CAP_SYS_ADMIN. The kernel permits
+    # namespaces; this container's seccomp/AppArmor profile does not. Only the
+    # host operator can change that -- a Vast.ai VM instance would have it.
     #
     #   * a container runtime (Kathara runs one container per network device)
     #   * CAP_NET_ADMIN + network namespaces, for the virtual links
