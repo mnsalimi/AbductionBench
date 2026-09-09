@@ -791,7 +791,6 @@ themselves; the ones worth knowing about here:
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
 | `open_problems_2024` | `direction_accuracy`, `brier_score`, `leakage_rate`, `direction_answer_stability` | a calibrated verdict, and whether the model had simply read the answer |
 | `causalgame` | `victory_rate`, `final_score`, `deployments_used` | the simulator's own verdict against the scenario's win threshold, how close a loss was, and how much evidence was gathered first |
-| `nika` | `rca_f1`, `rca_exact` | the release's own leaderboard metric over {resource_id, fault_type} pairs; `rca_exact` is the stricter all-or-nothing reading |
 | `vivabench` | `accuracy` | selection over the release's candidate list — note the gold option is no longer sorted first, which it was until this was fixed |
 
 ## Adding a dataset
@@ -822,13 +821,12 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **45 datasets configured,
-44 evaluable, 1 (`nika`) waiting on a container runtime this instance cannot
-provide** — `researchbench` needs only `HF_TOKEN` from an account that has
+decisions cannot drift from the code. Current state: **44 datasets configured, all 44
+evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
 
-Ten of the interactive benchmarks run their real environment; see
+Nine of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
@@ -838,30 +836,23 @@ here was wrong. The repository ships the simulator as a FastAPI service
 published API across all 14 released scenarios, scoring `victory_rate` from the
 simulator's own verdict on a 1,000-drone fleet.
 
-**NIKA** is an adapter too, and what stops it here is a named host
-prerequisite rather than the benchmark — one you can supply from your own
-laptop: see [docs/nika-remote-lab.md](docs/nika-remote-lab.md), which uses the
-release's own remote lab-host mode plus an SSH reverse tunnel, so the emulator
-runs on a Windows/WSL2 Docker Desktop machine while everything else stays here. Its cases and their root-cause ground
-truth ship with the repository, and it is scored by the release's own rule-based
-`rca_f1` (its `RELEASE.yaml` sets `judge_allowed: false`). The observations are
-live, though, and NIKA emulates with Kathará, which needs a container runtime
-and `CAP_NET_ADMIN`: neither exists in this container (no `docker`/`podman`,
-`unshare --net` refused, `cap_net_admin` dropped). Run NIKA on a host that has
-both and point `ABENCH_NIKA_GATEWAY_URL` and `ABENCH_NIKA_SESSION_ID` at it, and
-the dataset runs unchanged. Until then it is skipped with those commands in the
-reason.
-
-**Four datasets have been removed from the suite entirely** rather than carried
+**Five datasets have been removed from the suite entirely** rather than carried
 as permanent skips: **BioVerge** (items ship only inside an 11.9 GB corpus
 archive), **DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench**
-(gold hypotheses withheld on every scorable split) and **RLF-KG** (sampled query
-data is not downloadable). None of these can be obtained, so a row reporting
-them as skipped added a line to every report without ever adding a number. The
-mechanism that reported them -- `UnavailableAdapter`, which turns a dataset into
-a documented skip rather than a silent absence -- stays: it is how a *newly*
-unobtainable dataset gets reported, and `nika` uses the same idea to name its
-missing prerequisite.
+(gold hypotheses withheld on every scorable split), **RLF-KG** (sampled query
+data is not downloadable) and **NIKA** (its emulator needs a container runtime
+and `CAP_NET_ADMIN`, and this container's capability bounding set excludes both,
+so no runtime can even be installed). Each added a row to every report without
+ever adding a number.
+
+NIKA's adapter was written and its scoring verified against release 0.2.0's 85
+incidents before it was removed, so `git log -- src/abductionbench/adapters/nika.py`
+recovers a working implementation -- along with `docs/nika-remote-lab.md`, which
+describes running its emulator on a separate Docker host via the release's own
+remote lab-host mode. The mechanism that reported these datasets --
+`UnavailableAdapter`, which turns a dataset into a documented skip rather than a
+silent absence -- stays: it is how a *newly* unobtainable dataset gets
+reported.
 
 Policies applied uniformly, and recorded per dataset:
 

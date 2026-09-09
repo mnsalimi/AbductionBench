@@ -681,13 +681,12 @@ def test_vivabench_does_not_sort_the_answer_to_the_front():
 # --------------------------------------------------------------------------- #
 
 
-def test_causalgame_and_nika_are_real_adapters_now():
-    """Both were classified as unavailable; neither actually is.
+def test_causalgame_is_a_real_adapter_now():
+    """CausalGame was classified as unavailable; it never actually was.
 
-    CausalGame ships its simulator (`uvicorn api.app:app`) and NIKA ships its
-    cases *and their root-cause ground truth*. What NIKA lacks here is a host
-    prerequisite -- a container runtime and CAP_NET_ADMIN -- which is a setup
-    step, not a missing benchmark.
+    The repository ships its simulator as a FastAPI service
+    (`uvicorn api.app:app`), so it runs locally and its victory_rate comes from
+    that simulator rather than from a judge.
     """
     from abductionbench.core.registry import resolve_adapter
 
@@ -696,38 +695,14 @@ def test_causalgame_and_nika_are_real_adapters_now():
     assert causalgame.objective_metrics, "the simulator decides victory, not a judge"
     assert causalgame.primary_metric == "victory_rate"
 
-    nika = resolve_adapter("abductionbench.adapters.nika:NikaAdapter")
-    assert nika.data_delivery_mode == "interactive"
-    # NIKA's RELEASE.yaml sets judge_allowed: false, so this must not be judged.
-    assert nika.objective_metrics
-    assert nika.primary_metric == "rca_f1"
 
-
-def test_neither_is_wired_to_the_unavailable_placeholder():
+def test_causalgame_is_not_wired_to_the_unavailable_placeholder():
     import yaml
 
-    for name in ("causalgame", "nika"):
-        with open(f"configs/datasets/{name}.yaml") as handle:
-            config = yaml.safe_load(handle)["dataset"]
-        assert "unavailable" not in config["impl"], f"{name} is still a placeholder"
-        assert config["impl"].endswith(("CausalGameAdapter", "NikaAdapter"))
-
-
-def test_nika_scores_root_causes_as_a_set_not_a_string():
-    """rca_f1 is over {resource_id, fault_type} pairs, which is the release's metric."""
-    from abductionbench.adapters.nika import _claimed_causes, _gold_causes
-
-    gold = _gold_causes([{"resource": {"kind": "node", "node": "leaf0"},
-                          "fault_type": "bgp_asn_misconfig"}])
-    assert gold == {"leaf0::bgp_asn_misconfig"}
-    # The model submits a flatter shape; both have to land on the same key.
-    assert _claimed_causes(
-        [{"resource_id": "leaf0", "fault_type": "bgp_asn_misconfig"}]
-    ) == gold
-    # Naming the right box with the wrong fault is not a match.
-    assert _claimed_causes([{"resource_id": "leaf0", "fault_type": "mtu_mismatch"}]) != gold
-    # Incomplete entries are dropped rather than half-credited.
-    assert _claimed_causes([{"resource_id": "leaf0"}, {"fault_type": "x"}]) == set()
+    with open("configs/datasets/causalgame.yaml") as handle:
+        config = yaml.safe_load(handle)["dataset"]
+    assert "unavailable" not in config["impl"], "causalgame is still a placeholder"
+    assert config["impl"].endswith("CausalGameAdapter")
 
 
 def test_causalgame_reads_the_apis_percent_strings():
