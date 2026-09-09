@@ -82,17 +82,57 @@ _OBSERVE_RE = re.compile(r"<observe>\s*(.*?)\s*</observe>", re.S | re.I)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S | re.I)
 
 
+#: BoxingGym's own prompts, character for character from the release
+#: (``run_experiment.py`` and ``src/boxing_gym/agents/agent.py``). They are
+#: quoted rather than paraphrased because this is an interactive benchmark: the
+#: prompt is part of what is being measured, and the ``<thought>``/``<observe>``
+#: syntax the environment parses is defined by these strings.
+#:
+#: ``LMExperimenter.generate_actions`` sends the first form when there is no
+#: prior result and the second afterwards.
+_AUTHORS_FIRST_OBSERVE = (
+    "Think about where to observe next. Articulate your strategy for choosing "
+    "measurements in <thought>.\nProvide a new measurement point in the format:\n"
+    "<thought>your thought</thought>\n<observe> your observation</observe>\n"
+    "Make an observation now."
+)
+_AUTHORS_NEXT_OBSERVE = (
+    "Result: {result}\nThink about where to observe next. Articulate your strategy "
+    "for choosing measurements in <thought>.\nProvide a new measurement point in "
+    "the format:\nThought: <thought>\n<observe> your observation (remember the type "
+    "of inputs accepted)</observe>"
+)
+#: ``prompt_llm_and_parse`` re-prompts with these when the response does not parse.
+_AUTHORS_RETRY_OBSERVE = (
+    "Please stick to the specified format and respond using <observe> tags. "
+    "Continue making observations even if you think you have an accurate estimate. "
+    "Your previous response was not valid."
+)
+_AUTHORS_RETRY_ANSWER = (
+    "Please stick to the specified format and respond using <answer> tags. Make "
+    "assumptions and provide your best guess. Your previous response was not valid."
+)
+#: ``evaluate`` prefixes the eval question with this, and
+#: ``generate_predictions`` appends the answer-format line.
+_AUTHORS_FINAL_RESULT = "The final result is {result}."
+_AUTHORS_ANSWER_FORMAT = (
+    "\nAnswer in the following format:\n<answer>your answer</answer>."
+)
+#: ``MAX_TRIES`` in run_experiment.py: how many times a rejected experiment is
+#: re-asked before the loop moves on.
+_AUTHORS_MAX_TRIES = 3
+
+
 class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
     """One episode per (environment, goal, seed): experiment, then predict."""
 
     adapter_version = "1.0"
 
-    system_prompt = (
-        "You are a scientist studying a system you cannot see inside. You learn about it "
-        "only by running experiments, and you are judged on whether you can then predict "
-        "what it will do. Choose experiments that would distinguish the mechanisms you are "
-        "considering, not experiments that confirm the one you already prefer."
-    )
+    #: Deliberately empty. BoxingGym's system message is the goal's own
+    #: ``get_system_message(include_prior)``, which the release installs as THE
+    #: system message (`scientist_agent.set_system_message(...)` in
+    #: run_experiment.py). Anything written here would displace it.
+    system_prompt = ""
     data_delivery_mode = "interactive"
     # Scored by the release's own evaluate_predictions: numeric error against
     # measurements the environment produced. No judge is involved.
@@ -303,19 +343,16 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
             "asked": 0,
             "n_questions": int(self.context.option("questions", 5)),
         }
+        # Exactly the release's arrangement: the goal's own message IS the
+        # system message, and the first user turn is generate_actions() with no
+        # prior result. Nothing is added -- an earlier version put a prompt
+        # written here in the system role and demoted the briefing to a user
+        # message, which is not the benchmark's setup and is not what its
+        # published numbers measure.
         return (
             [
-                # The briefing is the benchmark's own, including its
-                # <observe> syntax; only the phase instruction is added.
-                ChatMessage(role="system", content=self.system_prompt),
-                ChatMessage(
-                    role="user",
-                    content=(
-                        f"{briefing}\n\n"
-                        f"You may run {state['budget']} experiments. After that you will be "
-                        "asked to make predictions, so spend them on learning the system."
-                    ),
-                ),
+                ChatMessage(role="system", content=briefing),
+                ChatMessage(role="user", content=_AUTHORS_FIRST_OBSERVE),
             ],
             state,
         )
@@ -330,39 +367,69 @@ class BoxingGymAdapter(InteractiveMixin, PooledDatasetAdapter):
     def _experiment_turn(self, state: dict[str, Any], text: str) -> str | None:
         match = _OBSERVE_RE.search(text or "")
         if match is None:
+            # The release re-prompts with its own text and gives up after
+            # MAX_TRIES rather than inventing a message of its own.
             state["parse_errors"] = state.get("parse_errors", 0) + 1
-            if state["parse_errors"] > 2:
+            if state["parse_errors"] >= _AUTHORS_MAX_TRIES:
                 return self._begin_predictions(state)
-            return "Reply with your observation in the required form: <observe>value</observe>"
+            return _AUTHORS_RETRY_OBSERVE
 
         state["used"] += 1
         try:
             result, ok = state["env"].run_experiment(match.group(1))
         except Exception as exc:  # noqa: BLE001 - a rejected setting is an observation
             result, ok = f"Error: {type(exc).__name__}: {exc}", False
-        reply = f"Result: {result}" if ok else str(result)
+        if not ok:
+            # A rejected experiment: the release feeds the environment's own
+            # complaint straight back, and does not spend a turn of the budget
+            # on it (`while not success and tries < MAX_TRIES`).
+            state["used"] -= 1
+            state["failed_tries"] = state.get("failed_tries", 0) + 1
+            if state["failed_tries"] >= _AUTHORS_MAX_TRIES:
+                return self._begin_predictions(state)
+            return str(result)
+        state["failed_tries"] = 0
         if state["used"] >= state["budget"]:
-            return f"{reply}\n\n{self._begin_predictions(state)}"
-        remaining = state["budget"] - state["used"]
-        return f"{reply}\n({remaining} experiment(s) left.)"
+            return self._begin_predictions(state, last_result=result)
+        return _AUTHORS_NEXT_OBSERVE.format(result=result)
 
-    def _begin_predictions(self, state: dict[str, Any]) -> str:
-        """Close the experiment phase and ask the goal's own first question."""
+    def _begin_predictions(self, state: dict[str, Any], last_result: Any = None) -> str:
+        """Close the experiment phase and ask the goal's own first question.
+
+        The release prefixes the first eval question with its own
+        ``final_results`` line -- "The final result is {observation}." when
+        observations were made -- and asks the goal for the question itself.
+        """
         state["phase"] = "predict"
-        return "No more experiments.\n\n" + self._next_question(state)
+        state["preamble"] = (
+            _AUTHORS_FINAL_RESULT.format(result=last_result)
+            if last_result is not None
+            else "You cannot make observations now. Make assumptions and provide "
+                 "your best guess to the following query."
+        )
+        return self._next_question(state)
 
     def _next_question(self, state: dict[str, Any]) -> str:
         goal = state["goal"]
         question, truth = goal.get_goal_eval_question(state["include_prior"])
         state["truths"].append(truth)
         state["asked"] += 1
-        return (
-            f"Question {state['asked']} of {state['n_questions']}: {question}\n"
-            "Answer inside <answer></answer> tags."
-        )
+        # `evaluate()` builds `final_results + "\n" + question`, and
+        # `generate_predictions` appends the answer-format line. The preamble
+        # appears once, on the first question, as it does in the release.
+        preamble = state.pop("preamble", "")
+        head = f"{preamble}\n{question}" if preamble else question
+        return head + _AUTHORS_ANSWER_FORMAT
 
     def _prediction_turn(self, state: dict[str, Any], text: str) -> str | None:
         match = _ANSWER_RE.search(text or "")
+        if match is None:
+            # Same as the release: re-ask with its own text, up to MAX_TRIES,
+            # before falling back to whatever was said.
+            state["answer_tries"] = state.get("answer_tries", 0) + 1
+            if state["answer_tries"] < _AUTHORS_MAX_TRIES:
+                return _AUTHORS_RETRY_ANSWER
+        state["answer_tries"] = 0
         answer = match.group(1) if match else (text or "").strip().split("\n")[-1]
         state["predictions"].append(answer)
         if state["asked"] >= state["n_questions"]:

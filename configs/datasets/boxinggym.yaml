@@ -11,11 +11,33 @@ dataset:
     experiments: 10
     questions: 5
     # environments: [death_process, irt]   # subset, for a quick check
-  # An episode is a growing transcript of experiments and their results, and
-  # the prediction at the end is long. 93% of its answers ran to the 32,000
-  # cap, which measures the budget rather than the model, so it asks for
-  # twice that -- bounded, as always, by the model's context window.
-  max_output_tokens: 64000
+  # 512, which is what the benchmark's own config uses
+  # (conf/llms/openai.yaml: max_tokens 512, temperature 0.0) for every
+  # environment it ships.
+  #
+  # This was 64,000, and that was a misdiagnosis on my part. 93% of answers
+  # were running to the cap, and I read that as "the cap is too small" and
+  # doubled it. The real cause was the prompt: the adapter was sending a
+  # system message written here instead of the goal's own
+  # get_system_message(), so the model was never told the <thought>/<observe>
+  # protocol in the system role and had 64,000 tokens to wander in. Small
+  # models duly wandered -- long run times and generation that repeats itself.
+  # With the authors' prompt and the authors' budget, an answer is one
+  # observation, which is what 512 is sized for.
+  #
+  # MEASURED both ways with Qwen3.5-2B on two episodes:
+  #   512 (this value): finished in 131s, 6/6 scored, 0 errors.
+  #   budget opened up:  still running after 13 MINUTES, unfinished.
+  # The verbose model fills whatever space it is given, so the authors' cap is
+  # also the only setting under which this dataset terminates sensibly.
+  #
+  # Note what it costs. This model writes a long <thought> and is cut off
+  # before reaching <observe>, so every response truncates and
+  # standardized_error is unavailable; it scores answered_rate through the
+  # release's own retry path instead. That is a fact about a 2B model against a
+  # benchmark tuned for gpt-4o at 512 tokens, not a harness defect -- and it is
+  # what the authors' own setup would report for this model.
+  max_output_tokens: 512
   notes: >-
     Runs the benchmark's real simulators (BoxingGym ships no item file). Each
     episode is experimentation followed by prediction, scored by the release's

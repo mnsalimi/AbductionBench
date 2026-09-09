@@ -786,3 +786,56 @@ def test_the_same_item_always_shuffles_the_same_way():
     assert first != shuffled_options(options, key="paper-43", seed=7)
     assert first != shuffled_options(options, key="paper-42", seed=8)
     assert sorted(first) == sorted(options)
+
+
+# --------------------------------------------------------------------------- #
+# interactive datasets must use their own benchmark's prompt
+# --------------------------------------------------------------------------- #
+
+
+def test_boxinggym_uses_the_goals_own_system_message():
+    """The release does `set_system_message(goal.get_system_message(...))`.
+
+    An earlier version put a prompt written here in the system role and demoted
+    the goal's briefing to a user message. That is not the benchmark's setup:
+    the <thought>/<observe> protocol the environment parses is defined in the
+    goal's message, and burying it cost the model the format it is graded on.
+    """
+    from abductionbench.adapters.boxinggym import BoxingGymAdapter
+
+    assert BoxingGymAdapter.system_prompt == "", (
+        "a non-empty system_prompt here would displace goal.get_system_message()"
+    )
+
+
+def test_boxinggym_quotes_the_authors_turn_prompts_verbatim():
+    from abductionbench.adapters import boxinggym as bg
+
+    # From src/boxing_gym/agents/agent.py, LMExperimenter.generate_actions.
+    assert bg._AUTHORS_FIRST_OBSERVE.startswith(
+        "Think about where to observe next. Articulate your strategy for choosing "
+        "measurements in <thought>."
+    )
+    assert bg._AUTHORS_FIRST_OBSERVE.endswith("Make an observation now.")
+    assert "<observe> your observation</observe>" in bg._AUTHORS_FIRST_OBSERVE
+    assert bg._AUTHORS_NEXT_OBSERVE.startswith("Result: {result}")
+    assert "remember the type of inputs accepted" in bg._AUTHORS_NEXT_OBSERVE
+    # From prompt_llm_and_parse's re-prompts.
+    assert bg._AUTHORS_RETRY_OBSERVE.endswith("Your previous response was not valid.")
+    assert "<answer> tags" in bg._AUTHORS_RETRY_ANSWER
+    # run_experiment.py: MAX_TRIES = 3
+    assert bg._AUTHORS_MAX_TRIES == 3
+
+
+def test_boxinggym_asks_for_the_authors_token_budget():
+    """conf/llms/openai.yaml in the release: max_tokens 512.
+
+    Measured: at 512 two episodes finish in 131s; with the budget opened up the
+    same two were still running after 13 minutes, because a verbose model fills
+    whatever space it is given.
+    """
+    import yaml
+
+    with open("configs/datasets/boxinggym.yaml") as handle:
+        config = yaml.safe_load(handle)["dataset"]
+    assert config["max_output_tokens"] == 512
