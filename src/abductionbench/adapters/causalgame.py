@@ -185,12 +185,7 @@ class CausalGameAdapter(PooledDatasetAdapter):
             "ABENCH_CAUSALGAME_ADMIN_TOKEN"
         )
         if not token:
-            env_file = self._repo / ".env"
-            if env_file.is_file():
-                for line in C.read_text(env_file).splitlines():
-                    if line.strip().startswith("ADMIN_TOKEN="):
-                        token = line.split("=", 1)[1].strip()
-                        break
+            token = self._token_from_env_file()
         if not token:
             raise SkippedDataset(
                 "CausalGame's /api/admin/* routes need an X-Admin-Token and none was found. "
@@ -200,14 +195,56 @@ class CausalGameAdapter(PooledDatasetAdapter):
             )
         return {"X-Admin-Token": str(token)}
 
+    def _token_from_env_file(self) -> str:
+        """The LAST ``ADMIN_TOKEN`` in ``<repo>/.env``, which is the live one.
+
+        ``api/security.py`` *appends* a freshly minted token to that file every
+        time the server starts without one in its environment, so the file
+        accumulates them and the newest wins -- the same way a shell sourcing it
+        would resolve the variable. Reading the first line instead sent a stale
+        token and every episode died on a 403 from
+        ``/api/admin/experiment/switch``.
+        """
+        env_file = self._repo / ".env"
+        if not env_file.is_file():
+            return ""
+        found = ""
+        for line in C.read_text(env_file).splitlines():
+            if line.strip().startswith("ADMIN_TOKEN="):
+                found = line.split("=", 1)[1].strip()
+        return found
+
     def _get(self, path: str) -> Any:
         return C.http_json("GET", f"{self._base_url}{path}", timeout=120)
 
     def _post(self, path: str, payload: dict[str, Any] | None = None) -> Any:
-        headers = self._admin_headers() if path.startswith("/api/admin/") else None
-        return C.http_json(
-            "POST", f"{self._base_url}{path}", json_body=payload, headers=headers, timeout=300
-        )
+        admin = path.startswith("/api/admin/")
+        headers = self._admin_headers() if admin else None
+        try:
+            return C.http_json(
+                "POST", f"{self._base_url}{path}", json_body=payload, headers=headers, timeout=300
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A backend restarted mid-run mints a new token and appends it, so
+            # the one cached at prepare() time is now stale. Re-read and retry
+            # once rather than failing every remaining episode.
+            if not admin or "403" not in str(exc):
+                raise
+            self._cached_admin_token = ""
+            fresh = self._token_from_env_file()
+            if not fresh:
+                raise
+            self.log.warning(
+                "CausalGame refused the admin token (403); re-read %s and retrying",
+                self._repo / ".env",
+            )
+            return C.http_json(
+                "POST",
+                f"{self._base_url}{path}",
+                json_body=payload,
+                headers={"X-Admin-Token": fresh},
+                timeout=300,
+            )
 
     def _switch(self, scenario: str) -> dict[str, Any]:
         """Point the backend at one scenario and reset it.

@@ -738,3 +738,32 @@ def test_causalgame_reads_the_apis_percent_strings():
     assert _percent(0.75) == 0.75      # already a fraction
     assert _percent(None) == 0.0
     assert _percent("nonsense") == 0.0
+
+
+def test_causalgame_reads_the_newest_admin_token(tmp_path):
+    """`.env` accumulates tokens; the live one is the last, not the first.
+
+    api/security.py appends a freshly minted ADMIN_TOKEN every time the server
+    starts without one in its environment. Reading the first line sent a stale
+    token and every episode died on a 403 from /api/admin/experiment/switch.
+    """
+    from abductionbench.adapters.causalgame import CausalGameAdapter
+
+    env = tmp_path / ".env"
+    env.write_text(
+        "MODEL_NAME=x\n"
+        "ADMIN_TOKEN=stale-from-the-first-boot\n"
+        "OTHER=1\n"
+        "ADMIN_TOKEN=live-from-the-latest-boot\n",
+        encoding="utf-8",
+    )
+    adapter = CausalGameAdapter.__new__(CausalGameAdapter)
+    adapter._repo = tmp_path
+    assert adapter._token_from_env_file() == "live-from-the-latest-boot"
+
+    # No ADMIN_TOKEN at all, and no file at all, are both "" rather than a crash.
+    (tmp_path / "empty").mkdir()
+    adapter._repo = tmp_path / "empty"
+    assert adapter._token_from_env_file() == ""
+    (tmp_path / "empty" / ".env").write_text("NOTHING=1\n", encoding="utf-8")
+    assert adapter._token_from_env_file() == ""
