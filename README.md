@@ -839,7 +839,10 @@ published API across all 14 released scenarios, scoring `victory_rate` from the
 simulator's own verdict on a 1,000-drone fleet.
 
 **NIKA** is an adapter too, and what stops it here is a named host
-prerequisite rather than the benchmark. Its cases and their root-cause ground
+prerequisite rather than the benchmark — one you can supply from your own
+laptop: see [docs/nika-remote-lab.md](docs/nika-remote-lab.md), which uses the
+release's own remote lab-host mode plus an SSH reverse tunnel, so the emulator
+runs on a Windows/WSL2 Docker Desktop machine while everything else stays here. Its cases and their root-cause ground
 truth ship with the repository, and it is scored by the release's own rule-based
 `rca_f1` (its `RELEASE.yaml` sets `judge_allowed: false`). The observations are
 live, though, and NIKA emulates with Kathará, which needs a container runtime
