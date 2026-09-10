@@ -1,0 +1,11 @@
+dataset:
+  id: causelogics
+  impl: abductionbench.adapters.causelogics:CauseLogicsAdapter
+  options:
+    # null -> all four difficulty levels (same task, increasing rule depth).
+    levels: null
+  notes: >-
+    Abductive cause validation: given premises, rules and an observed
+    phenomenon, decide whether a proposed cause would produce it. Binary
+    decision against the release's own Label, so chance is 0.5 --
+    said_yes_rate is reported beside accuracy to expose a constant answer.

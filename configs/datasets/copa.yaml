@@ -1,0 +1,9 @@
+dataset:
+  id: copa
+  impl: abductionbench.adapters.copa:COPAAdapter
+  options: {}
+  notes: >-
+    Original COPA (test.csv), CAUSE questions only -- the effect half asks what
+    followed, which is inference in the predictive direction. Two alternatives,
+    one correct, scored by accuracy against the release's own label; chance is
+    0.5. The balanced set with mirrored items is the separate b_copa dataset.
