@@ -368,6 +368,21 @@ class CausaLabAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "max_tokens scales with node count (512 + 128 per node).",
             ],
             caveats=[
+                "DOES NOT REPRODUCE THE AUTHORS' INTERACTIVE SETUP, and the gap is "
+                "structural rather than a wording choice. CausaLab's own protocol runs "
+                "inside DiscoveryWorld, a game world its repository vendors: the agent "
+                "issues TALK actions against object UUIDs, works a Property Manipulator "
+                "through dialog menus, and finally sets a Crystal Reactor frequency "
+                "(agents/recoma/prompts/reactor_task_causal_*.txt). This adapter instead "
+                "drives the release's causal_graph_configs as a linear structural causal "
+                "model with intervene/observe/answer actions. The authors' prompt cannot "
+                "be dropped in, because it addresses objects this environment does not "
+                "have. The vendored DiscoveryWorld DOES import headlessly here (with "
+                "pygame, pathfinding and termcolor installed and SDL_VIDEODRIVER=dummy), "
+                "so running the real protocol is achievable -- it is a rewrite of this "
+                "adapter around the game loop, not a missing dependency. Until then, "
+                "treat these numbers as measuring causal discovery on CausaLab's graphs, "
+                "NOT as CausaLab's published task.",
                 "Only the graph variants that ship bootstrap observations are usable; the "
                 "remaining released configurations are intervention-only and are reported as "
                 "excluded in the statistics.",

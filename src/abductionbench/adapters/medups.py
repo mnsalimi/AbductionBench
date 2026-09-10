@@ -234,6 +234,10 @@ class MedUPSAdapter(PooledDatasetAdapter):
                 "case; no distractors are invented.",
             ],
             caveats=[
+                "NO AGENT PROMPT EXISTS TO ADOPT. MedUPS is published as a Hugging Face "
+                "dataset with no agent harness or prompt of its own, so the wording used "
+                "to pose the mid-stream question is written here rather than taken from "
+                "the authors.",
                 "Mid-stream questions are heterogeneous: alongside "
                 "what-is-the-diagnosis they ask for risk factors, expected findings and "
                 "next investigations. Not every item is abduction in the narrow sense, so "

@@ -169,8 +169,8 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         "Reply with a single JSON object and nothing else:\n"
         '{"reasoning": "...", "action": "ask", "query": "your question to the patient"}\n'
         "or, once the picture is clear:\n"
-        '{"reasoning": "...", "action": "diagnosis", "query": "the single most likely '
-        'diagnosis"}\n\n'
+        '{"reasoning": "...", "action": "diagnosis", "query": "<the number of your '
+        'chosen diagnosis>"}\n\n'
         "Ask about what would discriminate between the diagnoses you are considering, not "
         "about what you already know. Commit as soon as the evidence supports one diagnosis."
     )
@@ -193,10 +193,24 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         initial = str(meta.get("initial") or "")
         question, _, answer = initial.partition(" -> ")
         complaint = f'"{question}" - {answer}' if answer else (question or "unspecified")
+        # The candidates are the patient's OWN differential, which is the task
+        # DDXPlus poses. They have to be shown: the scorer matches the label
+        # chosen, and until this was fixed the prompt asked for a disease name
+        # while the scorer looked for a label -- so every single episode ended
+        # in a parse failure however good the diagnosis was.
+        options = sample.fields.get("options") or []
+        labels = sample.fields.get("option_labels") or []
+        listing = "\n".join(
+            f"{label}. {option}" for label, option in zip(labels, options, strict=False)
+        )
         opening = [
             f"Patient: {meta.get('age')}-year-old, sex {meta.get('sex')}.",
             f"Presenting complaint, as the patient first reported it: {complaint}",
-            "Take a history, then give your diagnosis.",
+            "",
+            "Candidate diagnoses:",
+            listing,
+            "",
+            "Take a history, then give the number of your diagnosis.",
         ]
         # The patient's answers: every evidence the record holds, keyed by the
         # question the release asks for it.
@@ -416,6 +430,13 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "never invented.",
             ],
             caveats=[
+                "NO AGENT PROMPT EXISTS TO ADOPT. DDXPlus is a dataset, not an agent "
+                "harness: it ships patients, conditions and an evidence bank, and its "
+                "published baselines are supervised models rather than a prompted LLM. "
+                "What the release does publish is used -- the interview questions are its "
+                "own `question_en` strings and the answers are what the patient record "
+                "says -- but the system prompt that frames the interview is necessarily "
+                "written here, and is therefore NOT the authors'.",
                 "Patients are synthesized from a medical knowledge base, so findings are "
                 "internally consistent in a way real cases are not.",
                 "Answers are a fixed questionnaire, so a diagnosis is often strongly determined; "

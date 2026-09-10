@@ -42,7 +42,7 @@ from ..core.types import (
     SampleSpec,
 )
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score
+from ._base import text_match_score, PooledDatasetAdapter, selection_score
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 
 REPO_URL = "https://github.com/MaiWert/MedQDx"
@@ -62,8 +62,9 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     )
     data_delivery_mode = "interactive"
     objective_metrics = True
-    selection_cardinality = "single"
-    primary_metric = "accuracy"
+    # No candidate list is shown: the release asks for an open diagnosis.
+    selection_cardinality = None
+    primary_metric = "diagnosis_match"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -121,16 +122,80 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     max_turns = 12
     category_limits = {"ask": 8}
 
-    QUESTIONING_PROMPT = (
-        "You are a physician assessing a patient from an incomplete presentation. You may ask "
-        "the patient about any symptom, one question per turn, and the patient answers only "
-        "what you ask. When you can name the condition, commit to it.\n\n"
-        "Reply with a single JSON object and nothing else:\n"
-        '{"reasoning": "...", "action": "ask", "query": "the symptom you are asking about"}\n'
-        'or {"reasoning": "...", "action": "diagnosis", "query": "<label>"}\n\n'
-        "Ask about symptoms that would separate the conditions you are considering. Every "
-        "question costs a turn, so ask the discriminating one."
+    #: MedQDx's own prompts, verbatim from the release's benchmark-creation
+    #: notebook (``Benchmark Creation/MedQDx_Benchmark_Creation.ipynb``). The
+    #: benchmark is a diagnostic interview and these three strings are the
+    #: protocol: one question a turn, then a single diagnosis. They are quoted
+    #: rather than restated because this is an interactive benchmark -- the
+    #: wording is part of what is measured.
+    AUTHORS_SYSTEM = "You are a medical doctor."
+
+    AUTHORS_FIRST_QUESTION = (
+        "You are a medical doctor conducting a diagnostic interview with a patient.\n"
+        "You have received partial information about the case.\n"
+        "Your goal is to ask exactly **ONE** relevant, case-specific question that will "
+        "enable a more precise diagnosis.\n\n"
+        "Rules:\n"
+        "- Output exactly one question as a single, complete sentence.\n"
+        "- The question must be a single line, ending in \u2018?\u2019\n"
+        "- The question must be specific to the case.\n"
+        "- Do not include any explanations, reasoning, or additional text.\n"
+        "- Do not provide a diagnosis or suggest treatments in the question.\n"
+        "- Base the question solely on the provided partial case information.\n\n"
+        "Partial case Information:\n{case_text}\n\n"
+        "### User: What is the first best diagnostic question you want to ask the patient "
+        "(one question)?\n### Assistant:"
     )
+
+    AUTHORS_NEXT_QUESTION = (
+        "You are a medical doctor conducting a diagnostic interview with a patient.\n"
+        "You have received partial information about the case and the past conversation "
+        "with the patient.\n"
+        "Your goal is to ask exactly **ONE** new, relevant, case-specific question that "
+        "will enable a more precise diagnosis.\n"
+        "Ensure that this new question is **word-for-word different** from all previous "
+        "questions.\n\n"
+        "Rules:\n"
+        "- Output **ONLY ONE** question as a single, complete sentence ending with a "
+        "question mark.\n"
+        "- Do NOT include any explanations, reasoning, or additional text\u2014only the "
+        "question itself.\n"
+        "- The question must be a single line, ending in \u2018?\u2019\n"
+        "- Do NOT provide a diagnosis or suggest treatments.\n"
+        "- Base the question on the partial case information and past conversation with "
+        "the patient.\n"
+        "- ask new question to obtain additional information for better diasnosis.\n"
+        "- If the patient responded \"I'm not sure,\" ask a broader or differently phrased "
+        "question to elicit new information.\n\n"
+        "Partial case Information::\n{case_text}\n\n"
+        "Past Conversation with the patient:\n{history}\n\n"
+        "{prev_section}\n\n"
+        "### User:Next, output one NEW question you would ask the patient:\n### Assistant:"
+    )
+
+    AUTHORS_DIAGNOSIS = (
+        "***You are a medical doctor***. Your task is to provide a single most likely "
+        "diagnosis based on the partial case information and the past conversation with "
+        "the patient.\n\n"
+        "Rules:\n"
+        "- Analyze the case details and patient responses.\n"
+        "- Use clinical reasoning to determine the most probable diagnosis.\n"
+        "- Output ONLY the name of the disease or condition using correct medical term "
+        "(e.g., Pneumonia, Hypoglycemia).\n"
+        "- Do not include any notes, explanations, disclaimers, or additional text.\n"
+        "- Do not output symbols like ### or other placeholders.\n"
+        "- Do not repeat on the case symptoms\n"
+        "- Do not repeat on the patient answers\n\n"
+        "Case Information:\n{case_text}\n\n"
+        "Conversation History:\n{history}\n\n"
+        "### User: The patient diagnosis is:\n### Assistant:"
+    )
+
+    def _history_text(self, state: dict[str, Any]) -> str:
+        turns = state.get("history") or []
+        if not turns:
+            return "(none yet)"
+        return "\n".join(f"Q: {q}\nA: {a}" for q, a in turns)
 
     def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
         store = EvidenceStore()
@@ -141,41 +206,49 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         store.categories["ask"] = {
             symptom.replace("_", " "): "yes, that is present" for symptom in present
         }
-        options = sample.fields.get("options") or []
-        labels = sample.fields.get("option_labels") or []
-        listing = "\n".join(f"{label}) {option}" for label, option in zip(labels, options,
-                                                                          strict=False))
-        opening = (
-            f"{sample.fields.get('observation', '')}\n\n"
-            f"Possible conditions:\n{listing}\n\n"
-            "Ask about symptoms, then give the label of your diagnosis."
-        )
+        case_text = sample.fields.get("observation", "")
+        state = {"evidence": store, "counts": {}, "history": [], "case_text": case_text}
         return (
             [
-                ChatMessage(role="system", content=self.QUESTIONING_PROMPT),
-                ChatMessage(role="user", content=opening),
+                ChatMessage(role="system", content=self.AUTHORS_SYSTEM),
+                ChatMessage(
+                    role="user",
+                    content=self.AUTHORS_FIRST_QUESTION.format(case_text=case_text),
+                ),
             ],
-            {"evidence": store, "counts": {}},
+            state,
         )
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
-        action = parse_action(assistant_text, actions=self.ACTIONS)
-        if action.action == "diagnosis":
+        # MedQDx's protocol has no action vocabulary: the model is asked for a
+        # question in plain language, and the patient answers it. The turn ends
+        # when the question budget is spent, and the release then asks for the
+        # diagnosis with its own prompt.
+        question = (assistant_text or "").strip().split("\n")[-1].strip()
+        if state.get("phase") == "diagnose":
             return None
-        if not action.action:
-            state["parse_errors"] = state.get("parse_errors", 0) + 1
-            if state["parse_errors"] > 2:
-                return None
-            return 'Reply with one JSON object: {"action": "ask"|"diagnosis", "query": "..."}'
+
         self.bump(state, "ask")
-        if self.over_limit(state, "ask"):
-            return "No more questions. Give the label of your diagnosis now."
         store: EvidenceStore = state["evidence"]
-        found = store.reveal("ask", action.query_text, limit=3)
-        answer = found if found else "No, I do not have that."
-        return answer + self.limit_note(state, "ask")
+        found = store.reveal("ask", question, limit=3)
+        # The release's patient answers from the case, and says so plainly when
+        # the symptom is not recorded -- "I'm not sure" is the wording its
+        # next-question prompt is written to handle.
+        answer = found if found else "I'm not sure."
+        state["history"].append((question, answer))
+
+        if self.over_limit(state, "ask"):
+            state["phase"] = "diagnose"
+            return self.AUTHORS_DIAGNOSIS.format(
+                case_text=state["case_text"], history=self._history_text(state)
+            )
+        return self.AUTHORS_NEXT_QUESTION.format(
+            case_text=state["case_text"],
+            history=self._history_text(state),
+            prev_section="",
+        )
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         row = item["row"]
@@ -216,7 +289,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "option_labels": labels,
             },
             reference={"gold_label": labels[options.index(gold)], "gold": gold},
-            task_kind="selection",
+            task_kind="generation",
             # A single diagnosis label; the budget covers differential reasoning.
             max_tokens=512,
             metadata={
@@ -241,21 +314,27 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        score = selection_score(
+        # The release asks for the disease NAME ("Output ONLY the name of the
+        # disease or condition using correct medical term"), not a label from a
+        # list -- it never shows the model a candidate list at all. Scoring a
+        # label here would score a different, easier task than MedQDx poses.
+        score = text_match_score(
             response,
-            labels=sample.fields["option_labels"],
-            gold_label=sample.reference["gold_label"],
+            gold=sample.reference["gold"],
             output_contract=output_contract,
-            metric_name="accuracy",
+            primary="diagnosis_match",
         )
         condition = sample.metadata.get("condition", "unknown")
-        score.metrics[f"accuracy_{condition}"] = score.metrics.get("accuracy", 0.0)
+        score.metrics[f"diagnosis_match_{condition}"] = score.metrics.get(
+            "diagnosis_match", 0.0
+        )
         return score
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
         # Difficulty gradient: how much does information completeness matter?
-        full, half = metrics.get("accuracy_100pct"), metrics.get("accuracy_50pct")
+        full = metrics.get("diagnosis_match_100pct")
+        half = metrics.get("diagnosis_match_50pct")
         if full is not None and half is not None:
             metrics["information_sensitivity"] = full - half
         return metrics

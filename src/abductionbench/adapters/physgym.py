@@ -22,6 +22,7 @@ reported.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Sequence
@@ -91,17 +92,46 @@ class PhysGymAdapter(InteractiveMixin, PooledDatasetAdapter):
     max_turns = 12
     category_limits = {"experiment": 10}
 
-    EXPERIMENT_PROMPT = (
-        "You are a physicist working out the law that governs a system you can experiment "
-        "on. You cannot see the law; you can only set the inputs and observe the output.\n\n"
-        "Reply with a single JSON object per turn and nothing else:\n"
-        '{"reasoning": "...", "action": "experiment", "query": {"<input>": <number>, ...}}\n'
-        "  -- sets every input and returns the measured output.\n"
-        '{"reasoning": "...", "action": "answer", "query": "<equation for the output '
-        'in terms of the inputs>"}\n\n'
-        "Vary one quantity at a time when you can: the point of an experiment is to "
-        "separate the exponents, not to collect numbers."
+    #: PhysGym's own system message, verbatim from
+    #: ``methods/baseline_researcher.py`` (BaselineResearcher.analyze_and_propose).
+    AUTHORS_SYSTEM = (
+        "You are a top-tier AI Physicist and Experimental Design Researcher. Your "
+        "mission is to analyze experimental data, propose hypotheses, and design new "
+        "experiments to discover and validate the mathematical relationships between "
+        "physical quantities."
     )
+    #: The release's per-iteration quotas (experiments/run_baseline.py,
+    #: ExperimentConfig): 20 proposals an iteration against a 100-sample budget,
+    #: and 2 chances to formally test a hypothesis.
+    AUTHORS_EXPERIMENTS_PER_ITERATION = 20
+    AUTHORS_SAMPLE_QUOTA = 100
+    AUTHORS_TEST_QUOTA = 2
+
+    def _authors_prompt_template(self) -> str:
+        """``methods/prompts/baseline_researcher.txt`` from the cloned release.
+
+        The task instruction, the input schema and the output schema are all in
+        that file, and it is what BaselineResearcher loads. It is read rather
+        than restated: this is an interactive benchmark, so the protocol it
+        defines -- ``next_experiments`` / ``test_hypothesis_flag`` /
+        ``current_hypothesis_formula`` -- is part of what is being measured.
+        """
+        cached = getattr(self, "_prompt_cache", None)
+        if cached is not None:
+            return cached
+        root = self.context.data_dir / "repo"
+        for candidate in (
+            root / "methods" / "prompts" / "baseline_researcher.txt",
+            root / "prompts" / "baseline_researcher.txt",
+        ):
+            if candidate.is_file():
+                self._prompt_cache = C.read_text(candidate).strip()
+                return self._prompt_cache
+        raise SkippedDataset(
+            f"PhysGym's own agent prompt (methods/prompts/baseline_researcher.txt) is not "
+            f"in the clone at {root}. It defines the JSON protocol this benchmark scores, "
+            f"so it cannot be substituted with a prompt written here."
+        )
 
     def _environment(self, sample: SampleSpec):
         """Compile the sample's own ``env_function`` from the release's code.
@@ -123,57 +153,109 @@ class PhysGymAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
         return namespace.get("env_function")
 
-    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
-        inputs = sample.metadata.get("_inputs") or {}
-        output_name = sample.metadata.get("output_name", "the output")
-        lines = [f"- {name}: {description}" for name, description in inputs.items()]
-        opening = (
-            f"{sample.fields.get('observation', '')}\n\n"
-            "Inputs you can set:\n" + "\n".join(lines) + "\n\n"
-            f"Output you observe: {output_name}\n\n"
-            "Run experiments, then state the law relating the output to the inputs."
+    def _authors_turn(self, sample: SampleSpec, state: dict[str, Any]) -> str:
+        """One user turn, built the way ``analyze_and_propose`` builds it.
+
+        The release serialises a five-key JSON input, appends it to the prompt
+        template, and asks for the Output. Nothing else is added.
+        """
+        remaining = self.AUTHORS_SAMPLE_QUOTA - len(state["experiments"])
+        payload = {
+            "problem_description": sample.fields.get("observation", ""),
+            "controllable_variables": sample.metadata.get("_inputs") or {},
+            "observable_variable": {
+                sample.metadata.get("output_name", "y"):
+                    sample.metadata.get("output_description", "the observed quantity")
+            },
+            "historical_experiments": state["experiments"],
+            "quota": {
+                "experiments_quota": max(
+                    0, min(remaining, self.AUTHORS_EXPERIMENTS_PER_ITERATION)
+                ),
+                "test_quota": state["test_quota"],
+            },
+        }
+        return (
+            f"{self._authors_prompt_template()}\n\n**Input:**\n```json\n"
+            f"{json.dumps(payload, indent=2)}\n```\n\nProvide the **Output:**\n"
         )
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        state = {
+            "env": self._environment(sample),
+            "experiments": [],
+            "test_quota": self.AUTHORS_TEST_QUOTA,
+            "hypothesis": "",
+            "counts": {},
+        }
         return (
             [
-                ChatMessage(role="system", content=self.EXPERIMENT_PROMPT),
-                ChatMessage(role="user", content=opening),
+                ChatMessage(role="system", content=self.AUTHORS_SYSTEM),
+                ChatMessage(role="user", content=self._authors_turn(sample, state)),
             ],
-            {"env": self._environment(sample), "counts": {}, "experiments": []},
+            state,
         )
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
-        action = parse_action(assistant_text, actions=self.ACTIONS)
-        if action.action == "answer":
-            return None
-        env = state.get("env")
-        if env is None:
-            # No executable environment for this item: it degrades to the
-            # single-turn form rather than pretending to run experiments.
-            return None
-        if action.action != "experiment" or not isinstance(action.query, dict):
+        """Run the proposed batch, then ask again -- the release's iteration.
+
+        PhysGym does not ask for one experiment per turn. It asks for a *batch*
+        of ``next_experiments`` together with the running
+        ``current_hypothesis_formula`` and a ``test_hypothesis_flag``, runs the
+        batch, and iterates until the sample quota or the test quota is spent.
+        """
+        reply = _parse_authors_output(assistant_text)
+        if reply is None:
             state["parse_errors"] = state.get("parse_errors", 0) + 1
             if state["parse_errors"] > 2:
                 return None
             return (
-                'Reply with one JSON object: {"action": "experiment", "query": '
-                '{"<input>": <number>}} or {"action": "answer", "query": "<equation>"}'
+                "Your previous response could not be parsed. Provide the **Output:** as a "
+                "single JSON object with the keys next_experiments, test_hypothesis_flag "
+                "and current_hypothesis_formula."
             )
 
-        self.bump(state, "experiment")
-        if self.over_limit(state, "experiment"):
-            return "Experiment budget exhausted. State the law now."
-        try:
-            values = {str(k): float(v) for k, v in action.query.items()}
-            observed = env(**values)
-        except TypeError as exc:
-            return f"Could not run that experiment: {exc}. Set every input exactly once."
-        except Exception as exc:  # noqa: BLE001 - a bad setting is an observation too
-            return f"The experiment failed at those settings: {type(exc).__name__}: {exc}"
-        state["experiments"].append({"inputs": values, "output": observed})
-        settings = ", ".join(f"{name}={value:g}" for name, value in values.items())
-        return f"Measured with {settings}: {sample.metadata.get('output_name', 'output')} = {observed!r}"
+        hypothesis = reply.get("current_hypothesis_formula")
+        if isinstance(hypothesis, str) and hypothesis.strip():
+            state["hypothesis"] = hypothesis.strip()
+
+        if reply.get("test_hypothesis_flag"):
+            # The release spends a test on the stated formula; when the test
+            # quota runs out the episode is over and that formula is the answer.
+            state["test_quota"] -= 1
+            if state["test_quota"] <= 0:
+                return None
+
+        env = state.get("env")
+        if env is None:
+            # Nothing executable for this item, so no observation can be
+            # returned: the stated hypothesis is what gets scored.
+            return None
+
+        proposed = reply.get("next_experiments")
+        if not isinstance(proposed, list) or not proposed:
+            if state["hypothesis"]:
+                return None
+            return "No experiments were proposed. Provide next_experiments as a list of settings."
+
+        remaining = self.AUTHORS_SAMPLE_QUOTA - len(state["experiments"])
+        for setting in proposed[: max(0, min(remaining, self.AUTHORS_EXPERIMENTS_PER_ITERATION))]:
+            if not isinstance(setting, dict):
+                continue
+            try:
+                values = {str(k): float(v) for k, v in setting.items()}
+                observed = env(**values)
+            except Exception as exc:  # noqa: BLE001 - a rejected setting is a result too
+                state["experiments"].append({**setting, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            output_name = sample.metadata.get("output_name", "y")
+            state["experiments"].append({**values, output_name: observed})
+
+        if len(state["experiments"]) >= self.AUTHORS_SAMPLE_QUOTA:
+            return None
+        return self._authors_turn(sample, state)
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         content = C.normalize_whitespace(item.get("content"))
@@ -233,13 +315,21 @@ class PhysGymAdapter(InteractiveMixin, PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        answer = extract_answer_span(response.text, output_contract)
+        # The answer is the release's own field: whatever the episode last put
+        # in `current_hypothesis_formula`. Reading free text instead would score
+        # a different thing than PhysGym scores.
+        state = sample.metadata.get("_episode_state") or {}
+        hypothesis = str(state.get("hypothesis") or "").strip()
+        answer = hypothesis or extract_answer_span(response.text, output_contract)
         if not answer:
             return unparsed_score(
-                ["symbolic_match", "expression_token_f1"], raw=response.text[:300]
+                ["symbolic_match", "expression_token_f1"], raw=(response.text or "")[:300]
             )
         reference = sample.reference["equation"] or sample.reference["latex"]
-        candidate = _extract_expression(answer, sample.reference["output"])
+        candidate = (
+            hypothesis if hypothesis
+            else _extract_expression(answer, sample.reference["output"])
+        )
         metrics: dict[str, float] = {
             "expression_token_f1": token_f1(candidate or answer, reference),
         }
@@ -328,6 +418,29 @@ class PhysGymAdapter(InteractiveMixin, PooledDatasetAdapter):
             ],
             statistics=self.base_statistics(),
         )
+
+
+def _parse_authors_output(text: str | None) -> dict[str, Any] | None:
+    """The JSON object PhysGym asks for, from whatever wrapping it arrives in.
+
+    The release asks for the Output as a fenced JSON block; models supply it
+    fenced, bare, or after prose, so the last balanced object carrying any of
+    the three expected keys wins.
+    """
+    if not text:
+        return None
+    for match in reversed(list(re.finditer(r"\{.*\}", text, flags=re.S))):
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and (
+            "next_experiments" in parsed
+            or "current_hypothesis_formula" in parsed
+            or "test_hypothesis_flag" in parsed
+        ):
+            return parsed
+    return None
 
 
 def _extract_expression(answer: str, output_name: str) -> str | None:
