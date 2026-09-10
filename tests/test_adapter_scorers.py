@@ -411,3 +411,37 @@ def test_math_normalization_distinguishes_unreadable_from_wrong():
     # and is judged, rather than reported as unreadable.
     assert equal_expressions("t'**3", "t**3", ["t"]) is False
     assert equal_expressions("t'**3", "t_prime**3", ["t", "t_prime"]) is True
+
+
+def test_researchbench_selection_is_scored_by_its_answer_key():
+    """Only one of ResearchBench's two tasks needs a judge.
+
+    Its ranking items list the release's own gold_hypothesis alongside the
+    negatives the release wrote against it, so `gold_label` names the right
+    option and a label match settles it. A conversion pass once replaced this
+    adapter's whole score() with the judged-only path, which left the selection
+    task reporting a metric it never produced.
+    """
+    from abductionbench.adapters.researchbench import ResearchBenchAdapter
+
+    scorer = object.__new__(ResearchBenchAdapter)
+    selection = SampleSpec(
+        sample_id="r1",
+        fields={"option_labels": ["1", "2", "3"]},
+        reference={"gold_label": "2", "gold": "the paper's hypothesis"},
+        task_kind="selection",
+    )
+    right = ResearchBenchAdapter.score(scorer, selection, _response("Answer: 2"))
+    assert right.metrics["accuracy"] == 1.0
+    wrong = ResearchBenchAdapter.score(scorer, selection, _response("Answer: 3"))
+    assert wrong.metrics["accuracy"] == 0.0
+    assert "hypothesis_judged" not in right.metrics
+
+    # Generation has no answer key, so it stays with the judge.
+    generation = SampleSpec(
+        sample_id="r2", fields={}, reference={"gold": "the paper's hypothesis"},
+        task_kind="generation",
+    )
+    judged = ResearchBenchAdapter.score(scorer, generation, _response("a hypothesis"))
+    assert "hypothesis_judged" in judged.metrics
+    assert "accuracy" not in judged.metrics

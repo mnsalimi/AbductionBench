@@ -109,6 +109,12 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     # proxy rather than a decision procedure, so the reasoning prompt modes are
     # not offered; the selection task is exact and could support them, but the
     # flag is per adapter and the stricter reading is the safe one.
+    #: False at class level because the *generation* task has no checkable
+    #: answer, which is what gates the judge requirement for the dataset. The
+    #: SELECTION task does have one, so the running instance corrects this in
+    #: prepare(): it is the instance value the engine reads when deciding
+    #: whether repeats are reduced by a vote (self-consistency) or by the judge
+    #: (Best-of-N), and a vote is exactly right over a label.
     objective_metrics = False
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection")
@@ -169,6 +175,11 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
             if key is not None:
                 index[str(key)] = row
         return index
+
+    def prepare(self) -> None:
+        # Selection is scored against an answer key; generation is judged.
+        self.objective_metrics = self.subtask == "selection"
+        super().prepare()
 
     def load_items(self) -> list[dict[str, Any]]:
         root = self._root()
@@ -324,12 +335,25 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        """Parse only: the judge is what scores this dataset.
+        """Two tasks, two kinds of answer -- and only one of them needs a judge.
 
-        No overlap metric is emitted. The reference here is one
-        acceptable explanation among many, so similarity to it measures
-        resemblance to one particular wording rather than correctness.
+        SELECTION has a hard gold: the option list is the release's own
+        gold_hypothesis plus its own written negatives, so `gold_label` names
+        the right one and a label match settles it. Scoring it with a judge
+        would be both wasteful and less reliable than the answer key.
+
+        GENERATION has no checkable answer -- the reference is one acceptable
+        phrasing of the paper's hypothesis among many -- so the judge decides
+        and no overlap metric is emitted.
         """
+        if sample.task_kind == "selection":
+            return selection_score(
+                response,
+                labels=sample.fields["option_labels"],
+                gold_label=sample.reference["gold_label"],
+                output_contract=output_contract,
+                metric_name="accuracy",
+            )
         return judged_only_score(
             response,
             metric="hypothesis_judged",
