@@ -1,28 +1,48 @@
-"""CausaLab: causal-structure discovery from observational data.
+"""CausaLab: discover a causal structure inside the release's own game world.
 
-Source: https://github.com/DylanZSZ/CausaLab-Benchmark
+Source: https://github.com/allenai/causalab (vendored DiscoveryWorld included)
 
-Each released graph (``release/causalab_dataset/data/*.jsonl``) describes a set
-of variables with human-readable names, the true ``edges``, and
-``bootstrap_past_data``: observations of every variable across many runs.  The
-benchmark's own protocol lets an agent spend an intervention ``budget``; this
-adapter uses the **static bootstrap observations**, which is the single-turn
-form of the same abduction -- infer the causal structure that explains the
-observed co-variation.
+**The task, as its authors pose it.**  The agent stands in the Causal Discovery
+Lab on Planet X.  Quantum crystals have properties -- temperature, moisture,
+and others depending on the graph -- wired to each other by a hidden linear
+DAG, and a resonance frequency that no one can set directly.  The agent works a
+*Property Manipulator* through dialog menus to adjust one property at a time,
+watches what else moves, infers the structure, and finally sets the *Crystal
+Reactor* to the frequency the target crystal must have.  A limited number of
+adjustments is the experiment budget, and using the reactor ends the
+experimentation phase for good.
 
-The graph file names encode the variant (node count, hidden nodes, frequent
-parents, quadratic hardness), and accuracy is reported per variant.
+**This adapter drives that world, not a substitute for it.**  An earlier
+version simulated the release's ``causal_graph_configs`` as a linear structural
+causal model with ``intervene``/``observe``/``answer`` actions.  That was a
+different task under a prompt written here, and its numbers were not CausaLab's.
+What runs now is ``DiscoveryWorldAPI`` itself, vendored in the repository:
+
+* the prompt is the environment's own ``taskDescription``, which the release
+  renders from ``agents/recoma/prompts/reactor_task_causal_*.txt`` -- it is
+  never written here, only read;
+* the action space is DiscoveryWorld's (``TELEPORT_TO_OBJECT``, ``TALK``,
+  ``READ``, ``ACTIVATE``, dialog selections and value entry), passed through
+  verbatim as the JSON the API already accepts;
+* the score is the release's own scorecard, ``score / maxScore``, plus whether
+  it recorded a successful completion.
+
+**Headless.**  DiscoveryWorld draws with pygame; ``SDL_VIDEODRIVER=dummy`` (set
+below before the import) runs it with no display, which is how it runs here.
+``pygame``, ``pathfinding`` and ``termcolor`` are its runtime dependencies.
 """
 
 from __future__ import annotations
 
-import random
+import json
+import os
 import re
-from collections.abc import Sequence
+import sys
+from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, set_prf
+from ..core.metrics import aggregate_mean_metrics
 from ..core.types import (
     AdapterDocumentation,
     ChatMessage,
@@ -31,264 +51,252 @@ from ..core.types import (
     SampleSpec,
 )
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
-from ._interactive import InteractiveMixin, parse_action
+from ._base import PooledDatasetAdapter
 
-REPO_URL = "https://github.com/DylanZSZ/CausaLab-Benchmark"
-_EDGE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_ ]*?)\s*(?:->|→|causes|to)\s*([A-Za-z_][A-Za-z0-9_ ]*)")
+#: The release's own scenario entry, from discoveryworld/ScenarioMaker.py.
+SCENARIO_NAME = "Reactor Lab Causal"
+DIFFICULTY = "Causal"
 
-
-def _simulate(
-    graph: dict[str, Any], interventions: dict[str, float], rng: random.Random
-) -> dict[str, float]:
-    """Run the released structural model once, under the given interventions.
-
-    Each node carries a ``computation`` string over the graph's own ``params``
-    and its parents; a node that is intervened on takes the set value instead,
-    which is exactly what makes an intervention different from an observation.
-    Nodes are resolved in dependency order, and a cycle (or a formula naming
-    something unknown) leaves the node at its base value rather than failing the
-    episode.
-    """
-    nodes = graph.get("nodes") or {}
-    params = dict(graph.get("params") or {})
-    values: dict[str, float] = {}
-
-    def base_of(info: dict[str, Any]) -> float:
-        spec = info.get("base_value") or {}
-        if isinstance(spec, dict) and spec.get("type") == "uniform":
-            return rng.uniform(float(spec.get("min", 0.0)), float(spec.get("max", 1.0)))
-        try:
-            return float(spec)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return 0.0
-
-    pending = dict(nodes)
-    for _ in range(len(nodes) + 1):
-        if not pending:
-            break
-        for name, info in list(pending.items()):
-            info = info or {}
-            if name in interventions:
-                values[name] = interventions[name]
-                pending.pop(name)
-                continue
-            formula = info.get("computation")
-            if not formula:
-                values[name] = base_of(info)
-                pending.pop(name)
-                continue
-            scope = {**params, **values}
-            try:
-                values[name] = float(eval(formula, {"__builtins__": {}}, scope))  # noqa: S307
-            except NameError:
-                continue  # a parent is not resolved yet
-            except Exception:  # noqa: BLE001 - an unusable formula falls back
-                values[name] = base_of(info)
-            pending.pop(name, None)
-    for name, info in pending.items():
-        values.setdefault(name, base_of(info or {}))
-    return values
+#: How the model is told to act.  This is *not* a task prompt -- the task
+#: prompt is the environment's, read from its scorecard.  This only states the
+#: JSON envelope, because the harness has to receive one action per turn and
+#: DiscoveryWorld's own agent gets the same envelope from its ReAct scaffold.
+_ACTION_ENVELOPE = (
+    "Reply with exactly one JSON object and nothing else. It is passed straight "
+    "to the environment.\n"
+    'Examples: {"action": "TELEPORT_TO_OBJECT", "arg1": <uuid>}  '
+    '{"action": "TALK", "arg1": <uuid>}  '
+    '{"action": "READ", "arg1": <uuid>}  '
+    '{"action": "ACTIVATE", "arg1": <uuid>}\n'
+    'In a dialog, choose an option with {"chosen_dialog_option_int": <n>}, and in '
+    'value-entry mode give {"value": <number>}.'
+)
 
 
-class CausaLabAdapter(InteractiveMixin, PooledDatasetAdapter):
-    """Recover the causal edge set that explains observational data."""
+def _ensure_headless() -> None:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-    adapter_version = "1.0"
 
-    system_prompt = (
-        "You are an expert at abductive reasoning: inferring the explanation that, if true, "
-        "would best account for the evidence you are given. You are given observational data "
-        "over a set of variables. Recover the causal structure that would generate it: state "
-        "the edges of the causal graph, orienting each from cause to effect. Do not list an "
-        "edge that the data does not distinguish from its reverse."
-    )
+class CausaLabAdapter(PooledDatasetAdapter):
+    """One episode per causal-graph configuration, in the real environment."""
+
+    adapter_version = "2.0"
+
+    #: Empty by design: CausaLab's task prompt is the environment's own
+    #: taskDescription, which the release renders from its prompt templates.
+    system_prompt = ""
     data_delivery_mode = "interactive"
     objective_metrics = True
     selection_cardinality = None
-    primary_metric = "edge_f1"
+    hypothesis_modes = ("generation",)
+    hypothesis_mode_options = {"generation": {"subtask": "generation"}}
+    table_hypothesis_mode = "Generation"
+    primary_metric = "score_normalized"
+    higher_is_better = True
+    #: The release's agent runs a long episode; the budget is the number of
+    #: model turns, not of property adjustments (the environment enforces that
+    #: one itself).
+    max_turns = 40
+
+    # ------------------------------------------------------------------ #
+    # setup
+    # ------------------------------------------------------------------ #
+
+    @property
+    def _repo(self) -> Path:
+        configured = self.context.option("repo_dir", None)
+        return Path(str(configured)) if configured else self.context.data_dir / "repo"
+
+    def prepare(self) -> None:
+        _ensure_headless()
+        repo = self._repo
+        if not (repo / "discoveryworld").is_dir():
+            raise SkippedDataset(
+                f"CausaLab's vendored DiscoveryWorld is not in the clone at {repo}. "
+                f"SETUP: git clone https://github.com/allenai/causalab {repo}"
+            )
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        try:
+            from discoveryworld.DiscoveryWorldAPI import DiscoveryWorldAPI  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            raise SkippedDataset(
+                f"CausaLab's environment could not be imported ({type(exc).__name__}: "
+                f"{exc}). It is pygame-based and runs headless here. SETUP: "
+                f"pip install pygame pathfinding termcolor"
+            ) from exc
+        super().prepare()
+
+    # ------------------------------------------------------------------ #
+    # items: one per causal-graph configuration the release ships
+    # ------------------------------------------------------------------ #
 
     def load_items(self) -> list[dict[str, Any]]:
-        root = C.ensure_git_repo(
-            REPO_URL, self.context.data_dir / "repo", offline=self.context.offline
-        )
-        data_dir = root / "release" / "causalab_dataset" / "data"
-        if not data_dir.exists():
-            data_dir = root / "causal_graph_configs"
-        files = C.find_files(data_dir, ["*.jsonl"])
+        configs = self._repo / "causal_graph_configs"
+        if not configs.is_dir():
+            raise SkippedDataset(f"{configs} does not exist in the clone")
+        wanted = self.context.option("configs", None)
+        files = sorted(p for p in configs.glob("*.json") if p.is_file())
+        if wanted:
+            names = {str(w) for w in wanted}
+            files = [p for p in files if p.name in names or p.stem in names]
         if not files:
-            raise SkippedDataset("no CausaLab graph files found")
-        variants = self.context.option("variants")
-        items: list[dict[str, Any]] = []
-        self._per_variant: dict[str, int] = {}
-        for path in files:
-            variant = path.stem
-            if variants and variant not in variants:
-                continue
-            rows = C.read_jsonl(path)
-            # Only graphs that ship bootstrap observations can be evaluated
-            # single-turn; the rest would leave nothing to abduce from.
-            usable = [row for row in rows if row.get("bootstrap_past_data")]
-            for row in usable:
-                items.append({**row, "variant": variant})
-            self._per_variant[variant] = len(usable)
-            self._graphs_seen = getattr(self, "_graphs_seen", 0) + len(rows)
-        if not items:
-            raise SkippedDataset("CausaLab graph files contained no graphs")
+            raise SkippedDataset(f"no causal graph configs found under {configs}")
+        seeds = [int(s) for s in (self.context.option("seeds", None) or [1])]
+        items = [
+            {"config": str(path), "name": path.stem, "seed": seed}
+            for path in files
+            for seed in seeds
+        ]
         self.split_used = (
-            f"released graph configurations that include bootstrap observations: {len(items)} of "
-            f"{getattr(self, '_graphs_seen', len(items))} graphs across "
-            f"{len([v for v in self._per_variant.values() if v])} variants; the release ships no "
-            "train/test split"
+            f"{len(files)} causal-graph configuration(s) x {len(seeds)} seed(s) "
+            f"in {SCENARIO_NAME}"
         )
         return items
 
+    def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
+        return SampleSpec(
+            sample_id=C.stable_id("causalab", item["name"], item["seed"]),
+            fields={"observation": f"Causal graph configuration: {item['name']}"},
+            reference={"config": item["name"]},
+            task_kind="generation",
+            metadata={
+                "graph": item["name"],
+                "seed": item["seed"],
+                "_config_path": item["config"],
+            },
+        )
+
     # ------------------------------------------------------------------ #
-    # the intervention loop -- CausaLab ships the structural model
+    # the episode: DiscoveryWorld, driven turn by turn
     # ------------------------------------------------------------------ #
 
-    ACTIONS = ("intervene", "observe", "answer")
-    max_turns = 14
+    def _open_world(self, sample: SampleSpec):
+        """Load the scenario for one episode.
 
-    INTERVENTION_PROMPT = (
-        "You are a scientist working out the causal structure of a system. Some variables "
-        "you can set directly; the rest follow from the ones that cause them. You cannot "
-        "see the structure -- you can only intervene and observe what changes.\n\n"
-        "Reply with a single JSON object per turn and nothing else:\n"
-        '{"reasoning": "...", "action": "intervene", "query": {"<variable>": <number>, ...}}\n'
-        "  -- fixes those variables and returns every observable variable's value.\n"
-        '{"reasoning": "...", "action": "observe", "query": {}}\n'
-        "  -- samples the system without intervening.\n"
-        '{"reasoning": "...", "action": "answer", "query": ["A->B", "B->C"]}\n\n'
-        "An edge X->Y means X directly causes Y. Report only the edges your "
-        "interventions actually established: an edge you could not distinguish from its "
-        "reverse is a guess, and a guess costs you precision."
-    )
+        The causal structure is read from an environment variable by the
+        release's own ``mkReactorLabCausal``; that is how it is configured, so
+        it is how it is configured here.
+        """
+        _ensure_headless()
+        if str(self._repo) not in sys.path:
+            sys.path.insert(0, str(self._repo))
+        from discoveryworld.DiscoveryWorldAPI import DiscoveryWorldAPI
+
+        os.environ["CAUSAL_GRAPH_CONFIG"] = sample.metadata["_config_path"]
+        seed = int(sample.metadata["seed"])
+        # A distinct threadID per episode: DiscoveryWorld keys its scratch
+        # directories on it, and two episodes sharing one would overwrite each
+        # other's frames.
+        thread = 5000 + (abs(hash(sample.sample_id)) % 900) * 10 + seed
+        api = DiscoveryWorldAPI(threadID=thread)
+        if not api.loadScenario(
+            scenarioName=SCENARIO_NAME,
+            difficultyStr=DIFFICULTY,
+            randomSeed=seed,
+            numUserAgents=1,
+        ):
+            raise RuntimeError(f"loadScenario failed for {sample.metadata['graph']}")
+        return api
+
+    def _render(self, api) -> str:
+        """What the agent can see, in the environment's own terms."""
+        obs = api.getAgentObservation(agentIdx=0)
+        ui = obs.get("ui", {}) or {}
+        dialog = ui.get("dialog_box") or {}
+        lines: list[str] = []
+        if dialog.get("is_in_dialog"):
+            lines.append("You are in a dialog.")
+            if dialog.get("dialogText"):
+                lines.append(str(dialog["dialogText"]))
+            options = dialog.get("dialogOptions") or {}
+            if options:
+                lines.append(
+                    "Options: "
+                    + "; ".join(f"{k}. {v}" for k, v in options.items())
+                )
+        accessible = ui.get("accessibleEnvironmentObjects") or []
+        if accessible:
+            seen: dict[Any, str] = {}
+            for o in accessible:
+                seen.setdefault(o.get("uuid"), str(o.get("name")))
+            lines.append(
+                "Accessible objects: "
+                + ", ".join(f"{name} (uuid {uuid})" for uuid, name in seen.items())
+            )
+        nearby = ui.get("nearbyObjects") or {}
+        near_list = nearby.get("objects") if isinstance(nearby, dict) else nearby
+        if isinstance(near_list, list) and near_list:
+            names = []
+            for o in near_list[:12]:
+                if isinstance(o, dict):
+                    names.append(f"{o.get('name')} (uuid {o.get('uuid')})")
+            if names:
+                lines.append("Nearby: " + ", ".join(names))
+        inventory = ui.get("inventoryObjects") or []
+        if inventory:
+            lines.append(
+                "Inventory: "
+                + ", ".join(f"{o.get('name')} (uuid {o.get('uuid')})" for o in inventory)
+            )
+        if ui.get("lastActionMessage"):
+            lines.append(f"Last action: {ui['lastActionMessage']}")
+        return "\n".join(lines) if lines else "(nothing visible)"
 
     def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
-        graph = sample.metadata.get("_graph") or {}
-        nodes = graph.get("nodes") or {}
-        controllable = [name for name, info in nodes.items() if (info or {}).get("is_controllable")]
-        observable = [name for name, info in nodes.items() if (info or {}).get("observable", True)]
-        # The release gives each graph its own intervention budget; it is the
-        # benchmark's own measure of how hard the graph is, so it is honoured.
-        budget = int(graph.get("budget") or 8)
-        lines = [
-            f"- {name}"
-            + (f" ({(info or {}).get('display_name')})" if (info or {}).get("display_name") else "")
-            + (" [you can set this]" if (info or {}).get("is_controllable") else "")
-            for name, info in nodes.items()
-        ]
-        opening = (
-            "System variables:\n" + "\n".join(lines) + "\n\n"
-            f"You may set: {', '.join(controllable) or 'nothing'}.\n"
-            f"You can observe: {', '.join(observable)}.\n"
-            f"Intervention budget: {budget}.\n\n"
-            "Find the causal structure, then report its edges."
-        )
+        api = self._open_world(sample)
+        card = (api.getTaskScorecard() or [{}])[0]
+        # The environment's own task description: the release renders it from
+        # agents/recoma/prompts/reactor_task_causal_*.txt. Read, never written.
+        briefing = str(card.get("taskDescription") or "").strip()
+        if not briefing:
+            raise RuntimeError("the scenario produced no task description")
+        state = {"api": api, "turns": 0, "final": None}
         return (
             [
-                ChatMessage(role="system", content=self.INTERVENTION_PROMPT),
-                ChatMessage(role="user", content=opening),
+                ChatMessage(role="system", content=briefing),
+                ChatMessage(
+                    role="user",
+                    content=f"{self._render(api)}\n\n{_ACTION_ENVELOPE}",
+                ),
             ],
-            {"graph": graph, "counts": {}, "budget": budget, "used": 0,
-             "rng": random.Random(f"{sample.sample_id}::env")},
+            state,
         )
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
-        action = parse_action(assistant_text, actions=self.ACTIONS)
-        if action.action == "answer":
+        api = state.get("api")
+        if api is None:
             return None
-        if action.action not in ("intervene", "observe"):
+        action = _parse_action_json(assistant_text)
+        if action is None:
             state["parse_errors"] = state.get("parse_errors", 0) + 1
-            if state["parse_errors"] > 2:
+            if state["parse_errors"] > 3:
                 return None
             return (
-                'Reply with one JSON object: {"action": "intervene"|"observe"|"answer", '
-                '"query": ...}'
+                "That was not a single JSON object I could pass to the environment.\n"
+                + _ACTION_ENVELOPE
             )
-
-        state["used"] += 1
-        if state["used"] > state["budget"]:
-            return "Intervention budget spent. Report the causal edges now."
-        fixed = action.query if isinstance(action.query, dict) else {}
+        state["parse_errors"] = 0
+        state["turns"] += 1
         try:
-            values = _simulate(state["graph"], {k: float(v) for k, v in fixed.items()},
-                               state["rng"])
-        except Exception as exc:  # noqa: BLE001 - a bad setting is an observation too
-            return f"That intervention could not be run: {type(exc).__name__}: {exc}"
-        observed = ", ".join(
-            f"{name}={value:.3f}"
-            for name, value in values.items()
-            if (state["graph"].get("nodes", {}).get(name) or {}).get("observable", True)
-        )
-        remaining = state["budget"] - state["used"]
-        return f"Observed: {observed}\n({remaining} intervention(s) left.)"
+            result = api.performAgentAction(agentIdx=0, actionJSON=action)
+            api.tick()
+        except Exception as exc:  # noqa: BLE001 - a refused action is an observation
+            return f"The environment refused that action: {type(exc).__name__}: {exc}"
 
-    def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
-        nodes = item.get("nodes") or {}
-        edges = item.get("edges") or []
-        observations = item.get("bootstrap_past_data") or []
-        if not nodes or not edges or not observations:
+        errors = (result or {}).get("errors") or []
+        head = "; ".join(str(e) for e in errors) if errors else "OK"
+        if api.areTasksComplete():
+            state["final"] = api.getTaskScorecard()
             return None
-        limit = int(self.context.option("max_observations", 20))
-        variable_lines = []
-        for name, info in nodes.items():
-            display = (info or {}).get("display_name") or name
-            controllable = (info or {}).get("is_controllable")
-            variable_lines.append(
-                f"- {name} ({display})" + (" [controllable]" if controllable else "")
-            )
-        observation_lines = []
-        for record in observations[:limit]:
-            props = record.get("props") or {}
-            extras = {k: v for k, v in record.items() if k not in ("id", "props")}
-            values = ", ".join(f"{key}={value}" for key, value in props.items())
-            extra_text = ", ".join(f"{key}={value}" for key, value in extras.items())
-            observation_lines.append(f"- {values}" + (f", {extra_text}" if extra_text else ""))
-        gold_edges = {
-            f"{edge.get('from')}->{edge.get('to')}"
-            for edge in edges
-            if edge.get("from") and edge.get("to")
-        }
-        if not gold_edges:
-            return None
-        return SampleSpec(
-            sample_id=C.stable_id("causalab", item.get("variant"), item.get("graph_id", index)),
-            fields={
-                "context": "Variables:\n" + "\n".join(variable_lines),
-                "observation": (
-                    f"{len(observation_lines)} observations of these variables:\n"
-                    + "\n".join(observation_lines)
-                ),
-                "question": (
-                    "Which direct causal relationships between these variables best explain the "
-                    "observations?"
-                ),
-                "instructions": (
-                    "List every direct causal edge, one per line, in the form 'source -> target', "
-                    "using the exact variable names given. List only edges you can justify."
-                ),
-            },
-            reference={"edges": sorted(gold_edges), "n_nodes": len(nodes)},
-            task_kind="generation",
-            # Reasoning over a table of observations, then a short edge list.
-            max_tokens=self.clamp_max_tokens(512 + 128 * len(nodes), low=640, high=1536),
-            metadata={
-                "variant": item.get("variant"),
-                "graph_id": item.get("graph_id"),
-                "n_nodes": len(nodes),
-                "n_edges": len(gold_edges),
-                # The structural model, for the intervention loop.
-                "_graph": {
-                    "nodes": nodes,
-                    "params": item.get("params") or {},
-                    "budget": item.get("budget"),
-                },
-            },
-        )
+        return f"{head}\n\n{self._render(api)}"
+
+    # ------------------------------------------------------------------ #
+    # scoring: the release's own scorecard
+    # ------------------------------------------------------------------ #
 
     def score(
         self,
@@ -297,105 +305,122 @@ class CausaLabAdapter(InteractiveMixin, PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        text = extract_answer_span(response.text, output_contract) or response.text
-        if not text:
-            return unparsed_score(
-                ["edge_f1", "edge_precision", "edge_recall", "exact_graph_match"],
-                raw=response.text[:300],
+        state = sample.metadata.get("_episode_state") or {}
+        api = state.get("api")
+        card_list = state.get("final")
+        if card_list is None and api is not None:
+            try:
+                card_list = api.getTaskScorecard()
+            except Exception:  # noqa: BLE001
+                card_list = None
+        card = (card_list or [{}])[0]
+        raw = card.get("score")
+        maximum = card.get("maxScore") or 0
+        if raw is None or not maximum:
+            return SampleScore(
+                metrics={
+                    "score_normalized": 0.0,
+                    "task_completed": 0.0,
+                    "turns_taken": float(state.get("turns", 0)),
+                },
+                prediction=None,
+                parse_ok=False,
+                details={"reason": "the episode produced no scorecard"},
             )
-        predicted = {
-            f"{source.strip()}->{target.strip()}"
-            for source, target in _EDGE_RE.findall(text)
-        }
-        if not predicted:
-            return unparsed_score(
-                ["edge_f1", "edge_precision", "edge_recall", "exact_graph_match"],
-                raw=response.text[:300],
-            )
-        gold = set(sample.reference["edges"])
-        prf = set_prf(predicted, gold)
-        variant = sample.metadata.get("variant", "unknown")
+        normalized = card.get("scoreNormalized")
+        if not isinstance(normalized, (int, float)):
+            normalized = float(raw) / float(maximum)
         return SampleScore(
             metrics={
-                "edge_f1": prf["f1"],
-                "edge_precision": prf["precision"],
-                "edge_recall": prf["recall"],
-                "exact_graph_match": float(predicted == gold),
-                f"edge_f1_{variant}": prf["f1"],
+                "score_normalized": max(0.0, min(1.0, float(normalized))),
+                "score_raw": float(raw),
+                "task_completed": 1.0 if card.get("completedSuccessfully") else 0.0,
+                "turns_taken": float(state.get("turns", 0)),
             },
-            prediction=", ".join(sorted(predicted))[:400],
-            details={"gold": ", ".join(sorted(gold))[:300]},
+            prediction=f"score {raw}/{maximum}",
+            details={"graph": sample.metadata.get("graph")},
         )
 
-    def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
+    def aggregate(self, scores) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
+
+    # ------------------------------------------------------------------ #
+    # documentation
+    # ------------------------------------------------------------------ #
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
             dataset_id=self.dataset_id,
             name="CausaLab",
             domain="Causal Science: Causal Discovery",
-            source_url=REPO_URL,
-            processing_mode="Generation",
-            split_used=self.split_used,
+            source_url="https://github.com/allenai/causalab",
+            processing_mode="Generation (interactive)",
+            split_used=getattr(self, "split_used", "causal graph configurations"),
             abductive_subset=(
-                "Recovering the causal graph that explains observed co-variation. CausaLab's "
-                "interactive intervention budget is not reproducible single-turn, so the released "
-                "bootstrap observations are the evidence and the true edge set is the reference."
+                "The whole benchmark. A hidden linear DAG relates the crystals' properties, "
+                "and the agent must infer it from interventions it chooses before setting the "
+                "reactor to the frequency the structure implies."
             ),
-            sampling_procedure=self.sampling_note(),
+            sampling_procedure=(
+                "One episode per causal-graph configuration the release ships, at the seeds "
+                "configured. The configurations are the benchmark's own."
+            ),
             metrics_description={
+                "score_normalized": (
+                    "(PRIMARY, higher is better, 0-1) the release's own scorecard score over "
+                    "its maximum. DiscoveryWorld computes it; nothing here judges the episode."
+                ),
+                "score_raw": "the same scorecard's unnormalised points",
+                "task_completed": (
+                    "(higher is better, 0-1) fraction of episodes the environment recorded as "
+                    "completed successfully"
+                ),
+                "turns_taken": "mean model turns spent in the world before the episode ended",
                 "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "edge_f1": "(PRIMARY, higher is better) F1 between predicted and true directed edge sets (primary)",
-                "edge_precision": "precision of the predicted edges -- penalizes over-claiming",
-                "edge_recall": "recall of the true edges",
-                "exact_graph_match": "1 only if the predicted edge set is exactly the true one",
-                "edge_f1_<variant>": "edge F1 per released graph variant (node count, hidden "
-                "nodes, frequent parents, ...)",
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer "
+                "over modes.repeats samples of the same record, read off those samples rather "
+                "than bought again. Available because this dataset's answers are checkable and "
+                "so can coincide.",
             },
-            primary_metric="edge_f1",
+            primary_metric="score_normalized",
             decisions=[
-                "Used bootstrap_past_data as the observations (capped at 20 records by default, "
-                "options.max_observations) so prompts stay inside the input budget while still "
-                "showing real co-variation.",
-                "Scored as a set task with F1 plus precision/recall, because a model that lists "
-                "every possible edge would score well on recall alone.",
-                "Parsed edges with a permissive 'A -> B' / 'A causes B' pattern so formatting "
-                "differences do not count as errors.",
-                "max_tokens scales with node count (512 + 128 per node).",
+                "Ran the release's vendored DiscoveryWorld rather than simulating its causal "
+                "graphs: the benchmark is the game world, and an SCM stand-in measures a "
+                "different, easier task.",
+                "Used the environment's own taskDescription as the prompt. The release renders "
+                "it from agents/recoma/prompts/reactor_task_causal_*.txt, so it is read from "
+                "the running scenario rather than restated here.",
+                "Passed DiscoveryWorld's action JSON through unchanged, so the action space is "
+                "the environment's (TELEPORT_TO_OBJECT, TALK, dialog selection, value entry).",
+                "Scored with the release's own scorecard (score / maxScore), not a metric "
+                "defined here.",
             ],
             caveats=[
-                "DOES NOT REPRODUCE THE AUTHORS' INTERACTIVE SETUP, and the gap is "
-                "structural rather than a wording choice. CausaLab's own protocol runs "
-                "inside DiscoveryWorld, a game world its repository vendors: the agent "
-                "issues TALK actions against object UUIDs, works a Property Manipulator "
-                "through dialog menus, and finally sets a Crystal Reactor frequency "
-                "(agents/recoma/prompts/reactor_task_causal_*.txt). This adapter instead "
-                "drives the release's causal_graph_configs as a linear structural causal "
-                "model with intervene/observe/answer actions. The authors' prompt cannot "
-                "be dropped in, because it addresses objects this environment does not "
-                "have. The vendored DiscoveryWorld DOES import headlessly here (with "
-                "pygame, pathfinding and termcolor installed and SDL_VIDEODRIVER=dummy), "
-                "so running the real protocol is achievable -- it is a rewrite of this "
-                "adapter around the game loop, not a missing dependency. Until then, "
-                "treat these numbers as measuring causal discovery on CausaLab's graphs, "
-                "NOT as CausaLab's published task.",
-                "Only the graph variants that ship bootstrap observations are usable; the "
-                "remaining released configurations are intervention-only and are reported as "
-                "excluded in the statistics.",
-                "With only 20 observations, some edges are genuinely underdetermined; edge_f1 is "
-                "therefore a measure of plausible-structure inference, not of asymptotic "
-                "identifiability.",
-                "Interventional data (the benchmark's own protocol) is not used, so scores are not "
-                "comparable to published CausaLab results.",
+                "Runs headless via SDL_VIDEODRIVER=dummy and needs pygame, pathfinding and "
+                "termcolor. It draws no window, but it is still a full game world per episode, "
+                "so episodes are slower than a text-only benchmark.",
+                "The agent must navigate before it can act: the Property Manipulator is only "
+                "reachable after a TELEPORT_TO_OBJECT, exactly as in the release. A model that "
+                "never navigates scores zero, which is a real outcome of this benchmark.",
+                "The causal structure is passed to the scenario through the CAUSAL_GRAPH_CONFIG "
+                "environment variable, which is how the release configures it. Episodes "
+                "therefore set it per episode and cannot be interleaved within one process.",
             ],
-            statistics={
-                **self.base_statistics(),
-                "graphs_per_variant": {k: v for k, v in self._per_variant.items() if v},
-                "graphs_total_seen": getattr(self, "_graphs_seen", 0),
-                "graphs_without_observations": getattr(self, "_graphs_seen", 0) - self.split_size,
-            },
+            statistics={**self.base_statistics()},
         )
+
+
+def _parse_action_json(text: str | None) -> dict[str, Any] | None:
+    """The last JSON object in the response, which is the action."""
+    if not text:
+        return None
+    for match in reversed(list(re.finditer(r"\{.*?\}", text, flags=re.S))):
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and (
+            "action" in parsed or "chosen_dialog_option_int" in parsed or "value" in parsed
+        ):
+            return parsed
+    return None

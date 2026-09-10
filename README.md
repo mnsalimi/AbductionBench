@@ -826,7 +826,7 @@ evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
 
-Nine of the interactive benchmarks run their real environment; see
+Ten of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
