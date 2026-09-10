@@ -463,9 +463,13 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             processing_mode="Generation & Selection",
             split_used=self.split_used,
             abductive_subset=(
-                "The diagnostic hypothesis. VivaBench's interactive finding-request protocol is "
-                "not reproducible single-turn, so evidence disclosure is a configuration choice "
-                "(options.evidence = vignette | with_findings) and is recorded per run."
+                "STATIC SELECTION ONLY, over the candidate list the official GitHub release "
+                "ships with each case: the differentials it records next to the final "
+                "diagnosis. The release's interactive finding-request protocol is NOT run "
+                "here -- that is a different task, and running it as well would evaluate the "
+                "same cases twice. Evidence disclosure within the static form remains a "
+                "configuration choice (options.evidence = vignette | with_findings), recorded "
+                "per run."
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={

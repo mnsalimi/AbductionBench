@@ -1,0 +1,9 @@
+dataset:
+  id: uniadilr_hgc
+  impl: abductionbench.adapters.uniadilr_hgc:UniADILRHGcAdapter
+  options: {}
+  notes: >-
+    The abduction split of UniADILR-HGc only (data/UniADILR-HGc/abduction.jsonl).
+    The deduction and induction files are the same construction over other
+    reasoning types and are not read. Scored by an LLM judge against the gold
+    claim: the gold is one phrasing of a claim that can be worded many ways.
