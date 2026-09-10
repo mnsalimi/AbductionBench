@@ -1,0 +1,21 @@
+dataset:
+  id: inabhyd
+  impl: abductionbench.adapters.inabhyd:InAbHyDAdapter
+  options:
+    # The release ships a GENERATOR, not a fixed item file: Ontology() builds a
+    # theory, its observations and its gold hypothesis together. Items are
+    # generated with a per-item seed, so the same set returns every run.
+    # (data/*.pkl in that repo are recorded replies from the authors' own
+    # experiments, not benchmark items, and are not read.)
+    #
+    # Which statement is hidden. All three are abductive; null -> all three.
+    recover: null          # [membership, ontology, property]
+    # Reasoning depth between the hypothesis and the observation.
+    hops: null             # [1, 2, 3, 4]
+    # Items generated per (recover x hops) cell.
+    per_cell: 40
+  notes: >-
+    Generated from the release's own ontology generator. Static delivery, so
+    the suite's standardised prompt is used rather than the release's
+    prompt.py. Scored by normalised string match: the vocabulary is synthetic
+    and the gold is a short formal statement, so no judge is needed.
