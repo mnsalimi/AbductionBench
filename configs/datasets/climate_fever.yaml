@@ -1,0 +1,10 @@
+dataset:
+  id: climate_fever
+  impl: abductionbench.adapters.climate_fever:ClimateFeverAdapter
+  options: {}
+  notes: >-
+    CEDAR's formulation: the retrieved evidence is the observation and the
+    claim's status is the hypothesis that accounts for it. All four statuses
+    are offered including DISPUTED, which is the part that is abductive rather
+    than plain entailment. Uneven label distribution, so balanced_accuracy is
+    reported beside accuracy.

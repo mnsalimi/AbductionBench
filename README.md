@@ -821,7 +821,7 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **44 datasets configured, all 44
+decisions cannot drift from the code. Current state: **51 datasets configured, all 51
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
