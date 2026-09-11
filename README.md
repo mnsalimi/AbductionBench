@@ -781,7 +781,6 @@ themselves; the ones worth knowing about here:
 |---|---|---|
 | `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; covering the space is the point |
 | `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
-| `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
 | `true_detective` | `human_agreement_spearman`, `human_solve_rate` | do models find the same puzzles hard that people do |
 | `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
 | `commonwhy` | `popularity_gap` | head vs long-tail entities (`explanation_judged_head` − `explanation_judged_longtail`) |
@@ -821,12 +820,12 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **51 datasets configured, all 51
+decisions cannot drift from the code. Current state: **50 datasets configured, all 50
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
 
-Ten of the interactive benchmarks run their real environment; see
+Nine of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
@@ -836,13 +835,14 @@ here was wrong. The repository ships the simulator as a FastAPI service
 published API across all 14 released scenarios, scoring `victory_rate` from the
 simulator's own verdict on a 1,000-drone fleet.
 
-**Five datasets have been removed from the suite entirely** rather than carried
+**Six datasets have been removed from the suite entirely** rather than carried
 as permanent skips: **BioVerge** (items ship only inside an 11.9 GB corpus
 archive), **DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench**
 (gold hypotheses withheld on every scorable split), **RLF-KG** (sampled query
-data is not downloadable) and **NIKA** (its emulator needs a container runtime
-and `CAP_NET_ADMIN`, and this container's capability bounding set excludes both,
-so no runtime can even be installed). Each added a row to every report without
+data is not downloadable) **NIKA** (its emulator needs a container runtime and `CAP_NET_ADMIN`, and this
+container's capability bounding set excludes both, so no runtime can even be
+installed) and **CausaLab** (removed by request after its DiscoveryWorld
+integration was working). The first four added a row to every report without
 ever adding a number.
 
 NIKA's adapter was written and its scoring verified against release 0.2.0's 85

@@ -169,67 +169,6 @@ def test_aer_set_scoring():
 # --------------------------------------------------------------------------- #
 
 
-def test_causalab_scores_from_the_releases_own_scorecard():
-    """CausaLab is scored by DiscoveryWorld, not by anything defined here.
-
-    The adapter used to compare a stated edge list against a gold graph, which
-    was a different (and easier) task than the benchmark poses: its own
-    scenario keeps a scorecard, and score/maxScore is what the release reports.
-    """
-    from abductionbench.adapters.causalab import CausaLabAdapter
-
-    scorer = object.__new__(CausaLabAdapter)
-    sample = SampleSpec(
-        sample_id="c",
-        fields={},
-        reference={"config": "3_chain"},
-        metadata={
-            "graph": "3_chain",
-            "_episode_state": {
-                "turns": 12,
-                "final": [{
-                    "score": 9, "maxScore": 15, "scoreNormalized": 0.6,
-                    "completedSuccessfully": True,
-                }],
-            },
-        },
-    )
-    score = CausaLabAdapter.score(scorer, sample, _response("irrelevant"))
-    assert score.metrics["score_normalized"] == pytest.approx(0.6)
-    assert score.metrics["score_raw"] == 9.0
-    assert score.metrics["task_completed"] == 1.0
-    assert score.metrics["turns_taken"] == 12.0
-
-    # An episode that produced no scorecard is a parse failure, not a zero
-    # dressed up as a real score.
-    empty = SampleSpec(
-        sample_id="c2", fields={}, reference={"config": "3_chain"},
-        metadata={"graph": "3_chain", "_episode_state": {"turns": 40}},
-    )
-    missing = CausaLabAdapter.score(scorer, empty, _response("x"))
-    assert missing.parse_ok is False
-    assert missing.metrics["score_normalized"] == 0.0
-
-
-def test_causalab_reads_the_environments_own_action_json():
-    from abductionbench.adapters.causalab import _parse_action_json
-
-    assert _parse_action_json('{"action": "TALK", "arg1": 21559}') == {
-        "action": "TALK", "arg1": 21559
-    }
-    # Dialog selection and value entry carry no "action" key at all.
-    assert _parse_action_json('sure: {"chosen_dialog_option_int": 1}') == {
-        "chosen_dialog_option_int": 1
-    }
-    assert _parse_action_json('I will set it. {"value": 1254}') == {"value": 1254}
-    assert _parse_action_json("no json here") is None
-
-
-# --------------------------------------------------------------------------- #
-# Shared base helpers
-# --------------------------------------------------------------------------- #
-
-
 def test_shared_scorers():
     from abductionbench.adapters._base import selection_score, text_match_score, unparsed_score
 
