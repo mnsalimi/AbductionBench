@@ -11,3 +11,8 @@ runs/
 !data/.gitkeep
 .env
 full_run.log
+
+# Render output from game-world environments (DiscoveryWorld drew one PNG per
+# frame per episode). 254 of these were committed once by a `git add -A`; they
+# are generated, large, and belong to nothing that is read back.
+video/
