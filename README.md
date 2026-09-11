@@ -720,7 +720,7 @@ squeezed budget cannot look like a clean result.
 | `parse_failure_rate` | fraction whose response yielded no prediction |
 | `truncation_rate` | fraction that stopped at the token budget. **Not retried** — a truncated answer is a result, and the budget is already the whole remaining context window |
 | `empty_response_rate` | fraction that returned no content at all |
-| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the dataset's output-token ceiling — i.e. where the prompt crowded out the answer. The ceiling is 32,000 by default and 64,000 for `abd` and `boxinggym` (`max_output_tokens` in their dataset files) |
+| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the dataset's output-token ceiling — i.e. where the prompt crowded out the answer. The ceiling is 32,000 by default and 64,000 for `abd` (`max_output_tokens` in its dataset file) |
 | `batch_latency_s_mean`, `completion_tokens_mean` | cost and length, per sample |
 | `<primary>_strict` | the primary metric with unscored samples counted as zero |
 
@@ -789,7 +789,6 @@ themselves; the ones worth knowing about here:
 | `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
 | `open_problems_2024` | `direction_accuracy`, `brier_score`, `leakage_rate`, `direction_answer_stability` | a calibrated verdict, and whether the model had simply read the answer |
-| `causalgame` | `victory_rate`, `final_score`, `deployments_used` | the simulator's own verdict against the scenario's win threshold, how close a loss was, and how much evidence was gathered first |
 | `vivabench` | `accuracy` | selection over the release's candidate list — note the gold option is no longer sorted first, which it was until this was fixed |
 
 ## Adding a dataset
@@ -820,29 +819,23 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **50 datasets configured, all 50
+decisions cannot drift from the code. Current state: **47 datasets configured, all 47
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
 
-Nine of the interactive benchmarks run their real environment; see
+Six of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
-**CausalGame** now runs. Its environment *is* distributed -- the earlier note
-here was wrong. The repository ships the simulator as a FastAPI service
-(`uvicorn api.app:app`), so the adapter starts it locally and drives its
-published API across all 14 released scenarios, scoring `victory_rate` from the
-simulator's own verdict on a 1,000-drone fleet.
-
-**Six datasets have been removed from the suite entirely** rather than carried
+**Nine datasets have been removed from the suite entirely** rather than carried
 as permanent skips: **BioVerge** (items ship only inside an 11.9 GB corpus
 archive), **DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench**
 (gold hypotheses withheld on every scorable split), **RLF-KG** (sampled query
 data is not downloadable) **NIKA** (its emulator needs a container runtime and `CAP_NET_ADMIN`, and this
 container's capability bounding set excludes both, so no runtime can even be
-installed) and **CausaLab** (removed by request after its DiscoveryWorld
-integration was working). The first four added a row to every report without
+installed) **CausaLab**, **PhysGym**, **BoxingGym** and **CausalGame** (all removed by
+request after their integrations were working). The first four added a row to every report without
 ever adding a number.
 
 NIKA's adapter was written and its scoring verified against release 0.2.0's 85

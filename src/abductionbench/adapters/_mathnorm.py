@@ -38,7 +38,7 @@ _SUBSCRIPTS = {"₀": "_0", "₁": "_1", "₂": "_2", "₃": "_3", "₄": "_4",
                "₅": "_5", "₆": "_6", "₇": "_7", "₈": "_8", "₉": "_9"}
 _SUPERSCRIPTS = {"²": "**2", "³": "**3", "⁴": "**4", "½": "*0.5"}
 
-#: PhysGym's reference equations are written for numpy/python evaluation
+#: Reference equations are written for numpy/python evaluation
 #: (``np.pi``, ``np.arctan``, ``math.sqrt``); SymPy needs the bare names.
 _MODULE_PREFIXES = (
     (r"\b(?:np|numpy|math|sp|sympy)\s*\.\s*", ""),

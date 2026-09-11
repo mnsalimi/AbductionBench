@@ -231,7 +231,7 @@ def http_json(
     """One JSON request against a locally served benchmark environment.
 
     Some benchmarks ship their environment as a service rather than as an item
-    file (CausalGame's FastAPI simulator, an MCP server behind a bridge).
+    file (a simulator behind an HTTP API, an MCP server behind a bridge).
     Talking to it is part of running the benchmark, so it lives here next to
     the download helpers rather than in each adapter.
 

@@ -159,7 +159,7 @@ def test_a_non_finite_metric_never_reaches_the_records_file():
 
     An adapter that reports NaN for "not measured" would otherwise produce a
     records file that `abench report` crashes on -- which is exactly what
-    happened to a live run's BoxingGym episodes.
+    happened to a live run's interactive episodes.
     """
     import math
 

@@ -1,8 +1,0 @@
-dataset:
-  id: physgym
-  impl: abductionbench.adapters.physgym:PhysGymAdapter
-  # only 97 problems exist; the shortfall is reported
-  notes: >-
-    Law discovery from the described setup; scored by SymPy symbolic equivalence
-    (LaTeX/unicode/numpy notation is normalized first). The dataset's worked
-    solution is withheld from the prompt.

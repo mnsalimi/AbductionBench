@@ -676,74 +676,6 @@ def test_vivabench_does_not_sort_the_answer_to_the_front():
     assert biased.index(gold) == 0
 
 
-# --------------------------------------------------------------------------- #
-# requirement 2: CausalGame and NIKA are integrations, not exclusions
-# --------------------------------------------------------------------------- #
-
-
-def test_causalgame_is_a_real_adapter_now():
-    """CausalGame was classified as unavailable; it never actually was.
-
-    The repository ships its simulator as a FastAPI service
-    (`uvicorn api.app:app`), so it runs locally and its victory_rate comes from
-    that simulator rather than from a judge.
-    """
-    from abductionbench.core.registry import resolve_adapter
-
-    causalgame = resolve_adapter("abductionbench.adapters.causalgame:CausalGameAdapter")
-    assert causalgame.data_delivery_mode == "interactive"
-    assert causalgame.objective_metrics, "the simulator decides victory, not a judge"
-    assert causalgame.primary_metric == "victory_rate"
-
-
-def test_causalgame_is_not_wired_to_the_unavailable_placeholder():
-    import yaml
-
-    with open("configs/datasets/causalgame.yaml") as handle:
-        config = yaml.safe_load(handle)["dataset"]
-    assert "unavailable" not in config["impl"], "causalgame is still a placeholder"
-    assert config["impl"].endswith("CausalGameAdapter")
-
-
-def test_causalgame_reads_the_apis_percent_strings():
-    from abductionbench.adapters.causalgame import _percent
-
-    assert _percent("42.3%") == 0.423
-    assert _percent("100.0%") == 1.0
-    assert _percent(0.75) == 0.75      # already a fraction
-    assert _percent(None) == 0.0
-    assert _percent("nonsense") == 0.0
-
-
-def test_causalgame_reads_the_newest_admin_token(tmp_path):
-    """`.env` accumulates tokens; the live one is the last, not the first.
-
-    api/security.py appends a freshly minted ADMIN_TOKEN every time the server
-    starts without one in its environment. Reading the first line sent a stale
-    token and every episode died on a 403 from /api/admin/experiment/switch.
-    """
-    from abductionbench.adapters.causalgame import CausalGameAdapter
-
-    env = tmp_path / ".env"
-    env.write_text(
-        "MODEL_NAME=x\n"
-        "ADMIN_TOKEN=stale-from-the-first-boot\n"
-        "OTHER=1\n"
-        "ADMIN_TOKEN=live-from-the-latest-boot\n",
-        encoding="utf-8",
-    )
-    adapter = CausalGameAdapter.__new__(CausalGameAdapter)
-    adapter._repo = tmp_path
-    assert adapter._token_from_env_file() == "live-from-the-latest-boot"
-
-    # No ADMIN_TOKEN at all, and no file at all, are both "" rather than a crash.
-    (tmp_path / "empty").mkdir()
-    adapter._repo = tmp_path / "empty"
-    assert adapter._token_from_env_file() == ""
-    (tmp_path / "empty" / ".env").write_text("NOTHING=1\n", encoding="utf-8")
-    assert adapter._token_from_env_file() == ""
-
-
 def test_option_order_does_not_depend_on_which_option_is_gold():
     """Alphabetical order looked neutral and was not.
 
@@ -788,54 +720,45 @@ def test_the_same_item_always_shuffles_the_same_way():
     assert sorted(first) == sorted(options)
 
 
-# --------------------------------------------------------------------------- #
-# interactive datasets must use their own benchmark's prompt
-# --------------------------------------------------------------------------- #
+def test_option_order_does_not_depend_on_which_option_is_gold():
+    """Alphabetical order looked neutral and was not.
 
-
-def test_boxinggym_uses_the_goals_own_system_message():
-    """The release does `set_system_message(goal.get_system_message(...))`.
-
-    An earlier version put a prompt written here in the system role and demoted
-    the goal's briefing to a user message. That is not the benchmark's setup:
-    the <thought>/<observe> protocol the environment parses is defined in the
-    goal's message, and burying it cost the model the format it is graded on.
+    A gold hypothesis shares its opening words with the negatives written
+    against it, so sorting put the gold first far more often than chance --
+    40% of ResearchBench's ranking items landed on option 1 against a uniform
+    16.7%, and answering "1" every time would have scored 40%.
     """
-    from abductionbench.adapters.boxinggym import BoxingGymAdapter
+    import collections
 
-    assert BoxingGymAdapter.system_prompt == "", (
-        "a non-empty system_prompt here would displace goal.get_system_message()"
-    )
+    from abductionbench.adapters._common import shuffled_options
 
+    # Negatives that all begin like the gold: exactly the case sorting breaks.
+    positions = collections.Counter()
+    for item in range(600):
+        gold = "Peanut leaf extract inhibits corrosion of mild steel"
+        options = sorted([
+            gold,
+            "Peanut leaf extract accelerates corrosion of mild steel",
+            "Peanut leaf extract has no effect on mild steel",
+            "Peanut leaf extract dissolves mild steel",
+        ])
+        assert options.index(gold) == 3  # sorting is deterministic, and biased
+        ordered = shuffled_options(options, key=f"item-{item}", seed=0)
+        positions[ordered.index(gold)] += 1
 
-def test_boxinggym_quotes_the_authors_turn_prompts_verbatim():
-    from abductionbench.adapters import boxinggym as bg
-
-    # From src/boxing_gym/agents/agent.py, LMExperimenter.generate_actions.
-    assert bg._AUTHORS_FIRST_OBSERVE.startswith(
-        "Think about where to observe next. Articulate your strategy for choosing "
-        "measurements in <thought>."
-    )
-    assert bg._AUTHORS_FIRST_OBSERVE.endswith("Make an observation now.")
-    assert "<observe> your observation</observe>" in bg._AUTHORS_FIRST_OBSERVE
-    assert bg._AUTHORS_NEXT_OBSERVE.startswith("Result: {result}")
-    assert "remember the type of inputs accepted" in bg._AUTHORS_NEXT_OBSERVE
-    # From prompt_llm_and_parse's re-prompts.
-    assert bg._AUTHORS_RETRY_OBSERVE.endswith("Your previous response was not valid.")
-    assert "<answer> tags" in bg._AUTHORS_RETRY_ANSWER
-    # run_experiment.py: MAX_TRIES = 3
-    assert bg._AUTHORS_MAX_TRIES == 3
+    assert set(positions) == {0, 1, 2, 3}, "the gold never reached some positions"
+    # No position should carry anything close to the 100% that sorting gave it.
+    assert max(positions.values()) / 600 < 0.35, positions
 
 
-def test_boxinggym_asks_for_the_authors_token_budget():
-    """conf/llms/openai.yaml in the release: max_tokens 512.
+def test_the_same_item_always_shuffles_the_same_way():
+    """Resume, a different sample size and a different mode must agree."""
+    from abductionbench.adapters._common import shuffled_options
 
-    Measured: at 512 two episodes finish in 131s; with the budget opened up the
-    same two were still running after 13 minutes, because a verbose model fills
-    whatever space it is given.
-    """
-    import yaml
-
-    with open("configs/datasets/boxinggym.yaml") as handle:
-        config = yaml.safe_load(handle)["dataset"]
-    assert config["max_output_tokens"] == 512
+    options = [f"hypothesis {index}" for index in range(6)]
+    first = shuffled_options(options, key="paper-42", seed=7)
+    assert first == shuffled_options(options, key="paper-42", seed=7)
+    # A different item, or a different run seed, orders differently.
+    assert first != shuffled_options(options, key="paper-43", seed=7)
+    assert first != shuffled_options(options, key="paper-42", seed=8)
+    assert sorted(first) == sorted(options)

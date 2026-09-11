@@ -83,7 +83,7 @@ def resolve_sampling(
     grid so prompts of similar length can still share one batch call.
 
     ``max_output_tokens`` raises (or lowers) that cap for one dataset.  A few
-    benchmarks -- BoxingGym's experiment transcripts, ABD's derivations -- carry
+    benchmarks -- ABD's derivations, say -- carry
     records long enough that the answer, not the prompt, is what runs out of
     room, and truncating those measures the budget instead of the model.  It can
     only ask, though: the window is still the hard limit, so a dataset asking

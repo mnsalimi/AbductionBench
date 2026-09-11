@@ -20,25 +20,6 @@ def _response(text: str) -> ModelResponse:
 
 
 # --------------------------------------------------------------------------- #
-# PhysGym: symbolic equivalence
-# --------------------------------------------------------------------------- #
-
-
-def test_physgym_symbolic_equivalence():
-    from abductionbench.adapters.physgym import _extract_expression, _symbolic_equal
-
-    assert _extract_expression("Answer: v = a*b/c", "v") == "a*b/c"
-    assert _extract_expression("v = x\nv = y", "v") == "y"  # last assignment wins
-    assert _symbolic_equal("a*b/c", "b*a/c", ["a", "b", "c"]) is True
-    assert _symbolic_equal("2*a", "a", ["a"]) is False
-    # LaTeX is normalized before parsing, so it is decided rather than skipped.
-    assert _symbolic_equal("\\frac{a}{b}", "a/b", ["a", "b"]) is True
-    # A missing candidate stays undecidable rather than wrong-by-default.
-    assert _symbolic_equal("", "a/b", ["a", "b"]) is None
-    assert _symbolic_equal(None, "a/b", ["a", "b"]) is None
-
-
-# --------------------------------------------------------------------------- #
 # SynPAT: equality up to a scalar factor
 # --------------------------------------------------------------------------- #
 
@@ -260,7 +241,7 @@ def test_pooled_adapter_draw_is_deterministic_and_replacements_disjoint():
 
 
 # --------------------------------------------------------------------------- #
-# Math normalization (shared by PhysGym and SynPAT)
+# Math normalization (SynPAT)
 # --------------------------------------------------------------------------- #
 
 

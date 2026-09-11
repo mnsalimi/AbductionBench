@@ -309,13 +309,6 @@ TABLE: dict[str, dict] = {
         "premise missing. Name the missing premise that makes the argument go through.",
         "delivery": "static", "objective": True, "cardinality": None,
     },
-    "physgym": {
-        "system": ABDUCTIVE_CORE + " You are given a physical setup and the quantities it "
-        "involves. State the law relating the target quantity to the others, as an "
-        "equation in the given symbols. A relation that fits the described behaviour "
-        "matters more than one that looks like a familiar formula.",
-        "delivery": "interactive", "objective": True, "cardinality": None,
-    },
     "proof_writer": {
         "system": ABDUCTIVE_CORE + " You are given a rule base and a statement it can "
         "almost prove. State the single fact that is missing from the theory and would "

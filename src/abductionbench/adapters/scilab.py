@@ -2,7 +2,7 @@
 
 Source: https://github.com/scientific-discovery/LLM-AutoSciLab
 
-Like BoxingGym, SciLab ships no item file, because an item is a *laboratory*: the
+SciLab ships no item file, because an item is a *laboratory*: the
 release vendors NewtonBench's twelve physics domains, each of which hides a law
 the agent has to discover by experiment.  The adapter runs those oracles.
 
