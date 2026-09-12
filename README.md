@@ -744,6 +744,43 @@ there would be a plurality of one. Datasets whose answers are checkable
 (`objective_metrics = True`) report `self_consistency_`; datasets scored by the
 judge report `best_of_n_`. Both come out of the same `modes.repeats` calls.
 
+**What makes a dataset "unverifiable" is the size of the answer space, not the
+absence of a gold.** Two questions decide it:
+
+* Does the model *choose* from a pool the prompt puts in front of it — options,
+  a listed topology, a closed predicate vocabulary, the symbols of an axiom
+  system? Then the answer's surface form is fixed, a mechanical check asks a
+  question with a right answer, and the dataset is **verifiable**. `climate_fever`,
+  `copa`, `causelogics` and the selection halves of `art` and `e-CARE` are
+  selection; `aiops2025` names an entity from the topology it was shown;
+  `proof_writer` and `abductionrules` write a fact in the theory's own
+  vocabulary. All mechanical, no judge.
+* Or does it *write* the answer into an effectively unlimited space — a disease
+  name with no candidate list, a root cause in its own words, a missing premise
+  in free English? Then a correct answer can differ from the gold in wording,
+  and a string test measures phrasing rather than correctness. These are
+  **unverifiable and need a judge**, and a gold existing changes nothing about
+  that. `house_md`, `medups`, `medr_bench`, `medqdx`, `medcasereasoning`,
+  `med_inquire`, `neulr`, `enwn_entailmentbank`, `cloud_opsbench` and the
+  generation halves of `art` and `e-CARE` are all of this kind.
+
+A dataset can be both at once, and is then split rather than rounded: in
+`causalopsbench` the faulty component comes from a list in the prompt and is
+matched mechanically, while the fault *type* is free text and is judged.
+
+**Two datasets are verifiable by a decision procedure rather than a string
+test**, which is better than either a match or a judge:
+
+* `abd` ships the finite worlds its hypothesis is about, so equivalence is
+  decided by *evaluating* both formulas over them. Reordered conjuncts, renamed
+  bound variables and double negations all count as correct.
+* `synpat` answers are expressions set to zero, so SymPy compares where they
+  vanish. A sign flip, a scalar multiple and a rearrangement by a non-constant
+  factor all count as correct.
+
+In both, the LLM judge grades only the residue the procedure cannot parse. A
+judge asked to confirm a proof can only weaken it.
+
 ### Answer-shape metrics
 
 The general shapes almost every dataset reduces to. A dataset's own metric names
@@ -758,8 +795,9 @@ are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
 | `token_f1` | bag-of-tokens F1 against the gold answer. A **diagnostic**, never a primary metric, and not emitted at all by the datasets with no answer key |
 | `set_f1`, `set_precision`, `set_recall` | for answers that are a *set* (multi-selection, causal edge sets) |
 | `exact_set_match` | the whole set exactly right |
-| `symbolic_match` | SymPy proves the answer equivalent to the reference expression; `symbolic_match_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest |
-| `<metric>_judged` | the same judgement made by an LLM judge. For a dataset with **no answer key this is the score**, not an extra view of it, and the run refuses to start without a configured judge. For a dataset that *has* an answer key (the diagnosis sets, `abd`) the judge is a synonym matcher over a real gold string, and the mechanical metric stands on its own |
+| `equation_equivalent` | SymPy proves the answer vanishes where the reference expression does (`synpat`); `equation_equivalent_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest, which are the only ones the judge sees |
+| `formula_equivalent` | the candidate and the gold formula pick out the same individuals in every world the prompt showed (`abd`), decided by evaluating both over those finite structures; `equivalence_undecidable` reports what could not be parsed |
+| `<metric>_judged` | the judgement made by an LLM judge. Wherever the model writes its answer into an unlimited space — with or without a gold to compare against — **this is the score**, not an extra view of it, and the run refuses to start without a configured judge. Where a decision procedure exists (`abd`, `synpat`), the judge instead grades only what that procedure could not parse |
 
 ### Per-dataset metric documentation
 
@@ -768,7 +806,7 @@ Every adapter documents its own metrics — what each measures, which is
 `documentation()`, and those descriptions are what the run writes into
 `Datasets` sheet and `docs/datasets.md`. They are generated from the adapters,
 so they cannot drift from the code. The shared metrics above are documented
-here and deliberately not repeated in each of the 45 adapters.
+here and deliberately not repeated in each of the 46 adapters.
 
 ### Dataset-specific metrics
 
@@ -779,12 +817,13 @@ themselves; the ones worth knowing about here:
 
 | dataset | metric | why |
 |---|---|---|
-| `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; covering the space is the point |
 | `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
 | `true_detective` | `human_agreement_spearman`, `human_solve_rate` | do models find the same puzzles hard that people do |
 | `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
 | `commonwhy` | `popularity_gap` | head vs long-tail entities (`explanation_judged_head` − `explanation_judged_longtail`) |
-| `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
+| `medqdx` | `information_sensitivity` | score at 100% vs 50% of the symptom picture |
+| `synpat` | `structure_match` | the answer's terms ignoring numeric coefficients — the gap to the primary metric is the cost of withholding the generated data |
+| `causalopsbench` | `fault_type_judged`, `full_diagnosis_judged` | the component comes from a listed pool and is matched; the fault type is free text and is judged |
 | `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
 | `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
@@ -808,7 +847,7 @@ python -m pytest -q            # 73 tests: config, prompts, batching, metrics,
                                # server over real HTTP
 abench run configs/runs/smoke_local.yaml    # engine smoke test, ~30 s
 abench run configs/runs/pilot_smoke.yaml \
-  -d ecare,gear,hypospace,aer,abductionrules,medcasereasoning   # live, real adapters
+  -d ecare,gear,aer,abductionrules,medcasereasoning   # live, real adapters
 python tools/preview.py configs/runs/pilot.yaml <dataset_id>    # inspect one adapter
 python tools/dataset_catalogue.py                               # regenerate docs/datasets.md
 ```
@@ -819,7 +858,7 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **47 datasets configured, all 47
+decisions cannot drift from the code. Current state: **46 datasets configured, all 46
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate — the 48 from the original table plus
 `open_problems_2024`, built here.
@@ -828,15 +867,19 @@ Six of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
-**Nine datasets have been removed from the suite entirely** rather than carried
+**Ten datasets have been removed from the suite entirely** rather than carried
 as permanent skips: **BioVerge** (items ship only inside an 11.9 GB corpus
 archive), **DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench**
 (gold hypotheses withheld on every scorable split), **RLF-KG** (sampled query
 data is not downloadable) **NIKA** (its emulator needs a container runtime and `CAP_NET_ADMIN`, and this
 container's capability bounding set excludes both, so no runtime can even be
 installed) **CausaLab**, **PhysGym**, **BoxingGym** and **CausalGame** (all removed by
-request after their integrations were working). The first four added a row to every report without
-ever adding a number.
+request after their integrations were working), and **HypoSpace** — removed on
+the same ground the suite applies to UniADILR's and NeuLR's sibling files: its
+item hands the model *many* perturbation instances and asks it to infer the
+graph they were all generated by, which is generalisation from examples, i.e.
+induction. Abduction reasons from one observation to the explanation of it.
+The first four added a row to every report without ever adding a number.
 
 NIKA's adapter was written and its scoring verified against release 0.2.0's 85
 incidents before it was removed, so `git log -- src/abductionbench/adapters/nika.py`

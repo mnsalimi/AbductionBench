@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, contains_match, extract_answer_span, token_f1
+from ..core.metrics import aggregate_mean_metrics, contains_match, extract_answer_span
 from ..core.types import (
     AdapterDocumentation,
     ChatMessage,
@@ -44,7 +44,7 @@ from ..core.types import (
     SampleSpec,
 )
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, unparsed_score
 from ._interactive import InteractiveMixin
 
 REPO_URL = "https://github.com/LLM4Ops/Cloud-OpsBench"
@@ -115,9 +115,16 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "symptom."
     )
     data_delivery_mode = "interactive"
-    objective_metrics = True
+    #: Measured, not assumed: the root cause is a short technical label the model
+    #: writes itself -- no candidate list is shown, and the release's own golds
+    #: ("missing_service_account", "cpu_throttling") are one naming convention
+    #: among many that describe the same fault. A string test here punishes "the
+    #: deployment references a ServiceAccount that does not exist" for not being
+    #: the gold's wording. The affected object, by contrast, is named in the tool
+    #: output, so fault_object_match stays a mechanical check beside the verdict.
+    objective_metrics = False
     selection_cardinality = None
-    primary_metric = "root_cause_match"
+    primary_metric = "root_cause_judged"
 
     # ------------------------------------------------------------------ #
     # the investigation -- replayed from the release's own tool cache
@@ -326,39 +333,66 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         text = response.text
         if not text.strip():
             return unparsed_score(
-                ["root_cause_match", "fault_object_match", "taxonomy_match"], raw=text[:200]
+                ["root_cause_judged", "fault_object_match", "taxonomy_match"], raw=text[:200]
             )
         answer = extract_answer_span(text, output_contract) or text
         reference = sample.reference
         # Underscored labels are matched loosely: a model may write
         # "missing service account" for "missing_service_account".
-        root_cause_variants = _variants(reference["root_cause"])
         object_variants = _variants(reference["fault_object"])
         taxonomy_variants = _variants(reference["fault_taxonomy"])
         metrics = {
-            "root_cause_match": _any_contains(text, root_cause_variants),
+            # Seeded at 0 and filled by the judge, along with the difficulty
+            # stratum, which is the same verdict seen through a filter.
+            "root_cause_judged": 0.0,
+            # These two stay mechanical on purpose: the object is named in the
+            # evidence the model was shown and the taxonomy is a small closed
+            # vocabulary, so a string test asks a question with a right answer.
             "fault_object_match": _any_contains(text, object_variants),
             "taxonomy_match": _any_contains(text, taxonomy_variants),
-            "root_cause_token_f1": token_f1(answer, reference["root_cause"]),
         }
         difficulty = sample.metadata.get("difficulty")
         if difficulty:
-            metrics[f"root_cause_match_{difficulty}"] = metrics["root_cause_match"]
+            metrics[f"root_cause_judged_{difficulty}"] = 0.0
         return SampleScore(
             metrics=metrics,
             prediction=answer[:400],
             details={"gold_root_cause": reference["root_cause"]},
         )
 
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        if not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:800],
+            "gold": sample.reference["root_cause"],
+            "observation": C.clip_words(sample.fields.get("observation", ""), 150),
+            "criteria": (
+                "Root causes are written as short technical labels. The candidate is correct "
+                "if it identifies the same underlying fault as the reference, in whatever "
+                "words: 'missing_service_account', 'missing service account' and 'the "
+                "deployment references a ServiceAccount that does not exist' are all the same "
+                "root cause. Naming a downstream symptom of the fault, or a different fault "
+                "that would produce a similar symptom, is not the same root cause."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "root_cause_judged")
+
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
         # A full diagnosis names both the cause and the object it applies to.
         pairs = [
             1.0
-            if score.metrics.get("root_cause_match") and score.metrics.get("fault_object_match")
+            if score.metrics.get("root_cause_judged") and score.metrics.get("fault_object_match")
             else 0.0
             for score in scores
-            if "root_cause_match" in score.metrics
+            if "root_cause_judged" in score.metrics
         ]
         if pairs:
             metrics["full_diagnosis_rate"] = sum(pairs) / len(pairs)
@@ -379,20 +413,26 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "root_cause_match": "(PRIMARY, higher is better) 1 if the response names the gold root cause (underscore/space "
-                "variants accepted) -- primary",
-                "fault_object_match": "1 if the response names the affected object",
-                "taxonomy_match": "1 if the response names the gold fault taxonomy class",
-                "root_cause_token_f1": "token F1 between the answer span and the gold root cause",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. The root cause is written free-form rather than chosen "
+                "from a list, so a plurality over repeats is not meaningful and Best-of-N "
+                "replaces it.",
+                "root_cause_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on "
+                "whether the stated root cause is the same underlying fault as the release's "
+                "gold label, in whatever words. 1.0 when the judge affirms.",
+                "root_cause_judged_<difficulty>": "the primary metric per difficulty label",
+                "fault_object_match": "1 if the response names the affected object. Mechanical: "
+                "the object is named in the evidence the model was shown, so its spelling is "
+                "fixed and a string test is the right check.",
+                "taxonomy_match": "1 if the response names the gold fault taxonomy class -- also "
+                "mechanical, the taxonomy being a small closed vocabulary.",
                 "full_diagnosis_rate": "fraction of cases where both the cause and the object are "
                 "named -- the operationally useful outcome",
-                "root_cause_match_<difficulty>": "the primary metric per difficulty label",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
+                "could be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="root_cause_match",
+            primary_metric="root_cause_judged",
             decisions=[
                 "Included at most 6 cached tool outputs per case, each clipped to 220 words "
                 "(configurable): the full tool cache is ~300 KB and the raw logs tens of MB, both "
@@ -400,14 +440,19 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "Preferred resource listings and describe/event output over raw logs, because they "
                 "state cluster state compactly.",
                 "options.evidence = symptom_only gives the no-telemetry contrast condition.",
-                "Matched the gold labels loosely across underscore/space/hyphen variants, since "
-                "the gold strings are machine labels rather than prose.",
+                "Matched the fault object and taxonomy loosely across underscore/space/hyphen "
+                "variants, since those gold strings are machine labels rather than prose.",
+                "Scored the root cause itself by an LLM judge rather than by string matching. "
+                "No candidate list is shown, so the model writes the cause in its own words; "
+                "the release's gold is one naming convention for the fault, not the only one."
             ],
             caveats=[
                 "With a truncated evidence window a model may be unable to see the decisive "
                 "signal; compare against symptom_only before concluding that a model cannot do RCA.",
-                "Gold root causes are short machine labels, so a correct diagnosis phrased "
-                "differently can be scored as a miss; root_cause_token_f1 gives partial credit.",
+                "Gold root causes are short machine labels and the judge is asked whether the "
+                "candidate names the same underlying fault, so a correct diagnosis phrased in "
+                "prose is credited. The cost is that the verdict is a model's, not a string "
+                "test's: it can be wrong in both directions.",
             ],
             statistics={**self.base_statistics(), "cases_per_namespace": self._namespaces},
         )

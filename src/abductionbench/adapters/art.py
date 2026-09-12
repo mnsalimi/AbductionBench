@@ -23,7 +23,12 @@ from typing import Any
 from ..core.adapter import SkippedDataset
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import (
+    PooledDatasetAdapter,
+    apply_judged_metric,
+    judged_only_score,
+    selection_score,
+)
 
 REPO_URL = "https://github.com/allenai/abductive-commonsense-reasoning"
 BASE = "https://storage.googleapis.com/ai2-mosaic/public/abductive-commonsense-reasoning-iclr2020"
@@ -58,6 +63,10 @@ class ARTAdapter(PooledDatasetAdapter):
         "do not use introductory phrases or commentary",
     )
     options_heading = "Answer options:"
+    #: Set per instance in prepare(). alphaNLI picks one of two hypotheses and is
+    #: checkable; alphaNLG writes the hypothesis into an open space where the
+    #: reference is one annotator's plausible sentence among many that would have
+    #: been just as plausible.
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)
@@ -71,13 +80,18 @@ class ARTAdapter(PooledDatasetAdapter):
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "hypothesis_match",
+        "generation": "hypothesis_judged",
         "selection": "accuracy",
     }
 
     @property
     def _subtask(self) -> str:
         return str(self.context.option("subtask", "selection"))
+
+    def prepare(self) -> None:
+        # alphaNLI is scored against its public label file; alphaNLG is judged.
+        self.objective_metrics = self._subtask != "generation"
+        super().prepare()
 
     def load_items(self) -> list[dict[str, Any]]:
         if self._subtask == "generation":
@@ -199,12 +213,36 @@ class ARTAdapter(PooledDatasetAdapter):
                 output_contract=output_contract,
                 metric_name="accuracy",
             )
-        return text_match_score(
+        return judged_only_score(
             response,
-            gold=sample.reference["gold"],
+            metric="hypothesis_judged",
             output_contract=output_contract,
-            primary="hypothesis_match",
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        if sample.task_kind != "generation" or not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:400],
+            "gold": sample.reference["gold"],
+            "observation": sample.fields["observation"],
+            "criteria": (
+                "The two observations bracket a gap in time, and the reference is one event "
+                "annotators judged plausible in that gap. The candidate is correct if it too "
+                "is a plausible account of what happened between them -- it need not match the "
+                "reference, and a different but equally plausible event counts. An event that "
+                "contradicts either observation, that merely restates one of them, or that "
+                "would not lead from the first to the second, does not count."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "hypothesis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -221,16 +259,23 @@ class ARTAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note(),
             metrics_description={
                 "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "Selection only: every metric gets a self_consistency_ counterpart, the plurality "
+                "answer over modes.repeats samples of the same record, read off those samples "
+                "rather than bought again. A label can coincide across repeats; a free-text "
+                "hypothesis cannot.",
+                "best_of_n_<metric>":
+                "Generation only: every metric gets a best_of_n_ counterpart, the repeat the judge "
+                "scored highest, which is what replaces a plurality when answers never repeat "
+                "verbatim.",
                 "accuracy": "(PRIMARY, higher is better) selection: 1 if the chosen hypothesis is the annotated plausible one",
-                "hypothesis_match": "(PRIMARY, higher is better) generation: answer equals or contains the reference hypothesis",
-                "exact_match": "generation: normalized equality with the reference hypothesis",
-                "token_f1": "generation: bag-of-tokens F1 against the reference hypothesis",
-                "rouge_l": "generation: LCS F-measure against the reference hypothesis",
+                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) generation: LLM-judge "
+                "verdict on whether the written event is a plausible account of what happened "
+                "between the two observations. The reference is shown to the judge as one "
+                "plausible answer, not as the only one.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses nothing could "
+                "be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="accuracy" if self._subtask != "generation" else "hypothesis_match",
+            primary_metric="accuracy" if self._subtask != "generation" else "hypothesis_judged",
             decisions=[
                 "Used the official test split for alphaNLI because its label file is public "
                 "(test-labels.lst); no guessing of labels was needed.",
@@ -239,13 +284,21 @@ class ARTAdapter(PooledDatasetAdapter):
                 "For alphaNLG the reference is the hypothesis the label marks plausible; the "
                 "COMET predictions shipped alongside are ignored (they are model outputs, not "
                 "gold data).",
+                "Scored alphaNLG by an LLM judge on PLAUSIBILITY, not on similarity to the "
+                "reference. ART's own premise is that many events fit between two observations, "
+                "so scoring against the one annotators wrote down would measure agreement with "
+                "an arbitrary choice; the reference is given to the judge as an example of a "
+                "plausible answer rather than as the answer.",
                 "Rendered the two observations as labelled 'O1 (earlier)' / 'O2 (later)' lines so "
                 "the temporal order is unambiguous in every prompt template.",
             ],
             caveats=[
                 "alphaNLI is a two-way choice: chance accuracy is 50%.",
-                "alphaNLG has many valid hypotheses per item but a single reference, so overlap "
-                "metrics under-credit correct alternatives; the LLM-judge stage is the remedy.",
+                "alphaNLG's judge grades plausibility rather than agreement with the "
+                "reference, which is the right question but a softer one: a model that writes a "
+                "generic event fitting almost any pair of observations can score well.",
+                "The judge is required for alphaNLG: with engine.judge disabled that subtask has "
+                "no metric and the run fails rather than reporting an overlap number.",
             ],
             statistics={**self.base_statistics(), "subtask": self._subtask},
         )

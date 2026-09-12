@@ -25,7 +25,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 KAGGLE_URL = (
     "https://www.kaggle.com/api/v1/datasets/download/"
@@ -55,9 +55,13 @@ class HouseMDAdapter(PooledDatasetAdapter):
         "do not explain why",
         "do not use introductory phrases or commentary",
     )
-    objective_metrics = True
+    #: Measured, not assumed: the model writes a disease name into an open
+    #: vocabulary with no candidate list, so "Ehlers-Danlos" against a gold of
+    #: "Ehlers-Danlos syndrome, vascular type" is the same answer and fails a
+    #: string comparison. The gold exists; its surface form is not the answer.
+    objective_metrics = False
     selection_cardinality = None
-    primary_metric = "diagnosis_match"
+    primary_metric = "diagnosis_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         archive = C.ensure_download(
@@ -128,14 +132,16 @@ class HouseMDAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        score = text_match_score(
+        score = judged_only_score(
             response,
-            gold=sample.reference["gold"],
+            metric="diagnosis_judged",
             output_contract=output_contract,
-            primary="diagnosis_match",
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
         # Did the gold diagnosis appear anywhere (e.g. inside the differential)
-        # even if it was not the committed answer?
+        # even if it was not the committed answer?  A string test is enough for
+        # this one: it asks whether the gold's own wording is present, not
+        # whether the model got it right.
         if response.text:
             from ..core.metrics import contains_match
 
@@ -159,20 +165,19 @@ class HouseMDAdapter(PooledDatasetAdapter):
             "candidate": extract_answer_span(response.text, None)[:600],
             "gold": sample.reference["gold"],
             "observation": C.clip_words(sample.fields["observation"], 200),
-            "criteria": "Equivalent disease entities (synonyms, abbreviations) count as correct.",
+            "criteria": (
+                "The candidate is correct if it names the same disease entity as the "
+                "reference, however it is written: synonyms, abbreviations, eponyms and "
+                "spelling variants all count. A broader category that does not identify "
+                "the reference disease, or a different disease that shares symptoms with "
+                "it, does not count."
+            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["diagnosis_match_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        return apply_judged_metric(score, verdict, "diagnosis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -189,21 +194,19 @@ class HouseMDAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; vignettes are de-duplicated across the four workbooks first",
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "diagnosis_match": "(PRIMARY, higher is better) 1 if the committed answer names the gold disease (primary)",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A diagnosis is free text with many correct surface "
+                "forms, so a plurality over repeats is not meaningful and Best-of-N replaces it.",
+                "diagnosis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on "
+                "whether the committed diagnosis is the same disease entity as the gold, "
+                "however written. 1.0 when the judge affirms.",
                 "diagnosis_in_differential": "1 if the gold disease appears anywhere in the "
                 "response -- the gap to the primary metric shows failures of commitment rather "
                 "than of recall",
-                "exact_match": "strict normalized equality with the gold disease",
-                "token_f1": "bag-of-tokens F1 against the gold disease",
                 "reasoning_overlap": "token F1 between the response and the reference differential",
-                "diagnosis_match_judged": "LLM-judge equivalence verdict (only when "
-                "engine.judge.enabled)",
             },
-            primary_metric="diagnosis_match",
+            primary_metric="diagnosis_judged",
             decisions=[
                 "Resolved the suite's shortened URL to the Kaggle dataset and download it through "
                 "Kaggle's public API endpoint, which needs no credentials for this dataset.",
@@ -213,6 +216,9 @@ class HouseMDAdapter(PooledDatasetAdapter):
                 "would not measure abduction.",
                 "Reported diagnosis_in_differential separately, since these vignettes invite a "
                 "differential and a model may list the right disease without committing to it.",
+                "Scored by an LLM judge rather than by string comparison: the model writes a "
+                "disease name with no candidate list, so a correct answer routinely differs "
+                "from the gold in wording (synonym, eponym, abbreviation, subtype).",
             ],
             caveats=[
                 "The four workbooks hold overlapping but not identical vignette sets; after "

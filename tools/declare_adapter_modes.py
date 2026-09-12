@@ -224,13 +224,6 @@ TABLE: dict[str, dict] = {
         "explain the results the paper reports.",
         "delivery": "static", "objective": False, "cardinality": None,
     },
-    "hypospace": {
-        "system": ABDUCTIVE_CORE + " You are given perturbation observations over a set "
-        "of variables. Several distinct causal graphs can be compatible with them, and "
-        "the task is to cover that space: propose the distinct hypotheses that are all "
-        "consistent with the observations, rather than committing to one.",
-        "delivery": "static", "objective": True, "cardinality": None,
-    },
     "matter_to_mechanism": {
         "system": ABDUCTIVE_CORE + " You are given a materials-science research problem "
         "and its observations. Propose the mechanism that explains them at the level of "

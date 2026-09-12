@@ -11,11 +11,19 @@ theory, explains the observations at minimum cost.  Instances come in three
 scenarios (``ABD_FULL``, ``ABD_PARTIAL``, ``ABD_SKEPTICAL``) and carry a
 difficulty label.
 
-The task here is exactly the release's task: state ``alpha``.  Because ``alpha``
-is a formula, scoring combines a normalized structural match, token overlap, and
-a check that only the allowed predicates were used; the release also ships a
-human-readable ``description`` of the gold formula, which is offered as an
-accepted alternative surface form.
+The task here is exactly the release's task: state ``alpha``.
+
+**How a formula is scored.**  A correct hypothesis can be written many ways --
+conjuncts reordered, bound variables renamed, a double negation, a
+contrapositive -- so a string comparison measures the wrong thing.  Logical
+equivalence of first-order formulas is undecidable in general, but this release
+hands us the thing that makes it decidable here: every instance ships the
+finite worlds themselves, domain and full predicate extensions.  So the check
+is a **model checker** (:mod:`._folmodel`): evaluate the candidate and the gold
+at every individual of every world shown and see whether they ever disagree.
+That is a proof, not an estimate, and it is right where a judge would only be
+plausible.  The LLM judge is kept for the residue the checker cannot decide --
+a malformed answer, an unknown predicate -- and for nothing else.
 """
 
 from __future__ import annotations
@@ -26,10 +34,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, unparsed_score
+from ._folmodel import extensionally_equal
 
 REPO_URL = "https://github.com/SerafimBatzoglou/concept-synth"
 
@@ -56,9 +65,13 @@ class ABDAdapter(PooledDatasetAdapter):
         "output only the formula",
         "do not use introductory phrases or commentary",
     )
+    #: Verifiable, and checked as such: the answer is a formula over a closed
+    #: predicate vocabulary, and the worlds shipped with each instance decide
+    #: equivalence outright. The judge sees only what the model checker cannot
+    #: parse, so this dataset keeps self-consistency over its repeats.
     objective_metrics = True
     selection_cardinality = None
-    primary_metric = "formula_match"
+    primary_metric = "formula_equivalent"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -105,9 +118,15 @@ class ABDAdapter(PooledDatasetAdapter):
         if not alpha or not axioms or not worlds:
             return None
 
-        max_worlds = int(self.context.option("max_worlds", 4))
+        # All of them by default: the full world list is ~3.5k characters, well
+        # inside the input budget, and it is also what the answer is scored
+        # against -- the model is never asked to match a formula on evidence it
+        # was not shown. options.max_worlds truncates for a deliberate
+        # partial-evidence condition.
+        max_worlds = self.context.option("max_worlds", None)
+        shown = worlds[: int(max_worlds)] if max_worlds else worlds
         world_blocks = []
-        for position, world in enumerate(worlds[:max_worlds], start=1):
+        for position, world in enumerate(shown, start=1):
             domain = ", ".join(str(element) for element in C.as_list(world.get("domain")))
             predicates = world.get("predicates") or {}
             predicate_lines = []
@@ -148,6 +167,11 @@ class ABDAdapter(PooledDatasetAdapter):
                 "gold": alpha,
                 "description": C.normalize_whitespace(gold.get("description")),
                 "allowed": allowed,
+                # Exactly the worlds the prompt showed, stripped to what the
+                # model checker needs: the domain and the true extensions. The
+                # complementary `false` lists the release also ships are
+                # redundant under a closed domain and would bloat every record.
+                "worlds": [_compact_world(world) for world in shown],
             },
             task_kind="knowledge_completion",
             # Formal hypothesis synthesis over several worlds: room to reason.
@@ -159,7 +183,7 @@ class ABDAdapter(PooledDatasetAdapter):
                 "scenario": problem.get("scenario"),
                 "difficulty": description.get("difficulty"),
                 "alpha_tier": description.get("alphaTier"),
-                "n_worlds": len(worlds),
+                "n_worlds": len(shown),
             },
         )
 
@@ -173,29 +197,29 @@ class ABDAdapter(PooledDatasetAdapter):
         answer = extract_answer_span(response.text, output_contract)
         if not answer:
             return unparsed_score(
-                ["formula_match", "formula_token_f1", "predicate_compliance"],
+                ["formula_equivalent", "formula_match", "predicate_compliance"],
                 raw=response.text[:200],
             )
         gold = sample.reference["gold"]
         candidate = _formula(answer)
-        exact = float(_canonical(candidate) == _canonical(gold))
-        described = sample.reference.get("description") or ""
+        verdict = extensionally_equal(candidate, gold, sample.reference.get("worlds") or [])
+        # None means the checker does not apply -- unparseable, or naming a
+        # predicate the worlds do not define. Only those go to the judge.
+        equivalent = 0.0 if verdict is None else float(verdict)
         metrics = {
-            "formula_match": exact,
-            "formula_token_f1": max(
-                token_f1(candidate, gold),
-                token_f1(candidate, described) if described else 0.0,
-            ),
+            "formula_equivalent": equivalent,
+            "formula_match": float(_canonical(candidate) == _canonical(gold)),
             "predicate_compliance": _predicate_compliance(candidate, sample.reference["allowed"]),
+            "equivalence_undecidable": 1.0 if verdict is None else 0.0,
         }
-        scenario = sample.metadata.get("scenario")
-        if scenario:
-            metrics[f"formula_match_{scenario}"] = exact
-        difficulty = sample.metadata.get("difficulty")
-        if difficulty:
-            metrics[f"formula_match_{difficulty}"] = exact
+        for key in ("scenario", "difficulty"):
+            value = sample.metadata.get(key)
+            if value:
+                metrics[f"formula_equivalent_{value}"] = equivalent
         return SampleScore(
-            metrics=metrics, prediction=candidate[:400], details={"gold": gold[:300]}
+            metrics=metrics,
+            prediction=candidate[:400],
+            details={"gold": gold[:300], "decided": verdict is not None},
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
@@ -204,28 +228,28 @@ class ABDAdapter(PooledDatasetAdapter):
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
     ) -> dict[str, Any] | None:
-        if not response.text:
+        """Only what the model checker could not decide.
+
+        A judge asked to confirm a proof can only weaken it, so a decided
+        verdict is never second-guessed and never paid for.
+        """
+        if not response.text or not score.metrics.get("equivalence_undecidable"):
             return None
         return {
             "candidate": score.prediction or response.text[:500],
             "gold": sample.reference.get("description") or sample.reference["gold"],
             "criteria": (
                 "Correct if the candidate formula is logically equivalent to the reference, even "
-                "if written differently (variable renaming, reordered conjuncts)."
+                "if written differently (variable renaming, reordered conjuncts). The candidate "
+                "could not be parsed as a formula, so judge what it evidently asserts; an answer "
+                "that states no single condition on x is not equivalent to anything."
             ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["formula_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        return apply_judged_metric(score, verdict, "formula_equivalent")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -245,34 +269,52 @@ class ABDAdapter(PooledDatasetAdapter):
                 "self_consistency_<metric>":
                 "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
                 "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "formula_match": "(PRIMARY, higher is better) 1 if the answer's formula is structurally identical to the gold "
-                "alpha after canonicalization (whitespace, parentheses, case) -- primary, and "
-                "strict: logically equivalent rewrites count as misses",
-                "formula_token_f1": "token F1 against the gold formula or its human-readable "
-                "description, whichever matches better -- partial credit",
+                "again. Available because this dataset's answers are checkable and so can coincide. "
+                "It votes on the formula as written, so two equivalent phrasings of the right "
+                "answer do not pool their votes -- read it as a floor.",
+                "formula_equivalent": "(PRIMARY, higher is better, 0-1) 1 when the candidate and "
+                "the gold pick out the same individuals in every world shown, checked by "
+                "evaluating both formulas over those finite structures. Reordered conjuncts, "
+                "renamed bound variables and double negations all count as correct; a formula "
+                "that separates different individuals does not.",
+                "formula_match": "1 if the answer is structurally identical to the gold after "
+                "canonicalization -- a diagnostic, showing how often the model reproduces the "
+                "gold verbatim rather than an equivalent of it",
                 "predicate_compliance": "1 if the answer uses only the allowed predicates, i.e. "
                 "whether the model respected the hypothesis space",
-                "formula_match_<scenario>": "per scenario (ABD_FULL / PARTIAL / SKEPTICAL)",
-                "formula_match_<difficulty>": "per difficulty label",
-                "formula_judged": "LLM-judge verdict on logical equivalence (only when "
-                "engine.judge.enabled)",
+                "equivalence_undecidable": "(lower is better, 0-1) fraction the model checker "
+                "could not decide -- an unparseable answer or an unknown predicate. These, and "
+                "only these, are sent to the LLM judge, whose verdict then fills "
+                "formula_equivalent for them.",
+                "formula_equivalent_<scenario>": "per scenario (ABD_FULL / PARTIAL / SKEPTICAL)",
+                "formula_equivalent_<difficulty>": "per difficulty label",
             },
-            primary_metric="formula_match",
+            primary_metric="formula_equivalent",
             decisions=[
                 "Read the gold alpha from the instance archive (abd_instances_v1.yaml.gz); the "
                 "holdout file alone carries worlds and costs but not the gold formula.",
-                "Showed at most 4 training worlds per prompt (options.max_worlds); the release's "
-                "own prompts run to ~11k characters and the full world list would crowd the "
-                "input budget.",
+                "Showed every training world by default. The full list is ~3.5k characters "
+                "(6.1k at worst), comfortably inside the input budget, and it is also exactly "
+                "what the answer is scored against -- the model is never asked to match a "
+                "formula on evidence it was not shown. options.max_worlds truncates for a "
+                "deliberate partial-evidence condition.",
+                "Scored logical equivalence by evaluating both formulas over the worlds "
+                "themselves rather than by comparing strings or asking a judge. The worlds are "
+                "finite and fully specified, so this is a decision procedure; all 600 of the "
+                "release's own golds are decided by it. An LLM judge grades only the residue it "
+                "cannot parse.",
+                "Repaired two golds that the release serialises as 'Var(y)' instead of 'y' -- a "
+                "bug in its writer, not a different syntax -- so those instances are scored "
+                "rather than quietly handed to the judge.",
                 "Kept predicate_compliance as a separate metric because respecting the allowed "
                 "hypothesis space is a distinct competence from finding the right formula.",
                 "max_tokens scales with the instance's alphaTier (formula complexity).",
             ],
             caveats=[
-                "formula_match is exact structural equality, so a logically equivalent formula "
-                "written differently scores 0; formula_token_f1 and the judge stage exist for "
-                "exactly that reason, and the primary metric should be read as a lower bound.",
+                "Equivalence is decided over the worlds shown, not in general. Two formulas "
+                "that differ only on individuals no world contains are counted as the same "
+                "hypothesis -- which is the right notion for this task, since the gold is "
+                "defined as what explains those worlds, but it is not full logical equivalence.",
                 "Cost-optimality (the release's own criterion) is not verified -- that needs their "
                 "model-counting harness -- so a cheaper valid explanation would also count as a "
                 "miss.",
@@ -317,3 +359,21 @@ def _predicate_compliance(formula: str, allowed: Sequence[str]) -> float:
     if not used:
         return 0.0
     return float(used <= allowed_set)
+
+
+def _compact_world(world: dict[str, Any]) -> dict[str, Any]:
+    """A world reduced to what the model checker reads.
+
+    The release states each predicate twice -- the individuals it holds of and
+    the individuals it does not. Under a closed domain the second list is
+    implied by the first, and it is much the larger of the two, so only the
+    true extension is carried into the sample record.
+    """
+    predicates: dict[str, list[str]] = {}
+    for name, extension in (world.get("predicates") or {}).items():
+        entries = extension.get("true") if isinstance(extension, dict) else extension
+        predicates[str(name)] = [str(entry) for entry in (entries or [])]
+    return {
+        "domain": [str(element) for element in C.as_list(world.get("domain"))],
+        "predicates": predicates,
+    }

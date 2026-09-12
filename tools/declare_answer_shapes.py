@@ -151,12 +151,6 @@ TABLE: dict[str, dict] = {
         "constraints": ["output exactly one formula",
                         "use only the symbols given",
                         "output only the formula", NO_PREAMBLE]},
-    "hypospace": {
-        "answer_format": "one hypothesis per line",
-        "constraints": ["put each hypothesis on its own line",
-                        "make every hypothesis different from the others",
-                        "output only the hypotheses",
-                        "do not number or explain them"]},
     "open_problems": {
         "constraints": [ONLY_ANSWER, NO_PREAMBLE]},
 

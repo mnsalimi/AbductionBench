@@ -46,6 +46,95 @@ def test_synpat_expression_cleaning_and_scaling():
     assert parsed["equations"] == ["a - b", "G*a"]
 
 
+def test_synpat_zero_set_equivalence_and_structure():
+    """The comparison SynPAT is actually scored by.
+
+    An equation is an expression set to zero, so what identifies it is where it
+    vanishes. A sign flip, a scalar multiple and a rearrangement by a
+    non-constant factor are all the same equation; only the last of those
+    defeats a scalar-factor test, which is why the scalar test is not the one
+    used.
+    """
+    from abductionbench.adapters._mathnorm import same_monomials
+    from abductionbench.adapters.synpat import _equal_as_zero_set, _equal_up_to_scale
+
+    symbols = ["Fc", "Fg", "c", "dxdt"]
+    gold = "c*Fg - dxdt*Fc"
+
+    assert _equal_as_zero_set(gold, gold, symbols) is True
+    assert _equal_as_zero_set("dxdt*Fc - c*Fg", gold, symbols) is True       # sign
+    assert _equal_as_zero_set("2*c*Fg - 2*dxdt*Fc", gold, symbols) is True   # scalar
+    # The case the scalar test gets wrong: dividing through by c*Fc.
+    assert _equal_as_zero_set("Fg/Fc - dxdt/c", gold, symbols) is True
+    assert _equal_up_to_scale("Fg/Fc - dxdt/c", gold, symbols) is False
+    assert _equal_as_zero_set("c*Fg + dxdt*Fc", gold, symbols) is False
+
+    # structure_match ignores a coefficient the theory alone cannot fix, so the
+    # gap between it and the primary metric is readable rather than hidden.
+    assert same_monomials("4*c*Fg - dxdt*Fc", gold, symbols) is True
+    assert same_monomials("c*Fg - dxdt*Fg", gold, symbols) is False
+
+
+def test_synpat_prompt_carries_no_data_rows():
+    """Samples are withheld on purpose: fitting them would be induction."""
+    import inspect
+
+    from abductionbench.adapters import synpat
+
+    source = inspect.getsource(synpat.SynPATAdapter.make_sample)
+    assert ".dat" not in source
+    assert "data_rows" not in source
+    assert "noise_level" not in source
+    # What replaces them: the quantities' units, which are part of the axiom
+    # system rather than a sample drawn from it.
+    assert "units_variables" in source
+
+
+# --------------------------------------------------------------------------- #
+# ABD: deciding logical equivalence against the instance's own worlds
+# --------------------------------------------------------------------------- #
+
+
+def test_abd_model_checker_decides_equivalence():
+    from abductionbench.adapters._folmodel import extensionally_equal
+
+    # One world: a has an S-successor that is P, d has one that is not. The
+    # second individual is what lets a weaker hypothesis be told apart from
+    # the gold -- which is also why the adapter scores against every world the
+    # instance ships rather than a few of them.
+    worlds = [
+        {
+            "domain": ["a", "b", "c", "d"],
+            "predicates": {"S": ["(a, b)", "(d, c)"], "P": ["b"]},
+        }
+    ]
+    gold = "(exists y (and (S x y) (P y)))"
+
+    assert extensionally_equal(gold, gold, worlds) is True
+    # Renaming the bound variable and reordering the conjuncts changes the
+    # string and not the hypothesis.
+    assert extensionally_equal("(exists z (and (P z) (S x z)))", gold, worlds) is True
+    # A double negation, likewise.
+    assert extensionally_equal(
+        "(not (not (exists y (and (S x y) (P y)))))", gold, worlds
+    ) is True
+    # A genuinely weaker hypothesis separates different individuals.
+    assert extensionally_equal("(exists y (S x y))", gold, worlds) is False
+    # Undecidable, not wrong: these are the only cases a judge is asked about.
+    assert extensionally_equal("I could not work it out", gold, worlds) is None
+    assert extensionally_equal("(exists y (Zz x y))", gold, worlds) is None
+
+
+def test_abd_model_checker_repairs_the_release_var_wrapper():
+    """Two of the 600 golds serialise a bound variable as ``Var(y)``."""
+    from abductionbench.adapters._folmodel import extensionally_equal
+
+    worlds = [{"domain": ["a", "b"], "predicates": {"R": ["(a, b)"], "Q": ["b"]}}]
+    broken = "(exists Var(y) (and (R x y) (Q y)))"
+    fixed = "(exists y (and (R x y) (Q y)))"
+    assert extensionally_equal(broken, fixed, worlds) is True
+
+
 # --------------------------------------------------------------------------- #
 # ABD: formula canonicalization and predicate compliance
 # --------------------------------------------------------------------------- #
@@ -60,61 +149,6 @@ def test_abd_formula_helpers():
     assert _predicate_compliance("(exists y (and (S x y) (P y)))", ["S", "P"]) == 1.0
     assert _predicate_compliance("(exists y (and (S x y) (Ab y)))", ["S", "P"]) == 0.0
     assert _predicate_compliance("", ["S"]) == 0.0
-
-
-# --------------------------------------------------------------------------- #
-# HypoSpace: hypothesis parsing and coverage scoring
-# --------------------------------------------------------------------------- #
-
-
-def test_hypospace_parsing_and_coverage():
-    from abductionbench.adapters.hypospace import HypoSpaceAdapter, _parse_hypotheses
-
-    parsed = _parse_hypotheses(
-        "Hypothesis 1: A -> B, C -> D\nHypothesis 2: none\nHypothesis 3: B -> Z\nsome prose",
-        ["A", "B", "C", "D"],
-    )
-    assert parsed[0] == frozenset({("A", "B"), ("C", "D")})
-    assert parsed[1] == frozenset()
-    # Edges naming a variable outside the problem are dropped, so that line
-    # contributes no graph rather than an invalid one.
-    assert len(parsed) == 2
-
-    sample = SampleSpec(
-        sample_id="h",
-        fields={},
-        reference={
-            "compatible": [[["A", "B"]], []],
-            "n_compatible": 2,
-            "nodes": ["A", "B"],
-            "requested": 3,
-        },
-    )
-    score = HypoSpaceAdapter.score(
-        object.__new__(HypoSpaceAdapter),
-        sample,
-        _response("Hypothesis 1: A -> B\nHypothesis 2: none\nHypothesis 3: B -> A"),
-    )
-    # Two of three proposals are compatible; both achievable ones were found.
-    assert score.metrics["validity"] == pytest.approx(2 / 3)
-    assert score.metrics["distinct_valid_rate"] == 1.0
-    assert score.metrics["any_valid"] == 1.0
-    assert score.metrics["duplicate_rate"] == 0.0
-
-
-def test_hypospace_unparseable_is_not_scored_as_wrong():
-    from abductionbench.adapters.hypospace import HypoSpaceAdapter
-
-    sample = SampleSpec(
-        sample_id="h",
-        fields={},
-        reference={"compatible": [[["A", "B"]]], "n_compatible": 1, "nodes": ["A", "B"], "requested": 3},
-    )
-    score = HypoSpaceAdapter.score(
-        object.__new__(HypoSpaceAdapter), sample, _response("I think A causes B.")
-    )
-    assert score.parse_ok is False
-    assert score.metrics["distinct_valid_rate"] == 0.0
 
 
 # --------------------------------------------------------------------------- #

@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-adapters = ["requests>=2.32", "datasets>=2.19", "huggingface_hub>=0.23"]
+adapters = ["requests>=2.32", "datasets>=2.19", "huggingface_hub>=0.23", "sympy>=1.12"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]

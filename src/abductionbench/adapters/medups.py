@@ -25,7 +25,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 REPO_ID = "oriel9p/MedUPS_mid_stream"
 COLLECTION_URL = "https://huggingface.co/collections/oriel9p/medups"
@@ -52,7 +52,11 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "do not explain why",
         "do not use introductory phrases or commentary",
     )
-    objective_metrics = True
+    #: Measured, not assumed: the model writes a disease name into an open
+    #: vocabulary with no candidate list, so a correct answer routinely differs
+    #: from the gold in wording -- synonym, eponym, abbreviation, subtype -- and
+    #: fails a string comparison. The gold exists; its surface form is not the answer.
+    objective_metrics = False
     selection_cardinality = None
     hypothesis_modes = ("generation",)
     hypothesis_mode_options = {
@@ -66,12 +70,12 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "are added -- both would replace the benchmark's under-specified-diagnosis task with an "
         "easier closed-set one."
     )
-    primary_metric = "diagnosis_match"
+    primary_metric = "diagnosis_judged"
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "diagnosis_match",
+        "generation": "diagnosis_judged",
         "selection": "accuracy",
     }
 
@@ -157,11 +161,11 @@ class MedUPSAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        return text_match_score(
+        return judged_only_score(
             response,
-            gold=sample.reference["gold"],
+            metric="diagnosis_judged",
             output_contract=output_contract,
-            primary="diagnosis_match",
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
 
     def judge_request(
@@ -173,20 +177,19 @@ class MedUPSAdapter(PooledDatasetAdapter):
             "candidate": extract_answer_span(response.text, None)[:600],
             "gold": sample.reference["gold"],
             "observation": C.clip_words(sample.fields["observation"], 200),
-            "criteria": "Equivalent disease entities (synonyms, abbreviations) count as correct.",
+            "criteria": (
+                "The candidate is correct if it names the same disease entity as the "
+                "reference, however it is written: synonyms, abbreviations, eponyms and "
+                "spelling variants all count. A broader category that does not identify "
+                "the reference disease, or a different disease that shares symptoms with "
+                "it, does not count."
+            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["diagnosis_match_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        return apply_judged_metric(score, verdict, "diagnosis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -204,26 +207,26 @@ class MedUPSAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer equals or contains the published diagnosis "
-                "(primary)",
-                "exact_match": "strict normalized equality with the published diagnosis",
-                "token_f1": "bag-of-tokens F1 against the published diagnosis",
-                "rouge_l": "LCS F-measure against the published diagnosis",
-                "accuracy": "(PRIMARY, higher is better) selection subtask: 1 if the chosen option is the gold diagnosis",
-                "diagnosis_match_judged": "LLM-judge equivalence verdict (only when "
-                "engine.judge.enabled)",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A diagnosis is free text with many correct surface forms, "
+                "so a plurality over repeats is not meaningful and Best-of-N replaces it.",
+                "diagnosis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on "
+                "whether the stated diagnosis is the same disease entity as the published one, "
+                "however written. 1.0 when the judge affirms.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
+                "could be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_match",
+            primary_metric="diagnosis_judged",
             decisions=[
                 "The suite's URL points at a Hugging Face *collection*, which is not a loadable "
                 "dataset; resolved it to its member datasets and used MedUPS_mid_stream, which is "
                 "the split the paper evaluates.",
                 "Scored against `final_answer`, the concise form of the same answer that "
                 "`answer` gives at length: a diagnosis is what is being judged, not an essay.",
+                "Scored by an LLM judge against the published diagnosis rather than by string "
+                "comparison: no candidate list is shown, so the answer is written into an open "
+                "vocabulary where the same disease has many correct surface forms.",
                 "No multiple-choice adaptation and no synthesised distractors: turning this into "
                 "a closed-set choice would replace the under-specified-diagnosis task with an "
                 "easier one.",

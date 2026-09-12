@@ -28,7 +28,6 @@ distractors are drawn with the run seed, so they are identical across models.
 
 from __future__ import annotations
 
-import random
 from collections.abc import Sequence
 from typing import Any
 
@@ -42,7 +41,7 @@ from ..core.types import (
     SampleSpec,
 )
 from . import _common as C
-from ._base import text_match_score, PooledDatasetAdapter, selection_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 
 REPO_URL = "https://github.com/MaiWert/MedQDx"
@@ -57,14 +56,17 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given a clinical vignette "
-        "that may be incomplete, and a closed set of candidate diagnoses. Choose the "
-        "diagnosis best supported by the information actually present."
+        "that may be incomplete. Name the diagnosis best supported by the information "
+        "actually present."
     )
     data_delivery_mode = "interactive"
-    objective_metrics = True
-    # No candidate list is shown: the release asks for an open diagnosis.
+    #: No candidate list is shown -- the release asks for an open diagnosis
+    #: ("Output ONLY the name of the disease or condition using correct medical
+    #: term"), so the answer is written into an open vocabulary and a correct
+    #: answer routinely differs from the gold in wording. The judge scores it.
+    objective_metrics = False
     selection_cardinality = None
-    primary_metric = "diagnosis_match"
+    primary_metric = "diagnosis_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -103,16 +105,6 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             )
         self._mode = mode
         return items
-
-    def _options_for(self, gold: str, salt: str) -> list[str]:
-        """Gold plus deterministic distractors from the dataset's own label set."""
-        count = int(self.context.option("n_options", 5))
-        rng = random.Random(f"{self.context.seed}::medqdx::{salt}")
-        pool = [label for label in self._label_space if label != gold]
-        rng.shuffle(pool)
-        options = [gold, *pool[: max(1, count - 1)]]
-        rng.shuffle(options)
-        return options
 
     # ------------------------------------------------------------------ #
     # the questioning loop -- MedQDx's whole premise
@@ -277,18 +269,14 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
 
         if not vignette:
             return None
-        options = self._options_for(gold, salt=sample_id)
-        labels = C.letter_labels(len(options))
         return SampleSpec(
             sample_id=sample_id,
             fields={
                 "observation": vignette,
                 "context": context,
                 "question": "Which diagnosis best explains this presentation?",
-                "options": options,
-                "option_labels": labels,
             },
-            reference={"gold_label": labels[options.index(gold)], "gold": gold},
+            reference={"gold": gold},
             task_kind="generation",
             # A single diagnosis label; the budget covers differential reasoning.
             max_tokens=512,
@@ -318,23 +306,45 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         # disease or condition using correct medical term"), not a label from a
         # list -- it never shows the model a candidate list at all. Scoring a
         # label here would score a different, easier task than MedQDx poses.
-        score = text_match_score(
-            response,
-            gold=sample.reference["gold"],
-            output_contract=output_contract,
-            primary="diagnosis_match",
-        )
         condition = sample.metadata.get("condition", "unknown")
-        score.metrics[f"diagnosis_match_{condition}"] = score.metrics.get(
-            "diagnosis_match", 0.0
+        # The stratum is seeded here and filled by the judge along with the base
+        # metric, so each information level is the same verdict seen through a filter.
+        return judged_only_score(
+            response,
+            metric="diagnosis_judged",
+            output_contract=output_contract,
+            extra_metrics={f"diagnosis_judged_{condition}": 0.0},
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
-        return score
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        if not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:600],
+            "gold": sample.reference["gold"],
+            "observation": C.clip_words(sample.fields["observation"], 200),
+            "criteria": (
+                "The candidate is correct if it names the same disease entity as the "
+                "reference, however it is written: synonyms, abbreviations, eponyms and "
+                "spelling variants all count. A broader category that does not identify "
+                "the reference disease, or a different disease that shares symptoms with "
+                "it, does not count."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "diagnosis_judged")
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
         # Difficulty gradient: how much does information completeness matter?
-        full = metrics.get("diagnosis_match_100pct")
-        half = metrics.get("diagnosis_match_50pct")
+        full = metrics.get("diagnosis_judged_100pct")
+        half = metrics.get("diagnosis_judged_50pct")
         if full is not None and half is not None:
             metrics["information_sensitivity"] = full - half
         return metrics
@@ -346,7 +356,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             name="MedQDx",
             domain="Healthcare: Interactive Diagnosis",
             source_url=REPO_URL,
-            processing_mode="Selection",
+            processing_mode="Generation",
             split_used=self.split_used,
             abductive_subset=(
                 "The diagnostic step: infer the disease that best explains an incomplete "
@@ -360,23 +370,30 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 f"then drawn by {self.sampling_note()}"
             ),
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "accuracy": "(PRIMARY, higher is better) 1 if the selected diagnosis is the gold prognosis",
-                "accuracy_100pct/_80pct/_50pct": "accuracy at each information-completeness level",
-                "accuracy_<n>_rounds": "accuracy with n recorded inquiry rounds (inquiry_rounds mode)",
-                "information_sensitivity": "accuracy at 100% information minus accuracy at 50% -- "
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A diagnosis is free text with many correct surface forms, "
+                "so a plurality over repeats is not meaningful and Best-of-N replaces it.",
+                "diagnosis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether "
+                "the named diagnosis is the same disease entity as the case's prognosis, however "
+                "written. 1.0 when the judge affirms.",
+                "diagnosis_judged_100pct/_80pct/_50pct": "the same metric at each "
+                "information-completeness level",
+                "diagnosis_judged_<n>_rounds": "the same metric with n recorded inquiry rounds "
+                "(inquiry_rounds mode)",
+                "information_sensitivity": "score at 100% information minus score at 50% -- "
                 "how much the model depends on a complete picture",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
+                "could be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="accuracy",
+            primary_metric="diagnosis_judged",
             decisions=[
-                "Rendered the task as closed-set selection (the processing mode the suite asks "
-                "for) using the dataset's own 29-disease label space; distractors are drawn with "
-                "the run seed, so every model sees identical options.",
-                f"n_options={self.context.option('n_options', 5)} (gold + 4 distractors): enough "
-                "to be non-trivial while keeping the prompt short. Configurable.",
+                "Kept the release's own open-vocabulary task -- MedQDx tells the model to "
+                "output only the name of the disease and never shows it a candidate list. An "
+                "earlier version of this adapter built a 5-way choice from the 29-disease label "
+                "space; that is an easier task than the benchmark poses, and it is gone.",
+                "Scored by an LLM judge against the case prognosis rather than by string "
+                "comparison, which is what an open vocabulary requires.",
                 "Chose the 100 patient vignettes x 3 completeness levels as the default, which "
                 "yields exactly 300 samples and measures degradation as evidence is withheld.",
                 "The recorded Q&A in the benchmark CSV was produced by a specific model and is "
@@ -392,6 +409,5 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 **self.base_statistics(),
                 "mode": mode,
                 "label_space": len(getattr(self, "_label_space", [])),
-                "n_options": int(self.context.option("n_options", 5)),
             },
         )

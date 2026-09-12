@@ -27,7 +27,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 REPO_URL = (
     "https://github.com/Zayne-sprague/Natural_Language_Deduction_with_Incomplete_Information"
@@ -55,9 +55,14 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
         "do not restate the hypothesis or the given premises",
         "do not explain your reasoning",
     )
-    objective_metrics = True
+    #: Measured, not assumed: the missing premise is written in free English
+    #: into an unbounded space, and several different premises complete the
+    #: same step. "Animals need water to survive" against a gold of "an animal
+    #: requires water for survival" is the same premise and fails a string
+    #: comparison, so the judge scores it.
+    objective_metrics = False
     selection_cardinality = None
-    primary_metric = "exact_match"
+    primary_metric = "premise_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -160,17 +165,44 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        score = text_match_score(
-            response,
-            gold=sample.reference["gold"],
-            output_contract=output_contract,
-            primary="match",
-        )
         corpus = sample.metadata.get("corpus", "unknown")
-        for key in ("exact_match", "token_f1"):
-            if key in score.metrics:
-                score.metrics[f"{key}_{corpus}"] = score.metrics[key]
-        return score
+        # The per-corpus stratum is seeded here and filled by the judge along with
+        # the base metric: it is the same verdict seen through a filter.
+        return judged_only_score(
+            response,
+            metric="premise_judged",
+            output_contract=output_contract,
+            extra_metrics={f"premise_judged_{corpus}": 0.0},
+            details={"gold": str(sample.reference["gold"])[:300]},
+        )
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        if not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:600],
+            "gold": sample.reference["gold"],
+            "observation": C.clip_words(
+                (sample.fields.get("context") or "")
+                + "\nConclusion: "
+                + sample.fields.get("observation", ""),
+                200,
+            ),
+            "criteria": (
+                "The candidate is correct if, taken with the premise already given, it would "
+                "license the conclusion in the same way the reference premise does -- however "
+                "it is worded. A premise that is about something else, that merely restates "
+                "the conclusion or the given premise, or that is too weak to close the gap, "
+                "does not count."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "premise_judged")
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
@@ -191,27 +223,34 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; the two corpora are pooled and reported separately",
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "exact_match": "(PRIMARY, higher is better) normalized equality with the gold missing premise (primary)",
-                "match": "gold premise equals or is contained in the answer",
-                "token_f1": "bag-of-tokens F1 against the gold premise",
-                "rouge_l": "LCS F-measure against the gold premise",
-                "exact_match_<corpus>": "the metric restricted to entailmentbank or enwn",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A premise is free text with many correct phrasings, so "
+                "a plurality over repeats is not meaningful and Best-of-N replaces it.",
+                "premise_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on "
+                "whether the stated premise closes the same gap as the gold one, however worded. "
+                "1.0 when the judge affirms.",
+                "premise_judged_<corpus>": "the metric restricted to entailmentbank or enwn",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no premise "
+                "could be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="exact_match",
+            primary_metric="premise_judged",
             decisions=[
                 "Split each source line into 'known premise' and 'conclusion' at its last "
                 "sentence, so the prompt states both roles explicitly instead of pasting one blob.",
                 "Preferred a test/val file per corpus and fell back to train where the repository "
                 "ships nothing else (EntailmentBank's abductive step data); this is reported.",
                 "max_tokens=320: the answer is a single short premise.",
+                "Scored by an LLM judge rather than by string overlap. The premise is written in "
+                "free English, several different premises complete the same step, and the gold is "
+                "one annotator's phrasing of one of them -- exact_match punishes a correct "
+                "paraphrase and token overlap rewards a wrong sentence that reuses the words.",
             ],
             caveats=[
-                "Several different premises can complete an entailment; exact_match against the "
-                "single gold premise is a lower bound, and token_f1/rouge_l give partial credit.",
+                "Several different premises can complete an entailment. The judge is asked "
+                "whether the candidate closes the same gap as the gold, not whether it is the "
+                "gold, but a correct premise the gold does not anticipate may still be marked "
+                "wrong -- the score is a lower bound.",
                 "Because EntailmentBank's abductive step data is a train file, models trained on "
                 "public EntailmentBank data may have seen these items.",
             ],

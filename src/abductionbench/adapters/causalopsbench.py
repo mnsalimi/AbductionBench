@@ -50,6 +50,11 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
         "do not use introductory phrases or commentary",
     )
     options_heading = "Candidate faulty components:"
+    #: The primary answer is the faulty component, and the components are listed
+    #: in the prompt -- a closed pool with fixed spellings, which a string test
+    #: checks correctly. Only the fault TYPE is written into an open vocabulary,
+    #: so it gets a judged metric beside the mechanical one rather than the whole
+    #: dataset being moved onto the judge.
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "component_match"
@@ -161,6 +166,10 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
         metrics["full_diagnosis"] = float(
             metrics["component_match"] and metrics["fault_type_match"]
         )
+        # Seeded here, filled by the judge: the fault type is a free label
+        # ("oxygen-transfer-loss") that a correct answer can word differently.
+        metrics["fault_type_judged"] = 0.0
+        metrics["full_diagnosis_judged"] = 0.0
         domain = sample.metadata.get("domain")
         if domain:
             metrics[f"component_match_{domain}"] = metrics["component_match"]
@@ -168,6 +177,40 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
             metrics=metrics,
             prediction=(extract_answer_span(text, output_contract) or text)[:300],
             details={"gold": f"{reference['component']} / {reference['fault_type']}"},
+        )
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        """Judge the fault TYPE only; the component is checked mechanically."""
+        if not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:600],
+            "gold": sample.reference["fault_type"],
+            "observation": C.clip_words(sample.fields["observation"], 150),
+            "criteria": (
+                "Judge only the KIND OF FAULT named, not which component it is on. The "
+                "candidate is correct if it describes the same failure mode as the reference "
+                "label, however it is worded -- 'oxygen-transfer-loss', 'loss of oxygen "
+                "transfer' and 'the aerator is no longer transferring oxygen' are the same "
+                "fault type. A different failure mode, or a bare statement that something is "
+                "broken, does not count."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        value = 1.0 if getattr(verdict, "positive", False) else 0.0
+        metrics = dict(score.metrics)
+        metrics["fault_type_judged"] = value
+        metrics["full_diagnosis_judged"] = float(metrics.get("component_match", 0.0) and value)
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details={**score.details, "judge_label": getattr(verdict, "label", None)},
         )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
@@ -192,9 +235,17 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
                 "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
                 "modes.repeats samples of the same record, read off those samples rather than bought "
                 "again. Available because this dataset's answers are checkable and so can coincide.",
-                "component_match": "(PRIMARY, higher is better) 1 if the response names the faulty component (primary)",
-                "fault_type_match": "1 if the response names the gold fault type",
-                "full_diagnosis": "1 only if both are named",
+                "component_match": "(PRIMARY, higher is better) 1 if the response names the "
+                "faulty component. Checked mechanically, and correctly so: the components are "
+                "listed in the prompt, so their spelling is fixed and the answer space is closed.",
+                "fault_type_match": "1 if the response uses the gold fault label's own wording "
+                "(underscore/space/hyphen variants accepted) -- a strict lower bound",
+                "fault_type_judged": "LLM-judge verdict on whether the named fault is the same "
+                "failure mode as the gold label, however worded. Unlike the component, the fault "
+                "type is written into an open vocabulary, so this is the metric to read.",
+                "full_diagnosis": "1 only if the component and the gold fault wording are both named",
+                "full_diagnosis_judged": "1 if the component is right and the judge accepts the "
+                "fault type -- the operationally useful outcome",
                 "component_match_<domain>": "the primary metric per simulated domain",
             },
             primary_metric="component_match",
@@ -207,6 +258,9 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
                 "prompt stays inside the input budget while preserving the trend.",
                 "Included the operator manuals shipped with the episode, since a human diagnostician "
                 "would have them.",
+                "Split the scoring by answer space rather than moving the whole dataset onto the "
+                "judge: the component comes from a list shown in the prompt and is checked "
+                "mechanically, while the fault type is free text and is judged.",
             ],
             caveats=[
                 "Episodes are synthetic (generator 'causalopsbench.synthetic.v1'), so scores "

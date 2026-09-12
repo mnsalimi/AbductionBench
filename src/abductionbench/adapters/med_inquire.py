@@ -35,7 +35,12 @@ from ..core.types import (
     SampleSpec,
 )
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import (
+    PooledDatasetAdapter,
+    apply_judged_metric,
+    judged_only_score,
+    selection_score,
+)
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 
 
@@ -74,7 +79,11 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         "the presenting picture you can see."
     )
     data_delivery_mode = "interactive"
-    objective_metrics = True
+    #: The generation subtask -- the only one run -- asks for a disease name with
+    #: no candidate list, so a correct answer routinely differs from the gold in
+    #: wording and only the judge can score it. prepare() flips this back to True
+    #: if the selection subtask is ever selected, where a label is checkable.
+    objective_metrics = False
     selection_cardinality = "single"
     hypothesis_modes = ("generation",)
     hypothesis_mode_options = {
@@ -88,18 +97,23 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         "DiagnosisArena's release, so a selection task here would be DiagnosisArena's task over "
         "DiagnosisArena's cases, scored twice."
     )
-    primary_metric = "diagnosis_match"
+    primary_metric = "diagnosis_judged"
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "diagnosis_match",
+        "generation": "diagnosis_judged",
         "selection": "accuracy",
     }
 
     @property
     def _subtask(self) -> str:
         return str(self.context.option("subtask", "generation"))
+
+    def prepare(self) -> None:
+        # Selection is scored against an answer key; generation is judged.
+        self.objective_metrics = self._subtask == "selection"
+        super().prepare()
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -283,12 +297,11 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 output_contract=output_contract,
                 metric_name="accuracy",
             )
-        return text_match_score(
+        return judged_only_score(
             response,
-            gold=sample.reference["gold"],
-            accepted=_abbreviations(sample.reference["gold"]),
+            metric="diagnosis_judged",
             output_contract=output_contract,
-            primary="diagnosis_match",
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
 
     def judge_request(
@@ -301,20 +314,19 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             "candidate": score.prediction or response.text[:600],
             "gold": sample.reference["gold"],
             "observation": C.clip_words(sample.fields["observation"], 200),
-            "criteria": "Equivalent disease entities (synonyms, abbreviations) count as correct.",
+            "criteria": (
+                "The candidate is correct if it names the same disease entity as the "
+                "reference, however it is written: synonyms, abbreviations, eponyms and "
+                "spelling variants all count. A broader category that does not identify "
+                "the reference disease, or a different disease that shares symptoms with "
+                "it, does not count."
+            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["diagnosis_match_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        return apply_judged_metric(score, verdict, "diagnosis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -332,25 +344,25 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
-                "modes.repeats samples of the same record, read off those samples rather than bought "
-                "again. Available because this dataset's answers are checkable and so can coincide.",
-                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer equals or contains the gold diagnosis (or a "
-                "parenthesized abbreviation the dataset itself gives)",
-                "exact_match": "strict normalized equality with the gold diagnosis",
-                "token_f1": "bag-of-tokens F1 against the gold diagnosis",
-                "rouge_l": "LCS F-measure against the gold diagnosis",
-                "diagnosis_match_judged": "LLM-judge verdict on semantic equivalence (only when "
-                "engine.judge.enabled)",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A diagnosis is free text with many correct surface forms, "
+                "so a plurality over repeats is not meaningful and Best-of-N replaces it. The "
+                "selection subtask, being checkable, gets self_consistency_ instead.",
+                "diagnosis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether "
+                "the named diagnosis is the same disease entity as the gold, however written. "
+                "1.0 when the judge affirms.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
+                "could be read from; these score 0 and are counted separately from being wrong.",
                 "accuracy": "(PRIMARY, higher is better) selection subtask: 1 if the chosen option letter is correct",
             },
-            primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_match",
+            primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_judged",
             decisions=[
                 "Default is free-text generation, matching this dataset's processing mode; the "
                 "four provided candidates are only used with options.subtask = selection.",
-                "Accepted the abbreviation the gold string itself parenthesizes (e.g. 'Cutaneous "
-                "meningeal heterotopia (CMH)' also accepts 'CMH') -- no synonyms are invented.",
+                "Scored by an LLM judge rather than by string comparison: the model names a "
+                "disease with no candidate list in front of it, so a correct answer routinely "
+                "differs from the gold in wording (synonym, eponym, abbreviation, subtype).",
                 "options.evidence controls how much work-up is shown: full (default), "
                 "case_and_exam, or case_only, so the same items can probe abduction under "
                 "progressively less evidence.",
@@ -372,8 +384,9 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "and no selection variant here, precisely because that would be the other "
                 "dataset's task over the other dataset's cases.",
                 "Case reports are published literature and may be memorized by large models.",
-                "String matching under-credits correct paraphrases; enable engine.judge for "
-                "diagnosis_match_judged.",
+                "The judge is required for this dataset: with engine.judge disabled the "
+                "generation subtask has no metric, and the run fails rather than reporting a "
+                "string-overlap number that would not mean what it says.",
             ],
             statistics={
                 **self.base_statistics(),
@@ -381,13 +394,3 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "evidence": str(self.context.option("evidence", "case_and_exam")),
             },
         )
-
-
-def _abbreviations(gold: str) -> list[str]:
-    """Surface forms the gold string itself provides: text before/inside parentheses."""
-    out: list[str] = []
-    if "(" in gold and ")" in gold:
-        head = gold.split("(")[0].strip()
-        inner = gold[gold.index("(") + 1 : gold.rindex(")")].strip()
-        out.extend(part for part in (head, inner) if part)
-    return out

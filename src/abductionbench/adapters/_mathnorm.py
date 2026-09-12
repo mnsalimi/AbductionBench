@@ -21,7 +21,14 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-__all__ = ["normalize_math", "parse_math", "equal_expressions", "equal_up_to_scale"]
+__all__ = [
+    "normalize_math",
+    "parse_math",
+    "equal_expressions",
+    "equal_up_to_scale",
+    "equal_as_zero_set",
+    "same_monomials",
+]
 
 #: Greek letters and other symbols models use in place of ASCII names.
 _UNICODE_NAMES = {
@@ -199,5 +206,94 @@ def equal_up_to_scale(candidate: str, reference: str, symbols: Sequence[str]) ->
             return bool(sympy.simplify(left) == 0)
         ratio = sympy.simplify(left / right)
         return bool(ratio.is_number and ratio != 0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _zero_set_key(expression: Any, sympy: Any) -> frozenset[str] | None:
+    """The irreducible factors of an expression, canonicalized for comparison.
+
+    An equation written as ``expr = 0`` says nothing about ``expr`` itself,
+    only about where it vanishes. So the thing to compare is the zero set, and
+    for these expressions that is the set of irreducible factors of the
+    numerator -- each divided by its leading coefficient, so that ``x - y`` and
+    ``2*y - 2*x`` give the same key, and each taken once regardless of
+    multiplicity, since ``(x - y)**2`` vanishes exactly where ``x - y`` does.
+    """
+    numerator, _denominator = sympy.fraction(sympy.together(sympy.simplify(expression)))
+    numerator = sympy.expand(numerator)
+    if numerator == 0:
+        return frozenset({"0"})
+    _coefficient, parts = sympy.factor_list(numerator)
+    keys: set[str] = set()
+    for base, _power in parts:
+        free = sorted(base.free_symbols, key=str)
+        if not free:
+            continue  # a constant factor never vanishes
+        try:
+            leading = sympy.Poly(base, *free).LC()
+            canonical = sympy.expand(sympy.simplify(base / leading))
+        except sympy.PolynomialError:
+            canonical = sympy.expand(base)
+        keys.add(sympy.srepr(canonical))
+    if not keys:
+        return None  # the whole expression is a non-zero constant: no zero set
+    return frozenset(keys)
+
+
+def equal_as_zero_set(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+    """Do the two expressions vanish in the same place?
+
+    Stronger than :func:`equal_up_to_scale`, which only accepts a *constant*
+    multiple. An equation set to zero is also invariant under multiplication by
+    a non-constant factor: ``Fg/Fc - dxdt/c`` and ``c*Fg - dxdt*Fc`` are the
+    same physical law written two ways, and the first is not a scalar multiple
+    of the second. ``None`` means undecidable -- unparseable, or SymPy gave up.
+    """
+    left = parse_math(candidate, symbols)
+    right = parse_math(reference, symbols)
+    if left is None or right is None:
+        return None
+    try:
+        import sympy
+
+        if sympy.simplify(left - right) == 0:
+            return True
+        left_key = _zero_set_key(left, sympy)
+        right_key = _zero_set_key(right, sympy)
+        if left_key is None or right_key is None:
+            # One side never vanishes; they agree only if neither does.
+            return left_key == right_key
+        return left_key == right_key
+    except Exception:  # noqa: BLE001 - simplification or factoring blew up
+        return None
+
+
+def same_monomials(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+    """Do the two expressions use the same terms, ignoring numeric coefficients?
+
+    A diagnostic, not a correctness test. Where a reference equation carries a
+    coefficient nobody could derive from the theory alone -- SynPAT's
+    ``4*c*dx1dt + d2x1dt2*d1`` -- an answer with the right structure and the
+    wrong number is a different equation, and is scored as one. This says how
+    often that happened, so the cost of withholding the data is visible instead
+    of buried in the primary metric.
+    """
+    left = parse_math(candidate, symbols)
+    right = parse_math(reference, symbols)
+    if left is None or right is None:
+        return None
+    try:
+        import sympy
+
+        def terms(expression: Any) -> frozenset[str]:
+            expanded = sympy.expand(expression)
+            parts = expanded.as_ordered_terms() if expanded != 0 else []
+            return frozenset(sympy.srepr(part.as_coeff_Mul()[1]) for part in parts)
+
+        left_terms, right_terms = terms(left), terms(right)
+        if not left_terms or not right_terms:
+            return left_terms == right_terms
+        return left_terms == right_terms
     except Exception:  # noqa: BLE001
         return None
