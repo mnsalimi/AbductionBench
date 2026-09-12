@@ -120,9 +120,13 @@ def test_abd_model_checker_decides_equivalence():
     ) is True
     # A genuinely weaker hypothesis separates different individuals.
     assert extensionally_equal("(exists y (S x y))", gold, worlds) is False
-    # Undecidable, not wrong: these are the only cases a judge is asked about.
-    assert extensionally_equal("I could not work it out", gold, worlds) is None
-    assert extensionally_equal("(exists y (Zz x y))", gold, worlds) is None
+    # A predicate the problem does not have is a WRONG answer, not an
+    # unreadable one: ABD forbids the exception predicate Ab in a hypothesis,
+    # and an answer that uses it is outside the hypothesis space.
+    assert extensionally_equal("(and (S x y) (not (Ab x)))", gold, worlds) is False
+    assert extensionally_equal("(exists y (Zz x y))", gold, worlds) is False
+    # Undecidable, and the only case a judge is asked about: it will not parse.
+    assert extensionally_equal("I could not work it out (((", gold, worlds) is None
 
 
 def test_abd_model_checker_repairs_the_release_var_wrapper():

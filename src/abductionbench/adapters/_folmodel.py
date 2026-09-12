@@ -48,6 +48,18 @@ class FormulaError(Exception):
     """The formula could not be parsed, or could not be evaluated."""
 
 
+class UnknownSymbol(FormulaError):
+    """The formula names a predicate the world does not define.
+
+    Distinguished from every other failure because it is not an *undecidable*
+    comparison: a hypothesis written in symbols the problem does not have is
+    outside the hypothesis space, which is a wrong answer, not an unreadable
+    one. ABD's own ``forbiddenAlphaPredicates`` (the exception predicate ``Ab``)
+    lands here, and an answer using it should be scored wrong rather than given
+    a second chance with the judge.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # parsing
 # --------------------------------------------------------------------------- #
@@ -147,7 +159,7 @@ def evaluate(
         # A bare atom: only a nullary predicate makes sense here.
         if node in extensions:
             return () in extensions[node]
-        raise FormulaError(f"unknown atom {node!r}")
+        raise UnknownSymbol(f"unknown atom {node!r}")
     head, rest = node[0], node[1:]
     if not isinstance(head, str):
         raise FormulaError("formula head is not a symbol")
@@ -201,7 +213,7 @@ def evaluate(
         return _term(rest[0], binding) == _term(rest[1], binding)
     if head in extensions:
         return tuple(_term(argument, binding) for argument in rest) in extensions[head]
-    raise FormulaError(f"unknown predicate {head!r}")
+    raise UnknownSymbol(f"unknown predicate {head!r}")
 
 
 def _term(node: Any, binding: dict[str, str]) -> str:
@@ -243,8 +255,16 @@ def extensionally_equal(
             domain, extensions = build_world(world)
             for element in domain:
                 binding = {free_variable: element}
-                left = evaluate(candidate_node, domain, extensions, dict(binding), budget)
+                # The gold is evaluated first and its failures are undecidable:
+                # a gold this checker cannot read is a problem with the data,
+                # not with the answer.
                 right = evaluate(gold_node, domain, extensions, dict(binding), budget)
+                try:
+                    left = evaluate(candidate_node, domain, extensions, dict(binding), budget)
+                except UnknownSymbol:
+                    # Not undecidable: a hypothesis in symbols the problem does
+                    # not have is outside the hypothesis space, so it is wrong.
+                    return False
                 if left != right:
                     return False
     except FormulaError:

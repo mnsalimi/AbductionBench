@@ -203,8 +203,10 @@ class ABDAdapter(PooledDatasetAdapter):
         gold = sample.reference["gold"]
         candidate = _formula(answer)
         verdict = extensionally_equal(candidate, gold, sample.reference.get("worlds") or [])
-        # None means the checker does not apply -- unparseable, or naming a
-        # predicate the worlds do not define. Only those go to the judge.
+        # None means the answer will not parse as a formula at all. A formula
+        # that parses but names a predicate the problem does not have is
+        # decided False, not undecidable: it is outside the hypothesis space.
+        # Only the unparseable go to the judge.
         equivalent = 0.0 if verdict is None else float(verdict)
         metrics = {
             "formula_equivalent": equivalent,
@@ -283,9 +285,11 @@ class ABDAdapter(PooledDatasetAdapter):
                 "predicate_compliance": "1 if the answer uses only the allowed predicates, i.e. "
                 "whether the model respected the hypothesis space",
                 "equivalence_undecidable": "(lower is better, 0-1) fraction the model checker "
-                "could not decide -- an unparseable answer or an unknown predicate. These, and "
+                "could not decide, i.e. answers that will not parse as a formula. These, and "
                 "only these, are sent to the LLM judge, whose verdict then fills "
-                "formula_equivalent for them.",
+                "formula_equivalent for them. An answer that parses but uses a predicate the "
+                "problem does not have counts as wrong rather than undecidable -- it is outside "
+                "the hypothesis space, which is what predicate_compliance also records.",
                 "formula_equivalent_<scenario>": "per scenario (ABD_FULL / PARTIAL / SKEPTICAL)",
                 "formula_equivalent_<difficulty>": "per difficulty label",
             },
@@ -306,6 +310,10 @@ class ABDAdapter(PooledDatasetAdapter):
                 "Repaired two golds that the release serialises as 'Var(y)' instead of 'y' -- a "
                 "bug in its writer, not a different syntax -- so those instances are scored "
                 "rather than quietly handed to the judge.",
+                "Counted an answer that uses a predicate outside the problem's vocabulary -- the "
+                "forbidden exception predicate Ab, most often -- as wrong rather than "
+                "undecidable. It is a hypothesis the task did not allow, not an unreadable one, "
+                "and sending it to the judge would give it a second chance it has not earned.",
                 "Kept predicate_compliance as a separate metric because respecting the allowed "
                 "hypothesis space is a distinct competence from finding the right formula.",
                 "max_tokens scales with the instance's alphaTier (formula complexity).",
