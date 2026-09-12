@@ -353,13 +353,6 @@ TABLE: dict[str, dict] = {
         "context.",
         "delivery": "static", "objective": True, "cardinality": "single",
     },
-    "open_problems": {
-        "system": ABDUCTIVE_CORE + " You are given a research problem that was open as of "
-        "your knowledge cutoff. Judge it on the evidence available at the time and say "
-        "how confident you are; a calibrated 'probably not' is worth more than a "
-        "confident guess.",
-        "delivery": "static", "objective": True, "cardinality": None,
-    },
 }
 
 

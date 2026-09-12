@@ -151,9 +151,6 @@ TABLE: dict[str, dict] = {
         "constraints": ["output exactly one formula",
                         "use only the symbols given",
                         "output only the formula", NO_PREAMBLE]},
-    "open_problems": {
-        "constraints": [ONLY_ANSWER, NO_PREAMBLE]},
-
     # -- judged free-text generation -------------------------------------- #
     "uncommonsense": {
         "answer_format": "1 to 3 sentences",

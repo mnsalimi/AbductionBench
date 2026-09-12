@@ -5,6 +5,15 @@ what was inspected, and the rules applied when the specification left a choice
 open. The per-dataset outcomes live in `docs/datasets.md` (generated from the
 adapters); this document records the *process*.
 
+> **This is a record of what was done at the time, and it is not updated when
+> the suite changes.** Several datasets discussed below have since been removed
+> — SciLab, HypoSpace and `open_problems_2024` among them — and some described
+> here as skipped were later implemented and then removed again. The current
+> list of what is in the suite and what was dropped, with the reason for each,
+> is in the README under *Dataset coverage*; `docs/datasets.md` is generated
+> from the adapters and is always current. Read this file for how decisions
+> were made, not for what the suite contains today.
+
 ## 1. Reconnaissance
 
 Every source in the table was fetched before any adapter was written: 32 GitHub
@@ -124,9 +133,17 @@ Read together, the pair measures the value of the diagnostic work-up.
 
 ## 6. The one dataset built from scratch: `open_problems_2024`
 
-Requested separately, after the other 48, as a scientific-discovery probe. It is
-documented here because it is the only dataset whose *items* originate in this
-repository rather than in a release.
+**Since removed from the suite by request**, along with its adapter, config,
+assets and builder. The section is kept because the reasoning below — deciding
+abductiveness per *mode* rather than per dataset, and treating contamination as
+something to measure rather than assume away — is the process record this
+document exists for, and it applies to datasets that are still here. The files
+themselves are recoverable with
+`git log -- src/abductionbench/adapters/open_problems.py`.
+
+It was requested separately, after the other 48, as a scientific-discovery
+probe, and was the only dataset whose *items* originated in this repository
+rather than in a release.
 
 **Whether it is abduction — decided per mode, not per dataset.** The sources
 supply up to four prompts per problem, and they are not the same task:
