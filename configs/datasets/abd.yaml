@@ -3,15 +3,22 @@ dataset:
   impl: abductionbench.adapters.abd:ABDAdapter
   options:
     scenarios: null    # null -> ABD_FULL, ABD_PARTIAL, ABD_SKEPTICAL
-    # null -> every training world the instance ships. The full list is ~3.5k
-    # characters and is also what the answer is scored against, so the model is
-    # never asked to match a formula on evidence it was not shown. A number
-    # truncates, for a deliberate partial-evidence condition.
+    # null -> every training world the instance ships, which is what the
+    # release's own prompt shows and what its evaluator scores against. A
+    # number truncates both together, for a deliberate partial-evidence
+    # ablation; the model is never graded on a world it was not shown.
     max_worlds: null
+    # The release's own default Z3 timeout. Changing it changes what "valid"
+    # means on hard instances, so it is stated here rather than assumed.
+    z3_timeout_ms: 5000
   # ABD's records are long derivations, and the answer -- a formula with its
   # working -- is what runs out of room rather than the prompt. 32,000 output
   # tokens truncated real answers, so this dataset asks for twice that. It is
   # an ask, not a promise: the model's context window is still the hard limit,
   # and the shortfall against it is logged as an output-budget clamp.
   max_output_tokens: 64000
-  notes: Abduction benchmark of concept-synth; gold alpha read from the instance archive.
+  notes: >-
+    Scored by the release's own Z3 evaluator: `valid` (does the formula repair
+    every prompt world) is the primary metric, with cost and gap beside it.
+    Forty canonical records are excluded as invalid benchmark items and named
+    in the adapter's documentation.

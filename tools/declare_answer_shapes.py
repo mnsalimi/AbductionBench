@@ -147,9 +147,10 @@ TABLE: dict[str, dict] = {
                         "use only the symbols given",
                         "output only the equation", NO_PREAMBLE]},
     "abd": {
-        "answer_format": "one formula",
+        "answer_format": "one s-expression formula in the variable x",
         "constraints": ["output exactly one formula",
-                        "use only the symbols given",
+                        "use only the allowed predicates",
+                        "leave x as the only free variable",
                         "output only the formula", NO_PREAMBLE]},
     # -- judged free-text generation -------------------------------------- #
     "uncommonsense": {

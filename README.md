@@ -773,16 +773,29 @@ test**, which is better than either a match or a judge:
   bound variables and double negations all count as correct.
 * `synpat` answers are expressions set to zero, so SymPy compares where they
   vanish. A sign flip, a scalar multiple and a rearrangement by a non-constant
-  factor all count as correct.
+  factor all count as correct. The LLM judge grades only the residue SymPy
+  cannot parse; asked to confirm a proof, it could only weaken it.
+* `abd` is *solver-checkable by construction*, and is scored by *the release's
+  own Z3 evaluator*, imported from the same clone the data comes from. It asks
+  the benchmark's question — does this formula repair every prompt world, and
+  at what cost — instead of asking whether the answer resembles the planted
+  gold. That distinction is not academic: on the release's own first instance
+  the gold is valid at cost 18 against an optimum of 14, and an entirely
+  different formula is *also* valid at cost 34. `valid` is the primary metric,
+  `optimal` sits beside it, and `formula_match` survives only as a diagnostic.
+  There is no judge: a solver has already decided.
 
-In both, the LLM judge grades only the residue the procedure cannot parse. A
-judge asked to confirm a proof can only weaken it.
+`abd` also excludes **40 of the release's 600 records as invalid benchmark
+items**, named individually in `docs/datasets.md` — 2 whose gold its own parser
+rejects, and 38 whose gold uses a predicate the record itself forbids, so the
+release's evaluator scores its own answer key invalid. They are reported, not
+repaired.
 
 ### Answer-shape metrics
 
 The general shapes almost every dataset reduces to. A dataset's own metric names
 are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
-`formula_match`, ...), and mean the same thing about that dataset's answer.
+`root_cause_judged`, ...), and mean the same thing about that dataset's answer.
 
 | metric | meaning |
 |---|---|
@@ -793,7 +806,7 @@ are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
 | `set_f1`, `set_precision`, `set_recall` | for answers that are a *set* (multi-selection, causal edge sets) |
 | `exact_set_match` | the whole set exactly right |
 | `equation_equivalent` | SymPy proves the answer vanishes where the reference expression does (`synpat`); `equation_equivalent_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest, which are the only ones the judge sees |
-| `formula_equivalent` | the candidate and the gold formula pick out the same individuals in every world the prompt showed (`abd`), decided by evaluating both over those finite structures; `equivalence_undecidable` reports what could not be parsed |
+| `valid` | the answer is proved correct by the benchmark's own solver rather than compared with its answer key (`abd`): Z3 decides whether the formula repairs every prompt world, and `optimal`, `total_gap` and `avg_gap` report how parsimoniously |
 | `<metric>_judged` | the judgement made by an LLM judge. Wherever the model writes its answer into an unlimited space — with or without a gold to compare against — **this is the score**, not an extra view of it, and the run refuses to start without a configured judge. Where a decision procedure exists (`abd`, `synpat`), the judge instead grades only what that procedure could not parse |
 
 ### Per-dataset metric documentation
@@ -821,7 +834,7 @@ themselves; the ones worth knowing about here:
 | `medqdx` | `information_sensitivity` | score at 100% vs 50% of the symptom picture |
 | `synpat` | `structure_match` | the answer's terms ignoring numeric coefficients — the gap to the primary metric is the cost of withholding the generated data |
 | `causalopsbench` | `fault_type_judged`, `full_diagnosis_judged` | the component comes from a listed pool and is matched; the fault type is free text and is judged |
-| `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
+| `abd` | `valid`, `optimal`, `total_gap`, `avg_gap` | scored by the release's own Z3 evaluator: many formulas repair the worlds, and only one of them is the planted gold |
 | `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
 | `vivabench` | `accuracy` | selection over the release's candidate list — note the gold option is no longer sorted first, which it was until this was fixed |

@@ -25,7 +25,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-adapters = ["requests>=2.32", "datasets>=2.19", "huggingface_hub>=0.23", "sympy>=1.12"]
+adapters = [
+  "requests>=2.32",
+  "datasets>=2.19",
+  "huggingface_hub>=0.23",
+  "sympy>=1.12",       # synpat: symbolic equation equivalence
+  # abd: the release's own evaluator imports it. Capped below 5 because the
+  # release declares ">=4.12" and was written against the 4.x line; a 5.1.0
+  # build aborted natively (ASSERTION VIOLATION in ast.cpp) partway through a
+  # live run. That abort is not reproduced on demand and the cause is not
+  # confirmed, so the cap is caution rather than a diagnosed fix -- 4.16 and
+  # 5.1 return identical verdicts on the instances checked. The real guard is
+  # adapters/_abd_eval.py, which runs the solver in a process of its own.
+  "z3-solver>=4.12,<5",
+]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]

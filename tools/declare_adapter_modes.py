@@ -50,11 +50,11 @@ ABDUCTIVE_CORE = (
 
 TABLE: dict[str, dict] = {
     "abd": {
-        "system": ABDUCTIVE_CORE + " Here the evidence is a default-exception theory "
-        "and an observation it does not yet explain. A good answer is the minimal-cost "
-        "set of literals that, added to the theory, derives the observation without "
-        "contradicting a stated exception. Respect the theory's own predicate "
-        "vocabulary: an explanation outside it does not count.",
+        "system": ABDUCTIVE_CORE + " Here the evidence is a default theory whose "
+        "exception predicate Ab(x) is undefined, and several finite worlds in which the "
+        "theory must hold. Your hypothesis is the definition of Ab: one formula alpha(x), "
+        "shared across every world, that makes the theory true everywhere while calling "
+        "as few objects abnormal as possible.",
         "delivery": "static", "objective": True, "cardinality": None,
     },
     "abductionrules": {

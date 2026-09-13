@@ -8,6 +8,8 @@ constructs the score path directly, without any dataset on disk.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from abductionbench.core.types import ModelResponse, ResponseStatus, SampleScore, SampleSpec
@@ -91,68 +93,200 @@ def test_synpat_prompt_carries_no_data_rows():
 
 
 # --------------------------------------------------------------------------- #
-# ABD: deciding logical equivalence against the instance's own worlds
+# ABD: scored by the release's own Z3 evaluator, not by matching the gold
 # --------------------------------------------------------------------------- #
 
 
-def test_abd_model_checker_decides_equivalence():
-    from abductionbench.adapters._folmodel import extensionally_equal
+def test_abd_formula_extraction_and_canonicalization():
+    from abductionbench.adapters.abd import _canonical, _formula
 
-    # One world: a has an S-successor that is P, d has one that is not. The
-    # second individual is what lets a weaker hypothesis be told apart from
-    # the gold -- which is also why the adapter scores against every world the
-    # instance ships rather than a few of them.
-    worlds = [
-        {
-            "domain": ["a", "b", "c", "d"],
-            "predicates": {"S": ["(a, b)", "(d, c)"], "P": ["b"]},
-        }
-    ]
-    gold = "(exists y (and (S x y) (P y)))"
-
-    assert extensionally_equal(gold, gold, worlds) is True
-    # Renaming the bound variable and reordering the conjuncts changes the
-    # string and not the hypothesis.
-    assert extensionally_equal("(exists z (and (P z) (S x z)))", gold, worlds) is True
-    # A double negation, likewise.
-    assert extensionally_equal(
-        "(not (not (exists y (and (S x y) (P y)))))", gold, worlds
-    ) is True
-    # A genuinely weaker hypothesis separates different individuals.
-    assert extensionally_equal("(exists y (S x y))", gold, worlds) is False
-    # A predicate the problem does not have is a WRONG answer, not an
-    # unreadable one: ABD forbids the exception predicate Ab in a hypothesis,
-    # and an answer that uses it is outside the hypothesis space.
-    assert extensionally_equal("(and (S x y) (not (Ab x)))", gold, worlds) is False
-    assert extensionally_equal("(exists y (Zz x y))", gold, worlds) is False
-    # Undecidable, and the only case a judge is asked about: it will not parse.
-    assert extensionally_equal("I could not work it out (((", gold, worlds) is None
-
-
-def test_abd_model_checker_repairs_the_release_var_wrapper():
-    """Two of the 600 golds serialise a bound variable as ``Var(y)``."""
-    from abductionbench.adapters._folmodel import extensionally_equal
-
-    worlds = [{"domain": ["a", "b"], "predicates": {"R": ["(a, b)"], "Q": ["b"]}}]
-    broken = "(exists Var(y) (and (R x y) (Q y)))"
-    fixed = "(exists y (and (R x y) (Q y)))"
-    assert extensionally_equal(broken, fixed, worlds) is True
-
-
-# --------------------------------------------------------------------------- #
-# ABD: formula canonicalization and predicate compliance
-# --------------------------------------------------------------------------- #
-
-
-def test_abd_formula_helpers():
-    from abductionbench.adapters.abd import _canonical, _formula, _predicate_compliance
-
+    # Balanced-paren extraction, because the release's own regex stops at the
+    # first ')' and this suite's prompt does not use its JSON contract.
     assert _formula("The answer is (exists y (S x y)) because ...") == "(exists y (S x y))"
     assert _canonical("(exists y  (S x y))") == _canonical("(EXISTS y (S x y))")
     assert _canonical("(and (P x))") != _canonical("(or (P x))")
-    assert _predicate_compliance("(exists y (and (S x y) (P y)))", ["S", "P"]) == 1.0
-    assert _predicate_compliance("(exists y (and (S x y) (Ab y)))", ["S", "P"]) == 0.0
-    assert _predicate_compliance("", ["S"]) == 0.0
+
+
+def test_abd_scoring_credits_a_valid_non_gold_repair():
+    """The defect this scoring replaced.
+
+    A formula that repairs every prompt world is correct even when it is
+    nothing like the planted gold, and the old gold-matching metric scored
+    exactly that case zero. The scorer is driven here with a stubbed evaluator
+    result so the test needs neither the clone nor z3.
+    """
+    from abductionbench.adapters.abd import ABDAdapter
+
+    class _Result:
+        crashed = False
+        valid = True
+        parse_error = None
+        total_cost = 34
+        total_opt_cost = 14
+        total_gap = 20
+        avg_gap = 2.0
+        cost_vs_gold = 16
+        forbidden_preds_used = None
+        trailing_parens_added = 0
+
+    adapter = object.__new__(ABDAdapter)
+    adapter._evaluate = lambda instance_id, alpha: _Result()
+    sample = SampleSpec(
+        sample_id="a",
+        fields={},
+        reference={
+            "gold": "(exists y (exists z (and (S x y) (S x z))))",
+            "instance_id": "ABD_FULL_TH10_000",
+        },
+        metadata={"scenario": "ABD_FULL", "difficulty": "hard"},
+    )
+    score = ABDAdapter.score(adapter, sample, _response("(exists y (and (S x y) (P y)))"))
+
+    assert score.metrics["valid"] == 1.0           # the release's verdict
+    assert score.metrics["optimal"] == 0.0         # valid, but 20 above the optimum
+    assert score.metrics["formula_match"] == 0.0   # nothing like the gold, and that is fine
+    assert score.metrics["valid_ABD_FULL"] == 1.0
+    assert score.metrics["total_cost"] == 34.0
+    assert score.metrics["total_gap"] == 20.0
+
+
+def test_abd_invalid_answers_report_why_and_omit_cost():
+    """Cost is undefined for an answer that repairs nothing, so it is absent."""
+    from abductionbench.adapters.abd import ABDAdapter
+
+    class _Rejected:
+        crashed = False
+        valid = False
+        parse_error = "Formula uses forbidden predicate 'Ab' (circular definition)"
+        total_cost = None
+        total_opt_cost = 0
+        total_gap = None
+        avg_gap = None
+        cost_vs_gold = None
+        forbidden_preds_used = ["Ab"]
+        trailing_parens_added = 0
+
+    adapter = object.__new__(ABDAdapter)
+    adapter._evaluate = lambda instance_id, alpha: _Rejected()
+    sample = SampleSpec(
+        sample_id="a", fields={}, reference={"gold": "(P x)", "instance_id": "i"}, metadata={}
+    )
+    score = ABDAdapter.score(adapter, sample, _response("(Ab x)"))
+
+    assert score.metrics["valid"] == 0.0
+    assert score.metrics["forbidden_predicate_use"] == 1.0
+    assert score.metrics["formula_parse_error"] == 0.0   # scope, not syntax
+    # Reporting 0 here would make the worst answer look like the cheapest one.
+    assert "total_cost" not in score.metrics
+    assert "total_gap" not in score.metrics
+
+
+def test_abd_isolated_evaluator_survives_a_dead_worker():
+    """A scorer is not allowed to end a run.
+
+    The release's evaluator wraps a native solver, and a native solver can
+    abort the process -- z3-solver 5.1.0 did exactly that on a model answer
+    during a live run, with an assertion violation no Python except clause can
+    catch. So it runs in a separate process. Here the worker is killed outright,
+    which is the same thing from the parent's point of view.
+    """
+    import os
+    import signal
+    import time
+
+    from abductionbench.adapters._abd_eval import IsolatedEvaluator
+
+    evaluator = IsolatedEvaluator(Path("/nonexistent"), deadline_s=30)
+    try:
+        # The first call fails on the import, which is an ordinary exception:
+        # reported as a crash, and the worker stays usable.
+        first = evaluator.evaluate({}, "(P x)", 5000)
+        assert first.crashed and "ModuleNotFoundError" in first.crash_reason
+        assert evaluator._pool is not None
+
+        for pid in list(evaluator._pool._processes):
+            os.kill(pid, signal.SIGKILL)
+        time.sleep(0.3)
+
+        killed = evaluator.evaluate({}, "(P x)", 5000)
+        assert killed.crashed
+        assert evaluator.crashes >= 1
+        # And the next answer is evaluated by a fresh worker rather than
+        # inheriting the broken one.
+        again = evaluator.evaluate({}, "(P x)", 5000)
+        assert again.crashed and "ModuleNotFoundError" in again.crash_reason
+    finally:
+        evaluator.close()
+
+
+def test_abd_evaluator_crash_scores_nothing_rather_than_zero():
+    """A solver that fell over is not evidence about the model."""
+    from abductionbench.adapters._abd_eval import EvalOutcome
+    from abductionbench.adapters.abd import ABDAdapter
+
+    adapter = object.__new__(ABDAdapter)
+    adapter._evaluate = lambda instance_id, alpha: EvalOutcome(
+        crashed=True, crash_reason="the solver process died (BrokenProcessPool)"
+    )
+    sample = SampleSpec(
+        sample_id="a", fields={}, reference={"gold": "(P x)", "instance_id": "i"}, metadata={}
+    )
+    score = ABDAdapter.score(adapter, sample, _response("(P x)"))
+
+    assert score.metrics == {"evaluator_crashed": 1.0}
+    assert "valid" not in score.metrics      # absent, not 0.0
+    assert "evaluator_crash" in score.details
+
+
+def test_abd_excludes_records_whose_own_gold_breaks_the_rules():
+    """Detected and named, never repaired.
+
+    Forty of the release's 600 records are unusable: two whose gold its own
+    parser rejects, and thirty-eight whose gold uses a predicate the record
+    itself forbids -- the evaluator scores those golds invalid. The check is
+    driven here with a stubbed release so the test needs no clone.
+    """
+    from types import SimpleNamespace
+
+    from abductionbench.adapters.abd import ABDAdapter
+
+    class _Parsed:
+        ast = object()
+        trailing_parens_added = 0
+
+    def _release(*, parses=True, scoped=True, used=("P",)):
+        def parse(_text):
+            if not parses:
+                raise ValueError("Expected variable name after 'exists', got 'Var'")
+            return _Parsed()
+
+        return SimpleNamespace(
+            evaluator=SimpleNamespace(
+                parse_alpha_formula_with_suffix_repair=parse,
+                validate_alpha_predicate_scoping=lambda *_a: (
+                    (True, None, None) if scoped else (False, "uses forbidden ['Q']", ["Q"])
+                ),
+            ),
+            used_predicates=lambda _ast: set(used),
+        )
+
+    adapter = object.__new__(ABDAdapter)
+    problem = {"gold": {"alpha": "(P x)"}, "allowedAlphaPreds": ["P", "R", "S"], "theoryId": "TH2"}
+
+    adapter._release = _release()
+    assert ABDAdapter._inspect_gold(adapter, problem) == ([], [])
+
+    adapter._release = _release(parses=False)
+    defects, _ = ABDAdapter._inspect_gold(adapter, problem)
+    assert defects and "parser rejects" in defects[0]
+
+    adapter._release = _release(scoped=False, used=("P", "Q"))
+    defects, _ = ABDAdapter._inspect_gold(adapter, problem)
+    # Both readings of the same rule fire: the release's own scoping check and
+    # the record's own allowedAlphaPreds field.
+    assert len(defects) == 2
+    assert any("evaluator rejects its gold" in d for d in defects)
+    assert any("allowedAlphaPreds" in d for d in defects)
 
 
 # --------------------------------------------------------------------------- #
