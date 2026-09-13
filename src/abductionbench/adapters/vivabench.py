@@ -24,9 +24,15 @@ finding with an LLM, which would put a second model inside the evaluation of the
 first.  This adapter matches lexically instead -- deterministic, reproducible,
 and visible in the transcript when it misses.
 
-``options.delivery = "static"`` falls back to the single-turn form (the whole
-vignette in one prompt), which is what the rest of the suite does and is useful
-as an upper bound on what interaction costs.
+**What the model is shown is the release's own case stem**, not the release's
+``vignette`` column.  ``vivabench/examiner.py`` builds the examinee's opening
+turn from three structured fields -- demographics, chief complaint and the
+initial vitals -- and that is all a viva candidate gets before they start
+asking.  The ``vignette`` column is the source PubMed case report in full: the
+text the release's *generation pipeline* read in order to build the structured
+case, complete with the article title, the work-up, the diagnosis and the
+outcome.  An earlier version of this adapter used that column as the prompt,
+which put the answer in front of the model in 41% of cases.
 
 The human-reviewed table is the default -- the generated table is available via
 ``options.table``.
@@ -53,6 +59,52 @@ from ._base import PooledDatasetAdapter, selection_score, text_match_score
 from ._interactive import EvidenceStore, InteractiveMixin, flatten, parse_action
 
 REPO_ID = "chychiu/VivaBench"
+
+
+#: The release's own vital-sign labels and units, from
+#: ``vivabench/ontology/schema.py`` (``Vitals.initial_prompt``). Order matters:
+#: it is the order the examinee sees them in.
+_VITAL_LABELS = (
+    ("temperature", "Temperature", "\u00b0C"),
+    ("heart_rate", "HR", " bpm"),
+    ("blood_pressure_systolic", "BP", " mmHg"),
+    ("respiratory_rate", "RR", "/min"),
+    ("oxygen_saturation", "O2 sat", "%"),
+    ("pain_score", "Pain", ""),
+    ("gcs", "GCS", ""),
+)
+
+
+#: Keys of the structured case that hold the ANSWER, never the evidence.
+_ANSWER_KEYS = frozenset({"diagnosis", "differentials"})
+
+
+def _initial(value: Any) -> Any:
+    """The first reading when a vital is recorded as a trajectory."""
+    return value[0] if isinstance(value, list) and value else value
+
+
+def _vitals_line(vitals: dict[str, Any] | None) -> str:
+    """``Vitals.initial_prompt`` from the release, reimplemented on raw JSON.
+
+    Only the *initial* reading of each vital, because that is what a viva
+    candidate is given before examining anyone; the trajectory is disclosed
+    later, on request, like any other finding.
+    """
+    if not isinstance(vitals, dict):
+        return ""
+    parts: list[str] = []
+    for field, label, unit in _VITAL_LABELS:
+        value = _initial(vitals.get(field))
+        if value is None:
+            continue
+        if field == "blood_pressure_systolic":
+            diastolic = _initial(vitals.get("blood_pressure_diastolic"))
+            if diastolic is not None:
+                parts.append(f"BP {value}/{diastolic} mmHg")
+                continue
+        parts.append(f"{label} {value}{unit}")
+    return ", ".join(parts)
 
 
 def _parse_listish(value: Any) -> list[str]:
@@ -144,6 +196,12 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         limit = int(self.context.option("words_per_section", 250))
         blocks: list[str] = []
         for key, value in payload.items():
+            # The structured case carries the answer as well as the evidence:
+            # `diagnosis` is the gold and `differentials` is the selection
+            # subtask's option list. Rendering either into the prompt would
+            # hand over the answer outright.
+            if key in _ANSWER_KEYS:
+                continue
             if isinstance(value, str) and value.strip():
                 blocks.append(f"{key.replace('_', ' ').title()}: {C.clip_words(value, limit)}")
             elif isinstance(value, (list, dict)):
@@ -216,19 +274,33 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         return payload if isinstance(payload, dict) else {}
 
     def _stem(self, payload: dict[str, Any]) -> str:
-        """The opening stem, built the way the release builds it."""
+        """The opening stem, built the way the release builds it.
+
+        ``vivabench/examiner.py`` line 299, verbatim in structure::
+
+            f"Clinical case stem: {demographics.prompt} presenting with "
+            f"{history.chief_complaint.lower()}.\n{physical.vitals.prompt}\n"
+            f"Please review and diagnose the patient."
+
+        Demographics, chief complaint and the initial vitals -- and nothing
+        else. This is the whole of what a VivaBench examinee is given before
+        they start asking questions, and reproducing it is the point: the
+        benchmark measures what the model asks for next.
+        """
         demographics = payload.get("demographics") or {}
-        age = demographics.get("age")
-        unit = demographics.get("unit", "years")
-        gender = demographics.get("gender", "")
-        who = " ".join(str(part) for part in (age, unit, gender) if part) or "A patient"
+        age, unit, gender = (
+            demographics.get("age"),
+            demographics.get("unit"),
+            demographics.get("gender"),
+        )
+        who = " ".join(str(part) for part in (age, unit, "old", gender) if part not in (None, ""))
+        who = who or "A patient"
         history = payload.get("history") or {}
         complaint = str(history.get("chief_complaint") or "an undifferentiated presentation")
-        vitals = flatten((payload.get("physical") or {}).get("vitals"), "vitals")
-        vital_line = ", ".join(f"{k.split('.')[-1]} {v}" for k, v in vitals.items())
         lines = [f"Clinical case stem: {who} presenting with {complaint.lower()}."]
+        vital_line = _vitals_line((payload.get("physical") or {}).get("vitals"))
         if vital_line:
-            lines.append(f"Vitals: {vital_line}")
+            lines.append(vital_line)
         lines.append("Please review and diagnose the patient.")
         return "\n".join(lines)
 
@@ -295,11 +367,26 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         return body + self.limit_note(state, category)
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
-        vignette = C.normalize_whitespace(item.get("vignette"))
+        # THE RELEASE'S STEM, NOT THE `vignette` COLUMN. That column is the
+        # source PubMed case report in full -- title, work-up, diagnosis and
+        # outcome -- and it is what the release's pipeline read *to build* the
+        # structured case, not what it ever showed a model. Measured on the
+        # released tables: the gold diagnosis appears verbatim in 41% of
+        # pubmed_reviewed vignettes ("...consistent with pheochromocytoma",
+        # "...the diagnosis of BRASH syndrome was suspected"), and every one of
+        # the 990 begins with the article's own title. Handing that to a model
+        # and asking it to diagnose measures reading, not reasoning. The stem
+        # the release does show -- demographics, chief complaint, initial
+        # vitals -- leaks the diagnosis in 0 of 990 and 0 of 1952 rows.
+        case = self._case_json(item)
+        stem = C.normalize_whitespace(self._stem(case)) if case else ""
         diagnoses = [C.normalize_whitespace(d) for d in _parse_listish(item.get("diagnosis"))]
         diagnoses = [d for d in diagnoses if d]
-        if not vignette or not diagnoses:
+        if not stem or not diagnoses:
             return None
+        # Kept under the old name so the two SampleSpec branches below read the
+        # same; it is the release stem, never the `vignette` column.
+        vignette = stem
         differentials = [
             C.normalize_whitespace(d) for d in _parse_listish(item.get("differentials"))
         ]
@@ -489,9 +576,16 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             decisions=[
                 "Default table is pubmed_reviewed (human-reviewed) rather than the larger "
                 "generated table; options.table switches.",
-                "Default evidence is the vignette alone, which is the closest single-turn analogue "
-                "of a viva's opening turn; with_findings reveals the structured examination and "
-                "investigations as an upper bound.",
+                "THE PROMPT IS THE RELEASE'S OWN CASE STEM -- demographics, chief complaint and "
+                "initial vitals, built the way vivabench/examiner.py builds it -- and NOT the "
+                "`vignette` column. That column is the full source case report, which the "
+                "release read to construct the structured case and never showed to a model; it "
+                "names the gold diagnosis outright in 41% of pubmed_reviewed rows (0% for the "
+                "stem) and every one of its 990 rows opens with the article's title.",
+                "options.evidence = with_findings additionally reveals the structured "
+                "examination and investigations up front, as an upper bound on what the "
+                "interaction is worth. The case's `diagnosis` and `differentials` keys are "
+                "excluded from that dump -- they are the answer, not evidence.",
                 "The selection subtask uses only the case's own differentials as distractors and "
                 f"skips cases with fewer than two ({self._with_differentials} of the table's rows "
                 "have enough) -- distractors are never invented.",
@@ -501,6 +595,11 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             caveats=[
                 "Because the differentials column is empty for many rows, the selection subtask "
                 "covers a biased subset; the generation default avoids that.",
+                "The stem is deliberately thin -- three fields. A model given only this cannot "
+                "do well without asking for more, which is the benchmark's point, but this "
+                "adapter runs the STATIC form, where it cannot ask. Read the score as "
+                "'diagnosis from the opening turn alone', and use options.evidence = "
+                "with_findings for the contrast.",
                 "Cases derive from published reports and may be memorized.",
             ],
             statistics={

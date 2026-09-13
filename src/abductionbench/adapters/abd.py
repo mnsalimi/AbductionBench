@@ -500,12 +500,15 @@ class ABDAdapter(PooledDatasetAdapter):
             "dataset spends real CPU on scoring.",
         ]
         if invalid:
+            # Every excluded record, not a truncated sample: a caveat that says
+            # "40 excluded, here are 6" is not documentation, it's a promise
+            # about the other 34 that nothing checks. The full list is what
+            # "reported here" in the closing sentence below actually means.
             caveats.insert(
                 0,
                 f"{len(invalid)} canonical record(s) are EXCLUDED as invalid benchmark items, "
                 "not silently repaired: "
-                + "; ".join(f"{row['instance_id']} -- {row['reason']}" for row in invalid[:6])
-                + ("; ..." if len(invalid) > 6 else "")
+                + "; ".join(f"{row['instance_id']} -- {row['reason']}" for row in invalid)
                 + ". Each is a record whose own gold the release's parser cannot read, or whose "
                 "gold uses predicates the record itself forbids. They are reported here and in "
                 "the run statistics rather than patched, because patching a released answer key "

@@ -134,4 +134,9 @@ engine:
     max_sample_rows_per_sheet: 5000
     write_csv: true
     write_run_documentation: true
-    response_clip_chars: 2000
+    # 0 = no configured limit beyond reporting.py's own EXCEL_CELL_LIMIT (32,767,
+    # the real ceiling Excel can physically store in one cell). This used to be
+    # 2000 -- an arbitrary, much smaller clip with no stated reason -- which
+    # silently cut off full model responses (and any reasoning trace) well
+    # short of what a cell can actually hold.
+    response_clip_chars: 0

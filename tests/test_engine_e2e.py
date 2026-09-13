@@ -732,6 +732,57 @@ def test_self_consistency_is_computed_from_the_repeats_not_bought_again(
     assert task.metrics["accuracy_repeat_std"] > 0.0
 
 
+def test_self_consistency_survives_a_resume(fake_server, write_run_config, fake_dataset):
+    """Resuming a fully-checkpointed run must not silently drop the vote.
+
+    self_consistency_/best_of_n_ were computed only from THIS session's
+    freshly-scored samples, never from records reused off a prior session's
+    checkpoint -- even though the primary metric correctly folds
+    reused_records in. A second run against an already-completed directory
+    (every repeat reused, none fresh) is the starkest case: not a smaller
+    vote, but no vote at all, while every other metric looks unchanged.
+    """
+    import collections
+    import re as _re
+
+    seen: collections.Counter = collections.Counter()
+
+    def responder(conversation, max_tokens):
+        body = conversation[-1]["content"]
+        match = _re.search(r"observation number (\d+)", body)
+        key = match.group(1) if match else body[:40]
+        seen[key] += 1
+        if seen[key] <= 3:
+            return f"Answer: echo:{body[:80]}"
+        return "Answer: echo: nothing useful here"
+
+    fake_server.state.responder = responder
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"repeats": 5},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.metrics["self_consistency_n_records"] == 4.0
+    assert task.metrics["self_consistency_accuracy"] == 1.0
+
+    # Resume against the same run_id/run_dir: nothing left to call, every
+    # repeat of every record is already checkpointed from the first run.
+    config = load_run_config(config_path)
+    engine2 = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    result2 = asyncio.run(engine2.run())
+    task2 = result2.tasks[0]
+    assert task2.n_reused == 20
+    assert task2.n_scored == 20
+
+    # Same vote as the first run -- reused records must count.
+    assert task2.metrics["self_consistency_n_records"] == 4.0
+    assert task2.metrics["self_consistency_accuracy"] == 1.0
+    assert task2.metrics["repeat_agreement"] == 0.0
+
+
 def test_a_vote_no_repeat_could_parse_stays_a_failure(
     fake_server, write_run_config, fake_dataset
 ):

@@ -2003,6 +2003,7 @@ class EvaluationEngine:
         fresh: list[tuple[SampleSpec, ModelResponse, SampleScore]],
         result: TaskResult,
         *,
+        reused_records: list[dict[str, Any]] = (),
         votable: bool = True,
         judged: bool = False,
         higher_is_better: bool = True,
@@ -2016,11 +2017,32 @@ class EvaluationEngine:
         answer) and ``<primary>_repeat_std`` (the typical spread of the primary
         metric within a record).
         """
-        by_record: dict[str, list[tuple[SampleSpec, SampleScore]]] = {}
+        by_record: dict[str, list[tuple[SampleSpec | None, SampleScore]]] = {}
         for sample, _response, score in fresh:
             if "repeat_of" not in sample.metadata:
                 continue
             by_record.setdefault(str(sample.metadata["repeat_of"]), []).append((sample, score))
+        # A record resumed from a prior session has some (or all) of its
+        # repeats sitting in reused_records, not fresh -- grouping fresh alone
+        # silently drops those repeats from the vote/Best-of-N, or drops the
+        # record from them entirely if every repeat had already completed
+        # before this session started. all_scores (the primary metric) already
+        # folds reused_records in for exactly this reason; this must too, or
+        # self_consistency_/best_of_n_ silently change depending on whether a
+        # run happened to be interrupted and resumed, with no error or warning.
+        # `sample` has no counterpart for a reused record and is never read by
+        # _plurality/_best_of_n_metrics (only `score` is), so None stands in.
+        for rec in reused_records:
+            repeat_of = (rec.get("metadata") or {}).get("repeat_of")
+            if repeat_of is None:
+                continue
+            score = SampleScore(
+                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
+                prediction=rec.get("prediction"),
+                parse_ok=bool(rec.get("parse_ok", True)),
+                details=rec.get("details") or {},
+            )
+            by_record.setdefault(str(repeat_of), []).append((None, score))
         repeated = [members for members in by_record.values() if len(members) > 1]
         if not repeated:
             return {}
@@ -2173,6 +2195,7 @@ class EvaluationEngine:
             self._repeat_metrics(
                 fresh,
                 result,
+                reused_records=reused_records,
                 votable=adapter.objective_metrics,
                 # A dataset with no checkable answer is judged, and its repeats
                 # are reported as Best-of-N rather than as a vote.

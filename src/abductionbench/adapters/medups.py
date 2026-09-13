@@ -129,11 +129,27 @@ class MedUPSAdapter(PooledDatasetAdapter):
         """
         revealed = C.normalize_whitespace(item.get("context_chunks"))
         question = C.normalize_whitespace(item.get("question"))
-        # `final_answer` is the concise form of the same answer `answer` gives
-        # at length; a diagnosis is what is being scored, not an essay.
-        gold = C.normalize_whitespace(item.get("final_answer")) or C.normalize_whitespace(
-            item.get("answer")
-        )
+        # `answer` is the CASE REPORT's own text answering this row's question;
+        # `final_answer` is the authors' MODEL's answer to it. Scoring against
+        # the latter -- which this adapter used to do -- graded one model
+        # against another model, which is the one thing this file's own
+        # decisions list says it does not do.
+        #
+        # Established from the row schema, not assumed. Every row carries
+        # `cot` ("Okay, let's see. The patient has a complex medical
+        # history..."), `final_answer`, and `training_format`, which is
+        # literally "<think>" + cot + "</think>" + final_answer -- an SFT
+        # target assembled from a generation. `raw_response` holds a judge's
+        # JSON verdict on that generation, surfaced as this row's own
+        # `model_response_judgment`. A field the release ships a judgement
+        # *about* is an output, not an answer key.
+        #
+        # The two also disagree on content. On case 132 the question asks for
+        # the most important risk factor; `answer` says the patient's primary
+        # immunodeficiency is it, while `final_answer` returns a full
+        # mechanistic diagnosis ending in PML -- the eventual diagnosis, which
+        # is not what was asked.
+        gold = C.normalize_whitespace(item.get("answer"))
         if not revealed or not question or not gold:
             return None
         return SampleSpec(
@@ -144,7 +160,9 @@ class MedUPSAdapter(PooledDatasetAdapter):
                 "observation": revealed,
                 "question": question,
             },
-            reference={"gold": gold, "long_answer": C.normalize_whitespace(item.get("answer"))},
+            # `final_answer` kept for reference only -- never scored against
+            # (see above); it is the authors' own model's output, not gold.
+            reference={"gold": gold, "final_answer_unscored": C.normalize_whitespace(item.get("final_answer"))},
             task_kind="generation",
             metadata={
                 "case_id": item.get("case_id"),
@@ -222,8 +240,14 @@ class MedUPSAdapter(PooledDatasetAdapter):
                 "The suite's URL points at a Hugging Face *collection*, which is not a loadable "
                 "dataset; resolved it to its member datasets and used MedUPS_mid_stream, which is "
                 "the split the paper evaluates.",
-                "Scored against `final_answer`, the concise form of the same answer that "
-                "`answer` gives at length: a diagnosis is what is being judged, not an essay.",
+                "Scored against `answer`, the case report's own text for this row's question "
+                "-- NOT `final_answer`, which is the authors' MODEL's answer to it. Every row "
+                "pairs `final_answer` with a `cot` trace and assembles the two into "
+                "`training_format` as <think>cot</think>final_answer, and ships a "
+                "`model_response_judgment` verdict about it: a field the release judges is an "
+                "output, not an answer key. A prior version of this adapter scored against it, "
+                "grading one model against another and contradicting this file's own decision "
+                "to withhold the authors' model outputs.",
                 "Scored by an LLM judge against the published diagnosis rather than by string "
                 "comparison: no candidate list is shown, so the answer is written into an open "
                 "vocabulary where the same disease has many correct surface forms.",
@@ -237,6 +261,11 @@ class MedUPSAdapter(PooledDatasetAdapter):
                 "case; no distractors are invented.",
             ],
             caveats=[
+                "The gold is the case report's own prose and sometimes carries the article's "
+                "figure captions with it (\"Fig. 3 Small bowel series indicated (A) Multiple "
+                "smooth-surface round filling defects...\"). The judge is asked whether the "
+                "candidate says the same thing, which tolerates that, but the reference is "
+                "source text rather than a curated answer and reads like it.",
                 "NO AGENT PROMPT EXISTS TO ADOPT. MedUPS is published as a Hugging Face "
                 "dataset with no agent harness or prompt of its own, so the wording used "
                 "to pose the mid-stream question is written here rather than taken from "
