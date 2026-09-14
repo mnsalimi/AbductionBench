@@ -374,9 +374,12 @@ Every static/sequential prompt is assembled the same way:
            2. ...
            Answer directly. Do not explain your reasoning.     <-- io
              (or: Work through the evidence step by step...)   <-- cot
-           Requirements:                        <-- generation tasks
+           Requirements:                        <-- generation tasks, io
            - write exactly one sentence
            - do not restate the observation
+           - do not explain your reasoning
+             (under cot: "Requirements for the answer line:",
+              and the reasoning-suppressing clauses are dropped)
            Select exactly one hypothesis.       <-- selection tasks
            Answer with only one of: 1, 2 or 3, on the last line, as:
            Answer: 1
@@ -391,6 +394,18 @@ one-shot table that set all 34):
 | `answer_format` | what a well-formed answer is (`"one short sentence"`), rendered into the closing line |
 | `answer_constraints` | what the answer must and must not do, one clause each, rendered as `Requirements:` |
 | `options_heading` | what the candidate list is called (`"Answer options:"`, `"Candidate diagnoses:"`) |
+
+**The Requirements block is scoped to the mode.** `answer_constraints` belong to
+the dataset, not to the mode, and many were written for `io`, where "do not
+explain" *is* the instruction. Rendered unchanged into a `cot` prompt they
+contradicted it: the model was told to work through the evidence step by step
+and then, three lines later, not to explain. 27 of the 44 datasets carried such
+a clause. Under `cot` and `self-consistency` those clauses are now dropped and
+the heading becomes **`Requirements for the answer line:`**, so the clauses that
+remain -- "write exactly one sentence", "output only the diagnosis name" --
+plainly govern the answer rather than the whole response. Under `io` nothing
+changes. A test renders every mode of every dataset and fails if a `cot` prompt
+ever tells the model not to reason.
 
 **Options are numbered.** One helper (`_common.choice_labels`) produces both the
 labels shown and the labels the gold refers to, so they cannot drift apart --

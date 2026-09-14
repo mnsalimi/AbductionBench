@@ -140,3 +140,123 @@ def _local_templates(tmp_path: Path) -> Path:
             encoding="utf-8",
         )
     return directory
+
+
+# --------------------------------------------------------------------------- #
+# The Requirements block must not contradict the prompt mode
+# --------------------------------------------------------------------------- #
+
+
+def _free_form_parts(constraints):
+    from abductionbench.adapters._prompting import PromptParts
+
+    return PromptParts(
+        system="You explain things.",
+        observation="The grass is wet.",
+        answer_format="one sentence",
+        constraints=list(constraints),
+    )
+
+
+def test_cot_drops_the_constraints_that_forbid_reasoning():
+    """The bug: "reason step by step" and "do not explain" in one prompt.
+
+    `answer_constraints` belong to the dataset, not to the mode, so clauses
+    written for io -- where "do not explain" is the whole point -- were also
+    rendered into the cot prompt. 27 of 44 datasets carried one.
+    """
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+
+    constraints = [
+        "output exactly one fact",
+        "do not explain",
+        "do not use introductory phrases or commentary",
+    ]
+
+    cot, _ = build_messages(_free_form_parts(constraints), TaskModes(prompt_mode="cot"))
+    text = cot[-1].content
+    assert "step by step" in text
+    assert "do not explain" not in text
+    assert "introductory phrases" not in text
+    # The shape constraint survives, scoped to what it actually governs.
+    assert "Requirements for the answer line:" in text
+    assert "- output exactly one fact" in text
+
+
+def test_io_keeps_them_because_there_it_is_the_instruction():
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+
+    io, _ = build_messages(
+        _free_form_parts(["output exactly one fact", "do not explain"]),
+        TaskModes(prompt_mode="io"),
+    )
+    text = io[-1].content
+    assert "Answer directly. Do not explain your reasoning." in text
+    assert "- do not explain" in text
+    assert text.count("Requirements:") == 1
+    assert "answer line" not in text
+
+
+def test_self_consistency_is_scoped_like_cot():
+    """It renders the same text as cot by design; the scoping must follow."""
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = _free_form_parts(["write exactly one sentence", "do not explain your reasoning"])
+    sc, _ = build_messages(parts, TaskModes(prompt_mode="self-consistency"))
+    cot, _ = build_messages(parts, TaskModes(prompt_mode="cot"))
+    assert sc[-1].content == cot[-1].content
+    assert "do not explain" not in sc[-1].content
+
+
+def test_a_requirements_block_of_only_reasoning_clauses_disappears():
+    """No empty heading left behind when every clause is dropped."""
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+
+    cot, _ = build_messages(
+        _free_form_parts(["do not explain", "do not use introductory phrases or commentary"]),
+        TaskModes(prompt_mode="cot"),
+    )
+    assert "Requirements" not in cot[-1].content
+    assert "Answer:" in cot[-1].content
+
+
+def test_no_shipped_dataset_contradicts_cot():
+    """The suite-wide guard: rendered prompts, not declared constraints.
+
+    Catches the conflict wherever it enters the prompt -- an adapter's
+    constraints, its system prompt, or a per-sample instruction.
+    """
+    import re
+
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    suppress = re.compile(
+        r"do not explain|do not use introductory|without explanation|no commentary", re.I
+    )
+    # A representative spread rather than every dataset: these need no data on
+    # disk because the parts are built from the class, not from a sample.
+    from abductionbench.adapters._prompting import PromptParts
+
+    for impl in (
+        "abductionbench.adapters.abductionrules:AbductionRulesAdapter",
+        "abductionbench.adapters.house_md:HouseMDAdapter",
+        "abductionbench.adapters.neulr:NeuLRAdapter",
+        "abductionbench.adapters.synpat:SynPATAdapter",
+        "abductionbench.adapters.uniadilr_hgc:UniADILRHGcAdapter",
+    ):
+        cls = resolve_adapter(impl)
+        parts = PromptParts(
+            system=cls.system_prompt,
+            observation="an observation",
+            answer_format=getattr(cls, "answer_format", "") or "an answer",
+            constraints=list(getattr(cls, "answer_constraints", ()) or ()),
+        )
+        cot, _ = build_messages(parts, TaskModes(prompt_mode="cot"))
+        rendered = " ".join(m.content for m in cot)
+        assert not suppress.search(rendered), f"{impl} contradicts cot: {rendered[-300:]}"

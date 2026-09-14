@@ -20,6 +20,7 @@ reasoning instruction whichever dataset it came from.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,6 +40,47 @@ _COT_INSTRUCTION = (
 )
 
 _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
+
+#: Answer constraints that forbid the model to reason or preface, which is
+#: exactly what chain-of-thought asks it to do.
+#:
+#: 27 of the suite's datasets carry one. They were written for the io prompt --
+#: where "do not explain" is the whole point -- but `answer_constraints` are a
+#: property of the dataset, not of the mode, so they were rendered into the cot
+#: prompt too. A model was told "Work through the evidence step by step before
+#: answering" and then, three lines later, "- do not explain": the same request
+#: and its refusal in one prompt. Under cot these clauses are dropped.
+#:
+#: Only clauses about *reasoning* are dropped. Ones about the answer's shape --
+#: "output exactly one fact", "write exactly one sentence" -- still hold, and
+#: the heading below says so: under cot they govern the answer line, not the
+#: whole response.
+_REASONING_SUPPRESSING = re.compile(
+    r"""
+      do\s+not\s+explain            # "do not explain", "... why", "... your reasoning"
+    | do\s+not\s+justify
+    | do\s+not\s+reason
+    | do\s+not\s+use\s+introductory  # "... phrases or commentary"
+    | without\s+explanation
+    | no\s+commentary
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _requirements(constraints: list[str], modes: TaskModes) -> list[str]:
+    """The Requirements block, scoped to the mode that is being rendered."""
+    if not constraints:
+        return []
+    reasoning_first = modes.prompt_mode in (COT, SELF_CONSISTENCY)
+    if reasoning_first:
+        constraints = [c for c in constraints if not _REASONING_SUPPRESSING.search(c)]
+        if not constraints:
+            return []
+        heading = "Requirements for the answer line:"
+    else:
+        heading = "Requirements:"
+    return [heading, *(f"- {clause}" for clause in constraints), ""]
 
 
 def letters(count: int, start: str = "A") -> list[str]:
@@ -178,12 +220,7 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
 
     contract.update({"style": "free_form"})
     shape = parts.answer_format or "your answer"
-    lines = []
-    if parts.constraints:
-        lines.append("Requirements:")
-        lines.extend(f"- {clause}" for clause in parts.constraints)
-    if lines:
-        lines.append("")
+    lines = _requirements(list(parts.constraints), modes)
     lines.append(f"On the last line, give your final answer as:\n{ANSWER_PREFIX} <{shape}>")
     return "\n".join(lines), contract
 
