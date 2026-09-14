@@ -3,7 +3,14 @@ dataset:
   impl: abductionbench.adapters.defab:DeFAbAdapter
   options:
     subtask: selection   # selection (matches the release structure) | generation
-    domains: null        # null -> every released instance set
+    # null -> every released instance set. Names are tier-qualified
+    # ("tier0/level3", "multitier/framenet"); a bare ontology name
+    # ("framenet") matches that ontology under any tier.
+    domains: null
   notes: >-
-    All released instance sets pooled (no official split); multi-gold instances
-    scored with set F1.
+    Single-answer selection: the paper states that every instance has a unique
+    gold hypothesis (|H*| = 1) among six candidates, and all 419,475 released
+    instances agree, so this runs as SCS -- and, being SCS, also as MCS and
+    (when modes.bov is on) BOV. All released instance sets that ship evaluation
+    items are pooled, with cross-tier duplicates kept once; instances/synthetic
+    holds theories rather than items and has nothing to ask.
