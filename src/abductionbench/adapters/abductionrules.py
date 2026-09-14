@@ -48,6 +48,7 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
     answer_format = "one fact"
     answer_constraints = (
         "output exactly one fact",
+        "phrase it exactly like the facts in the theory",
         "output only the fact",
         "do not output a list",
         "do not explain",
@@ -105,8 +106,7 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
                 "observation": item["observation"],
                 "instructions": (
                     "Add the single missing fact that would make the observation derivable "
-                    "from the theory. Answer with that one fact, phrased exactly like the "
-                    "facts in the theory."
+                    "from the theory."
                 ),
             },
             reference={"gold": item["label"]},

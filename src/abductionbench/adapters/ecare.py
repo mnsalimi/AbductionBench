@@ -143,7 +143,7 @@ class ECareAdapter(PooledDatasetAdapter):
                         "What general conceptual relation explains why this cause "
                         "produces this effect?"
                     ),
-                    "instructions": "State the underlying conceptual explanation in one sentence.",
+                    "instructions": "State the underlying conceptual explanation.",
                 },
                 reference={"gold": explanation},
                 task_kind="generation",

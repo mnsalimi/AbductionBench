@@ -366,3 +366,80 @@ def test_no_shipped_dataset_is_told_to_select_from_nothing():
             )[0][-1].content
             assert "the label" not in text, (impl, selection)
             assert "Select exactly one hypothesis" not in text, (impl, selection)
+
+
+def test_no_dataset_states_the_answer_shape_in_its_task_line():
+    """A task line must describe the TASK, never how to answer.
+
+    The prompt has one place for answer shape -- `answer_format`, the
+    constraints, and the closing "On the last line, give your final answer
+    as:". A dataset that also puts it in `instructions` says it twice, and
+    under cot it says it in the wrong order: the Task line is rendered BEFORE
+    the reasoning instruction, so art's "Answer with a single short sentence
+    describing that event." told the model to answer immediately, and only then
+    was it asked to work through the evidence step by step.
+
+    Six datasets did this. Two of them contradicted themselves whatever the
+    mode -- uncommonsense asked for "a single sentence" while its own
+    answer_format says 1 to 3, and crosstrace asked for reasoning "in a few
+    numbered steps" that its constraints forbid.
+    """
+    import re
+
+    import pytest
+
+    from abductionbench.core.adapter import AdapterContext
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    config_path = Path("configs/runs/full.yaml")
+    if not config_path.is_file():
+        pytest.skip("run configs unavailable")
+    try:
+        config = load_run_config(config_path)
+    except Exception as exc:  # pragma: no cover - needs the run env
+        pytest.skip(f"cannot load the run config: {exc}")
+
+    directive = re.compile(
+        r"\b(answer|respond|reply)\b.{0,30}\b(with|in|using|only)\b"
+        r"|\bgive (your|the) answer\b|\boutput only\b|\breturn only\b"
+        r"|\bin (one|a single) (short )?(sentence|line|word)\b"
+        r"|\bone short sentence\b|\bin a few numbered steps\b",
+        re.IGNORECASE,
+    )
+
+    offenders, checked = [], 0
+    for dataset in config.datasets:
+        try:
+            adapter_cls = resolve_adapter(dataset.impl)
+        except Exception:  # pragma: no cover - optional dependency
+            continue
+        for mode in adapter_cls.hypothesis_modes or ("generation",):
+            options = dict(dataset.options)
+            options.update((adapter_cls.hypothesis_mode_options or {}).get(mode, {}))
+            try:
+                context = AdapterContext(
+                    dataset_id=dataset.id,
+                    data_dir=Path(config.engine.data_root) / dataset.id,
+                    sample_size=3,
+                    seed=config.seed,
+                    options=options,
+                    offline=True,
+                    modes=TaskModes(prompt_mode="cot"),
+                )
+                adapter = adapter_cls(context)
+                adapter.prepare()
+                samples = adapter.build_samples()[:3]
+            except Exception:  # the dataset is not materialized on this machine
+                continue
+            for sample in samples:
+                checked += 1
+                found = directive.search(str(sample.fields.get("instructions") or ""))
+                if found:
+                    offenders.append((dataset.id, mode, found.group(0)))
+                    break
+
+    if not checked:
+        pytest.skip("no datasets are materialized on this machine")
+    assert not offenders, f"answer shape stated in a task line: {offenders}"

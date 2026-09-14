@@ -163,7 +163,13 @@ class ARTAdapter(PooledDatasetAdapter):
                 fields={
                     "observation": observation,
                     "question": "What most plausibly happened between O1 and O2?",
-                    "instructions": "Answer with a single short sentence describing that event.",
+                    # No `instructions` line. It said "Answer with a single short sentence
+                    # describing that event", which is answer SHAPE -- already
+                    # carried by answer_format, the constraints and the closing.
+                    # Under cot it also landed BEFORE the reasoning instruction, so
+                    # the model read "answer with one sentence" and then "work
+                    # through the evidence step by step". The question above already
+                    # states the task.
                 },
                 reference={"gold": gold},
                 task_kind="generation",

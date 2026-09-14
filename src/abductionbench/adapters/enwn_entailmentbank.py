@@ -144,8 +144,8 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
                 "context": f"Known premise: {known}" if known else "",
                 "observation": goal,
                 "instructions": (
-                    "One premise is missing. State the single missing premise that, together with "
-                    "the known premise, would entail the conclusion. One short sentence."
+                    "One premise is missing. State the single missing premise that, together "
+                    "with the known premise, would entail the conclusion."
                 ),
             },
             reference={"gold": target},

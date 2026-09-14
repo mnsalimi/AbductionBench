@@ -95,7 +95,7 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
                 "question": "What would make this unexpected outcome make sense?",
                 "instructions": (
                     "Give one plausible explanation that reconciles the outcome with the "
-                    "background, in a single sentence."
+                    "background."
                 ),
             },
             reference={"gold": references[0], "references": references},

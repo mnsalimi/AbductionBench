@@ -97,8 +97,8 @@ class CrossTraceAdapter(PooledDatasetAdapter):
                     "above?"
                 ),
                 "instructions": (
-                    "State the core insight in one line, then give the reasoning that supports it "
-                    "in a few numbered steps."
+                    "Identify the underlying fault the trace points to -- the thing that "
+                    "explains the symptoms rather than one of them."
                 ),
             },
             reference={"gold": gold, "insight": insight},
