@@ -1,0 +1,33 @@
+# Live smoke test: verifies the whole pipeline (batch route, retries,
+# checkpointing, scoring, reporting) against a real endpoint in ~1 minute,
+# using the hand-written diagnostic set in tools/smoke_adapter.py.
+extends:
+  - ../engine/default.yaml
+
+name: smoke
+description: End-to-end engine smoke test against a live OpenAI-compatible endpoint.
+seed: 20260903
+
+engine:
+  concurrency:
+    max_parallel_tasks: 1
+    max_parallel_batches_global: 2
+  limits:
+    input_token_budget: 16000
+
+prompts:
+  template_dirs: [../prompts]
+  bindings:
+    generation: gen_freeform_v1
+    selection: sel_mcq_letter_v1
+
+models:
+  - file: ../models/gemma-4-e4b.yaml
+
+datasets:
+  - id: smoke
+    impl: tools.smoke_adapter:SmokeAdapter
+    sample_size: 10
+    options:
+      gen_max_tokens: 640
+      sel_max_tokens: 512

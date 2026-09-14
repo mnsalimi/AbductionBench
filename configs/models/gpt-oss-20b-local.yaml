@@ -45,6 +45,8 @@ model:
     max_tokens_floor: 64
 
   limits:
+    # 2 x group_size 32 = 64 in flight, matching the judge's MAX_NUM_SEQS=64
+    # (raised from 32 alongside its KV cache).
     max_parallel_batches: 2
     requests_per_minute: null
     tokens_per_minute: null

@@ -38,7 +38,11 @@ model:
       #
       # Raising them is the main throughput lever for this suite, which is
       # decode-bound (measured: 37M output tokens against 8.7M input).
-      group_size: ${env:ABENCH_GROUP_SIZE|8}
+      # 8 -> 16 (2026-09-14). In-flight sequences on this model are
+      # max_parallel_batches x group_size; at 2 x 8 the client was asking for
+      # 16 of the server's 64 --num-max-seqs, so three quarters of a GPU that
+      # was already paid for sat idle. 4 x 16 = 64 matches it exactly.
+      group_size: ${env:ABENCH_GROUP_SIZE|16}
     discovery:
       base_url_command: null
       batch_base_url_command: null
@@ -56,7 +60,11 @@ model:
     extra: {}
 
   limits:
-    max_parallel_batches: 2
+    # 2 -> 4, with group_size 16, to drive exactly MAX_NUM_SEQS=64. This costs
+    # no GPU memory: vLLM preallocates its KV cache at startup, so more
+    # in-flight requests fill slots that already exist. Overshooting would
+    # queue (or preempt), not OOM -- but it is matched, not overshot.
+    max_parallel_batches: 4
     requests_per_minute: null
     tokens_per_minute: null
     # MAX_MODEL_LEN: prompt + generation must fit inside this. 32,768 is what
