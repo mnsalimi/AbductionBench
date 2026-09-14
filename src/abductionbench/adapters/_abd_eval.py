@@ -26,7 +26,9 @@ allowed to end a run.
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import threading
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,11 @@ logger = logging.getLogger(__name__)
 #: evaluator itself applies per query. Reaching this means the worker is stuck,
 #: not that the instance is hard.
 DEADLINE_S = 180.0
+
+#: Worker processes by default. Z3 is CPU-bound and runs outside this process,
+#: so the ceiling is cores; 8 covers a full batch's worth of answers in flight
+#: without claiming a large host outright.
+DEFAULT_WORKERS = max(1, min(8, (os.cpu_count() or 2)))
 
 
 @dataclass(frozen=True)
@@ -83,23 +90,53 @@ def _worker(source: str, problem: dict[str, Any], alpha: str, timeout_ms: int) -
 
 
 class IsolatedEvaluator:
-    """A restartable one-process pool around the release's evaluator."""
+    """A restartable pool of worker processes around the release's evaluator.
 
-    def __init__(self, release_source: Path, *, deadline_s: float = DEADLINE_S) -> None:
+    Several workers, not one, because the engine now scores a batch's answers
+    concurrently and a Z3 run is seconds long: with a single worker the pool
+    was a queue and the batch still evaluated in single file.
+    """
+
+    def __init__(
+        self,
+        release_source: Path,
+        *,
+        deadline_s: float = DEADLINE_S,
+        max_workers: int | None = None,
+    ) -> None:
         self.source = str(release_source)
         self.deadline_s = deadline_s
+        #: Z3 is CPU-bound and runs outside this process, so the useful ceiling
+        #: is cores, not threads. Capped well below a large host's core count:
+        #: past the number of answers actually in flight the extra workers only
+        #: cost memory, and the batch is what bounds that.
+        self.max_workers = max(1, int(max_workers or DEFAULT_WORKERS))
         self._pool: ProcessPoolExecutor | None = None
-        #: How many times the worker had to be replaced, reported as a metric
-        #: so a run that quietly lost verdicts cannot look like a clean one.
+        #: Guards pool creation and replacement only -- never held while an
+        #: evaluation is running, or the workers would serialise again.
+        self._pool_lock = threading.Lock()
+        #: How many times the pool had to be replaced, reported as a metric so
+        #: a run that quietly lost verdicts cannot look like a clean one.
         self.crashes = 0
 
     def _ensure_pool(self) -> ProcessPoolExecutor:
-        if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=1)
-        return self._pool
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ProcessPoolExecutor(max_workers=self.max_workers)
+            return self._pool
 
-    def _discard_pool(self) -> None:
-        pool, self._pool = self._pool, None
+    def _discard_pool(self, broken: ProcessPoolExecutor | None = None) -> None:
+        """Replace the pool, unless another thread already replaced this one.
+
+        ``broken`` is the pool the caller saw fail. When several answers are in
+        flight and one of them kills a worker, every sibling's future raises
+        too; without this check each would tear down the *replacement* the
+        first one just built, and the batch would thrash.
+        """
+        with self._pool_lock:
+            if broken is not None and self._pool is not broken:
+                return
+            pool, self._pool = self._pool, None
         if pool is not None:
             try:
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -107,24 +144,41 @@ class IsolatedEvaluator:
                 pass
 
     def evaluate(self, problem: dict[str, Any], alpha: str, timeout_ms: int) -> EvalOutcome:
-        try:
-            future = self._ensure_pool().submit(_worker, self.source, problem, alpha, timeout_ms)
-            return EvalOutcome(**future.result(timeout=self.deadline_s))
-        except (BrokenExecutor, TimeoutError) as exc:
-            # The native solver aborted, or wedged. Replace the worker; the
-            # next answer is scored normally.
-            self.crashes += 1
-            self._discard_pool()
-            reason = (
-                f"the solver stopped responding after {self.deadline_s:.0f}s"
-                if isinstance(exc, TimeoutError)
-                else f"the solver process died ({type(exc).__name__})"
-            )
-            logger.warning("ABD: %s while evaluating %r; worker restarted", reason, alpha[:120])
-            return EvalOutcome(crashed=True, crash_reason=reason)
-        except Exception as exc:  # noqa: BLE001 - a scorer never ends a run
-            logger.warning("ABD: evaluator raised for %r: %s", alpha[:120], exc)
-            return EvalOutcome(crashed=True, crash_reason=f"{type(exc).__name__}: {exc}")
+        """Evaluate one formula, retrying once if a *sibling* broke the pool.
+
+        A native abort takes down the whole pool, not just the answer that
+        caused it. The retry is what keeps that from being charged to innocent
+        answers: a genuinely bad formula aborts again on the fresh pool and is
+        reported crashed, while a sibling simply completes.
+        """
+        for attempt in (1, 2):
+            pool = self._ensure_pool()
+            try:
+                future = pool.submit(_worker, self.source, problem, alpha, timeout_ms)
+                return EvalOutcome(**future.result(timeout=self.deadline_s))
+            except (BrokenExecutor, TimeoutError) as exc:
+                timed_out = isinstance(exc, TimeoutError)
+                self.crashes += 1
+                self._discard_pool(pool)
+                reason = (
+                    f"the solver stopped responding after {self.deadline_s:.0f}s"
+                    if timed_out
+                    else f"the solver process died ({type(exc).__name__})"
+                )
+                # A timeout is this answer's own doing -- retrying would just
+                # spend the deadline again. A broken pool may not be.
+                if timed_out or attempt == 2:
+                    logger.warning(
+                        "ABD: %s while evaluating %r; pool restarted", reason, alpha[:120]
+                    )
+                    return EvalOutcome(crashed=True, crash_reason=reason)
+                logger.debug(
+                    "ABD: pool broke under %r; retrying once on a fresh pool", alpha[:120]
+                )
+            except Exception as exc:  # noqa: BLE001 - a scorer never ends a run
+                logger.warning("ABD: evaluator raised for %r: %s", alpha[:120], exc)
+                return EvalOutcome(crashed=True, crash_reason=f"{type(exc).__name__}: {exc}")
+        return EvalOutcome(crashed=True, crash_reason="the solver process died")
 
     def close(self) -> None:
         self._discard_pool()

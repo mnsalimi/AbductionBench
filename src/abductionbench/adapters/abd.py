@@ -48,6 +48,7 @@ from __future__ import annotations
 import gzip
 import re
 import sys
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -376,16 +377,49 @@ class ABDAdapter(PooledDatasetAdapter):
 
         Repeats of a record often produce the same formula, and a Z3 run costs
         seconds, so the same question is never asked twice.
+
+        The engine scores a batch concurrently, so this runs on several threads
+        at once. The lock covers only the bookkeeping -- deciding who evaluates
+        a given key -- and is released before the solver is called, so distinct
+        formulas still run in parallel across the worker pool. Threads that
+        want a key someone else is already evaluating wait for that one result
+        rather than paying for a second identical Z3 run.
         """
         problem = getattr(self, "_problems", {}).get(instance_id)
         if problem is None:
             return None
         cache = self.__dict__.setdefault("_eval_cache", {})
+        inflight = self.__dict__.setdefault("_eval_inflight", {})
+        lock = self.__dict__.setdefault("_eval_lock", threading.Lock())
         key = (instance_id, alpha)
-        if key not in cache:
+
+        with lock:
+            if key in cache:
+                return cache[key]
+            event = inflight.get(key)
+            mine = event is None
+            if mine:
+                event = threading.Event()
+                inflight[key] = event
+
+        if not mine:
+            # Someone else is already asking this exact question.
+            event.wait(timeout=self._isolated.deadline_s + 30)
+            return cache.get(key)
+
+        result = None
+        try:
             timeout = int(self.context.option("z3_timeout_ms", DEFAULT_TIMEOUT_MS))
-            cache[key] = self._isolated.evaluate(problem, alpha, timeout)
-        return cache[key]
+            result = self._isolated.evaluate(problem, alpha, timeout)
+            cache[key] = result
+        finally:
+            # Always release the waiters, even if the evaluator itself threw:
+            # they read the cache, find nothing, and are told the evaluator was
+            # unavailable rather than blocking until the deadline.
+            with lock:
+                inflight.pop(key, None)
+            event.set()
+        return result
 
     def score(
         self,

@@ -1317,17 +1317,9 @@ class EvaluationEngine:
                     checkpoint=checkpoint, model=model, group_size=group_size,
                     max_output_tokens=bundle.config.max_output_tokens,
                 )
-            records: list[EvalRecord] = []
-            for prompt, response in pairs:
-                score = await self._score(adapter, prompt, response)
-                records.append(self._make_record(identity, prompt, response, score))
-                if response.status is ResponseStatus.ERROR:
-                    checkpoint.failed += 1
-                elif response.status is ResponseStatus.SKIPPED:
-                    checkpoint.skipped += 1
-                else:
-                    checkpoint.completed += 1
-                    scores.append((prompt.sample, response, score))
+            records = await self._score_batch(
+                adapter, identity, pairs, checkpoint=checkpoint, scores=scores
+            )
             store.append_many(records)
             store.save_checkpoint(checkpoint)
             batches = []
@@ -1364,17 +1356,9 @@ class EvaluationEngine:
                         for prompt in batch.prompts
                     ]
 
-            records: list[EvalRecord] = []
-            for prompt, response in pairs:
-                score = await self._score(adapter, prompt, response)
-                records.append(self._make_record(identity, prompt, response, score))
-                if response.status is ResponseStatus.ERROR:
-                    checkpoint.failed += 1
-                elif response.status is ResponseStatus.SKIPPED:
-                    checkpoint.skipped += 1
-                else:
-                    checkpoint.completed += 1
-                    scores.append((prompt.sample, response, score))
+            records = await self._score_batch(
+                adapter, identity, pairs, checkpoint=checkpoint, scores=scores
+            )
             store.append_many(records)
             store.save_checkpoint(checkpoint)
 
@@ -1976,6 +1960,49 @@ class EvaluationEngine:
     # ------------------------------------------------------------------ #
     # scoring / aggregation / records
     # ------------------------------------------------------------------ #
+
+    async def _score_batch(
+        self,
+        adapter: DatasetAdapter,
+        identity: TaskIdentity,
+        pairs: list[tuple[RenderedPrompt, ModelResponse]],
+        *,
+        checkpoint: TaskCheckpoint,
+        scores: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+    ) -> list[EvalRecord]:
+        """Score a completed batch's responses concurrently, in order.
+
+        Scoring used to walk the batch one ``await`` at a time, so every
+        scorer ran alone however many threads ``scoring_workers`` allowed. For
+        the cheap scorers -- a label comparison, a set intersection -- that
+        cost nothing worth measuring. For the ones that call a solver it cost
+        the whole batch: ABD runs Z3 per answer at roughly 1 to 30 seconds a
+        time, so a group of 16 spent minutes evaluating in single file on a box
+        with 48 idle cores.
+
+        The results are gathered and then walked **in the original order**, so
+        the records file, the checkpoint counters and the scores list are
+        byte-identical to what the sequential version produced. Concurrency is
+        still bounded by ``scoring_workers`` inside :meth:`_score`, and a
+        scorer that raises is still caught there rather than taking the batch
+        with it.
+        """
+        if not pairs:
+            return []
+        computed = await asyncio.gather(
+            *(self._score(adapter, prompt, response) for prompt, response in pairs)
+        )
+        records: list[EvalRecord] = []
+        for (prompt, response), score in zip(pairs, computed, strict=True):
+            records.append(self._make_record(identity, prompt, response, score))
+            if response.status is ResponseStatus.ERROR:
+                checkpoint.failed += 1
+            elif response.status is ResponseStatus.SKIPPED:
+                checkpoint.skipped += 1
+            else:
+                checkpoint.completed += 1
+                scores.append((prompt.sample, response, score))
+        return records
 
     async def _score(
         self, adapter: DatasetAdapter, prompt: RenderedPrompt, response: ModelResponse

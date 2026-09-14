@@ -8,7 +8,9 @@ constructs the score path directly, without any dataset on disk.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -640,3 +642,92 @@ def test_uniadilr_is_objective_and_has_no_judge():
     # judge_request/apply_judge are the base class's no-ops, not overrides.
     assert "judge_request" not in vars(UniADILRHGcAdapter)
     assert "apply_judge" not in vars(UniADILRHGcAdapter)
+
+
+# --------------------------------------------------------------------------- #
+# ABD: a batch is evaluated in parallel, and comes out the same
+# --------------------------------------------------------------------------- #
+
+
+def test_abd_concurrent_scoring_deduplicates_identical_questions():
+    """Eight threads asking the same question must pay for one Z3 run.
+
+    The engine scores a batch concurrently, and repeats of a record often
+    produce the same formula. Without the in-flight map every one of them would
+    start its own solver run, because none is in the cache yet.
+    """
+    import concurrent.futures
+    import threading
+
+    from abductionbench.adapters._abd_eval import EvalOutcome
+    from abductionbench.adapters.abd import ABDAdapter
+
+    calls = []
+    barrier = threading.Barrier(1)  # unused; kept explicit that no coordination is needed
+
+    class _Isolated:
+        deadline_s = 30.0
+
+        def evaluate(self, problem, alpha, timeout_ms):
+            calls.append(alpha)
+            time.sleep(0.2)          # long enough that the others really overlap
+            return EvalOutcome(valid=True, total_cost=3, total_opt_cost=3, total_gap=0,
+                               avg_gap=0.0, cost_vs_gold=0)
+
+    adapter = object.__new__(ABDAdapter)
+    adapter._problems = {"i": {"scenario": "ABD_FULL"}}
+    adapter._isolated = _Isolated()
+    adapter.context = SimpleNamespace(option=lambda _name, default=None: default)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: adapter._evaluate("i", "(P x)"), range(8)))
+
+    assert len(calls) == 1, f"expected one evaluation, got {len(calls)}"
+    assert all(r is results[0] for r in results)
+    del barrier
+
+
+def test_abd_a_broken_pool_does_not_condemn_the_sibling_that_shared_it():
+    """One bad formula takes the whole pool down; the others must survive it.
+
+    A native abort kills every worker, so an innocent answer's future raises
+    BrokenProcessPool too. Charging that to the innocent answer would inflate
+    evaluator_crashed and lose real verdicts, so it is retried once on the
+    fresh pool.
+    """
+    from concurrent.futures import BrokenExecutor
+
+    from abductionbench.adapters._abd_eval import IsolatedEvaluator
+
+    evaluator = IsolatedEvaluator(Path("/nonexistent"), deadline_s=5)
+    attempts = {"n": 0}
+
+    class _Pool:
+        def submit(self, *_args, **_kwargs):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise BrokenExecutor("a sibling aborted the pool")
+
+            class _Future:
+                @staticmethod
+                def result(timeout=None):
+                    return {"valid": True, "total_cost": 1, "total_opt_cost": 1,
+                            "total_gap": 0, "avg_gap": 0.0, "cost_vs_gold": 0,
+                            "parse_error": None, "forbidden_preds_used": (),
+                            "trailing_parens_added": 0}
+
+            return _Future()
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    evaluator._pool = _Pool()
+    evaluator._ensure_pool = lambda: evaluator._pool or _Pool()
+    # first submit raises, second (after the restart) succeeds
+    evaluator._discard_pool = lambda broken=None: None
+    outcome = evaluator.evaluate({}, "(P x)", 5000)
+
+    assert attempts["n"] == 2, "the sibling should have been retried once"
+    assert outcome.crashed is False
+    assert outcome.valid is True
+    assert evaluator.crashes == 1      # the breakage is still counted
