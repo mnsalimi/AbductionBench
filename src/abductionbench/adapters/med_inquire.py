@@ -84,7 +84,11 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: wording and only the judge can score it. prepare() flips this back to True
     #: if the selection subtask is ever selected, where a label is checkable.
     objective_metrics = False
-    selection_cardinality = "single"
+    #: NOT a selection task: no candidate list is ever shown, the answer is
+    #: a disease name, written free-form. Declaring "single" made the engine schedule it as SCS and
+    #: append "Select exactly one hypothesis / Answer: 1" to a prompt with no
+    #: hypotheses in it -- which taught the model to answer with a number.
+    selection_cardinality = None
     hypothesis_modes = ("generation",)
     hypothesis_mode_options = {
         "generation": {'subtask': 'generation'},

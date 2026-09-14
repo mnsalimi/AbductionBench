@@ -21,7 +21,7 @@ reasoning instruction whichever dataset it came from.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..core.modes import BOV, COT, IO, MCS, SCS, SELF_CONSISTENCY, TaskModes
@@ -191,6 +191,31 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
     model *submitted* rather than the last digit it happened to write.
     """
     contract: dict[str, Any] = {"answer_prefix": ANSWER_PREFIX, "strip_markdown": True}
+
+    # THE SCAFFOLDING FOLLOWS THE CONTENT, NOT THE DECLARATION. A selection
+    # closing tells the model to answer with a label from a list; if the prompt
+    # never showed a list, the instruction is a lie and the example is worse
+    # than useless.
+    #
+    # Observed on aiops2025, which asks for a root-cause entity by name but
+    # declares selection_cardinality = "single", so the engine ran it as SCS.
+    # With no options the closing rendered as:
+    #
+    #     Select exactly one hypothesis.
+    #     Answer with only one of: the label, on the last line, as:
+    #     Answer: 1
+    #
+    # -- "the label" being the empty-list fallback of _label_list. The model was
+    # shown a numeric example for an answer that is a service name, and duly
+    # replied "Answer: 1" instead of "Answer: inventory". The contract was also
+    # set to style=single_label with an empty label set, so the parser was
+    # configured for a label that could never arrive.
+    #
+    # A dataset that renders no candidate list gets the free-form closing, which
+    # is built from its own answer_format and constraints, whatever selection
+    # mode the run is labelled with.
+    if not parts.options:
+        modes = replace(modes, selection_mode=None)
 
     if modes.selection_mode == BOV:
         # One hypothesis at a time; the selected set is rebuilt from the yeses.

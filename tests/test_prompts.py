@@ -260,3 +260,109 @@ def test_no_shipped_dataset_contradicts_cot():
         cot, _ = build_messages(parts, TaskModes(prompt_mode="cot"))
         rendered = " ".join(m.content for m in cot)
         assert not suppress.search(rendered), f"{impl} contradicts cot: {rendered[-300:]}"
+
+
+# --------------------------------------------------------------------------- #
+# The answer instruction must match what the prompt actually shows
+# --------------------------------------------------------------------------- #
+
+
+def test_no_selection_scaffolding_without_a_candidate_list():
+    """The bug: "Answer with only one of: the label ... Answer: 1", with no list.
+
+    aiops2025 asks for a root-cause entity by name but declared
+    selection_cardinality = "single", so the engine ran it as SCS and appended a
+    selection closing to a prompt that never showed a candidate. _label_list([])
+    rendered as the literal "the label" and the example was "Answer: 1", so the
+    model was taught to answer with a number where the answer is a service name.
+    """
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system="Find the root cause.",
+        observation="A service is alerting.",
+        answer_format="the root cause",
+        constraints=["name only the root cause"],
+    )  # note: no options
+
+    for selection in ("SCS", "MCS", "BOV"):
+        messages, contract = build_messages(
+            parts, TaskModes(prompt_mode="io", selection_mode=selection)
+        )
+        text = messages[-1].content
+        assert "the label" not in text, selection
+        assert "Answer: 1" not in text, selection
+        assert "Select exactly one hypothesis" not in text, selection
+        assert "Select every hypothesis" not in text, selection
+        # it falls back to the dataset's own answer shape
+        assert "Answer: <the root cause>" in text, selection
+        assert contract["style"] == "free_form", selection
+
+
+def test_selection_scaffolding_survives_when_there_are_options():
+    """The fix must not disarm selection where selection is real."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system="Choose.",
+        observation="Something happened.",
+        options=["it rained", "the sprinkler ran"],
+        option_labels=["1", "2"],
+    )
+    messages, contract = build_messages(
+        parts, TaskModes(prompt_mode="io", selection_mode="SCS")
+    )
+    text = messages[-1].content
+    assert "Select exactly one hypothesis" in text
+    assert "Answer with only one of: 1 or 2" in text
+    assert contract["style"] == "single_label"
+
+
+def test_the_example_answer_is_always_one_of_the_offered_labels():
+    """A numeric example under lettered labels would teach the wrong format."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system="Choose.",
+        observation="Something happened.",
+        options=["alpha", "beta", "gamma"],
+        option_labels=["A", "B", "C"],
+    )
+    text = build_messages(parts, TaskModes(prompt_mode="io", selection_mode="SCS"))[0][-1].content
+    assert "Answer: A" in text
+    assert "Answer: 1" not in text
+
+
+def test_no_shipped_dataset_is_told_to_select_from_nothing():
+    """Suite-wide guard, over rendered prompts rather than declarations.
+
+    Six datasets hit this at once -- the failure came from the mode declaration,
+    not from any one adapter's wording, so the guard has to be over what the
+    model actually reads.
+    """
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    for impl in (
+        "abductionbench.adapters.aiops2025:AIOps2025Adapter",
+        "abductionbench.adapters.causalopsbench:CausalOpsBenchAdapter",
+        "abductionbench.adapters.med_inquire:MedInquireAdapter",
+        "abductionbench.adapters.researchbench:ResearchBenchAdapter",
+    ):
+        cls = resolve_adapter(impl)
+        parts = PromptParts(
+            system=cls.system_prompt,
+            observation="an observation",
+            answer_format=getattr(cls, "answer_format", "") or "an answer",
+            constraints=list(getattr(cls, "answer_constraints", ()) or ()),
+        )  # no options, as these datasets render none in their generation mode
+        for selection in (None, "SCS", "BOV"):
+            text = build_messages(
+                parts, TaskModes(prompt_mode="io", selection_mode=selection)
+            )[0][-1].content
+            assert "the label" not in text, (impl, selection)
+            assert "Select exactly one hypothesis" not in text, (impl, selection)

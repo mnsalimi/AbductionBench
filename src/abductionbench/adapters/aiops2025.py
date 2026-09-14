@@ -55,7 +55,11 @@ class AIOps2025Adapter(PooledDatasetAdapter):
     )
     options_heading = "Candidate root causes:"
     objective_metrics = True
-    selection_cardinality = "single"
+    #: NOT a selection task: no candidate list is ever shown, the answer is
+    #: an entity name read off the topology. Declaring "single" made the engine schedule it as SCS and
+    #: append "Select exactly one hypothesis / Answer: 1" to a prompt with no
+    #: hypotheses in it -- which taught the model to answer with a number.
+    selection_cardinality = None
     primary_metric = "root_cause_match"
 
     def load_items(self) -> list[dict[str, Any]]:

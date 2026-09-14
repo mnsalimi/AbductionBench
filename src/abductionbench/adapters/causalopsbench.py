@@ -56,7 +56,11 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
     #: so it gets a judged metric beside the mechanical one rather than the whole
     #: dataset being moved onto the judge.
     objective_metrics = True
-    selection_cardinality = "single"
+    #: NOT a selection task: no candidate list is ever shown, the answer is
+    #: a component name read off the topology. Declaring "single" made the engine schedule it as SCS and
+    #: append "Select exactly one hypothesis / Answer: 1" to a prompt with no
+    #: hypotheses in it -- which taught the model to answer with a number.
+    selection_cardinality = None
     primary_metric = "component_match"
 
     def load_items(self) -> list[dict[str, Any]]:
