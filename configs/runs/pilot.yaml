@@ -96,9 +96,16 @@ dataset_defaults:
   # than this returns what it has and reports the shortfall.
   #
   # Each record is then asked `modes.repeats` times, so the calls a static
-  # dataset costs are sample_size x repeats -- 100 x 3 = 300 per task, and a
+  # dataset costs are sample_size x repeats -- 50 x 3 = 150 per task, and a
   # dataset that poses two tasks in two prompt modes costs four times that.
-  sample_size: 100
+  #
+  # 100 -> 50 (2026-09-14). This is the base every run config inherits, so it
+  # halves the whole suite, not one run. The cost is statistical: a proportion
+  # measured on 50 records carries a standard error of at most 0.071 against
+  # 0.050 at 100, so differences smaller than roughly 0.2 are not separable at
+  # this size. Raise it back, or override per run with
+  #   -s dataset_defaults.sample_size=100
+  sample_size: 50
 
 # Every dataset config under configs/datasets/ is picked up automatically
 # (files starting with "_" are ignored).  Disable one with `enabled: false` in

@@ -26,7 +26,7 @@ extends:
 name: full
 description: >-
   The whole abductive-reasoning suite at dataset_defaults.sample_size records
-  per dataset (100), for the per-dataset difficulty table. The number lives in
+  per dataset (50), for the per-dataset difficulty table. The number lives in
   pilot.yaml so it is set in one place rather than restated here.
 
 engine:
