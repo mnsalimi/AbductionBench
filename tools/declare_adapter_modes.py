@@ -333,17 +333,19 @@ TABLE: dict[str, dict] = {
         "delivery": "static", "objective": False, "cardinality": None,
     },
     "vivabench": {
+        # The system prompt is NOT set from here: an interactive episode opens
+        # with the release's own ASSISTANT_BASE_PROMPT, read from the snapshot.
         "system": ABDUCTIVE_CORE + " You are given a clinical viva case. State the "
         "diagnosis that explains the presentation.",
-        "delivery": "interactive", "objective": True, "cardinality": "single",
+        "delivery": "interactive", "objective": False, "cardinality": None,
         "hypothesis": {
-            "modes": ("generation", "selection"),
-            "options": {"generation": {"subtask": "generation"},
-                        "selection": {"subtask": "selection"}},
-            "table": "Generation",
-            "justification": "Each VivaBench case ships an explicit differential-diagnosis "
-            "list next to its final diagnosis, so choosing among the case's own "
-            "differentials is a task the release defines.",
+            "modes": ("generation",),
+            "options": {"generation": {}},
+            "table": "Generation (interactive)",
+            "justification": "VivaBench is a viva: the agent asks for history, examines, "
+            "orders investigations and commits to a diagnosis. There is no selection "
+            "variant -- the release never shows the examinee a candidate list, and the "
+            "`differentials` column is part of the case's answer, not an option set.",
         },
     },
     "xcopa": {

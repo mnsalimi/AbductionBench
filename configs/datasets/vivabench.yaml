@@ -3,7 +3,16 @@ dataset:
   impl: abductionbench.adapters.vivabench:VivaBenchAdapter
   options:
     table: pubmed_reviewed   # pubmed_reviewed (human-reviewed) | dataset_generated
-    subtask: generation      # generation | selection (uses the case's own differentials)
-    evidence: vignette       # vignette | with_findings
-    words_per_section: 250
-  notes: Human-reviewed table; vignette-only evidence (single-turn analogue of a viva).
+    # No `subtask` and no `evidence` key. VivaBench is a viva: the agent asks
+    # for what it wants to know and the examiner answers from the case. There
+    # is no candidate list to select from, and no up-front evidence dump -- the
+    # examination limits (read from the release's own configs/evaluate.yaml)
+    # are what bound disclosure.
+    #
+    # `delivery: static` is still available as a generic ablation: it shows the
+    # opening stem alone and asks for a diagnosis, which is the cost of the
+    # interaction measured from below.
+  notes: >-
+    Run as published: a multi-turn viva under the release's own prompts, action
+    vocabulary, workflow gate and limits. Scored by the judge on the committed
+    final diagnosis, with `committed` and `turns_used` beside it.

@@ -640,7 +640,12 @@ def test_the_five_corrected_datasets_offer_one_mode_each():
         "abductionbench.adapters.diagnosisarena:DiagnosisArenaAdapter": ("selection", "static"),
         "abductionbench.adapters.med_inquire:MedInquireAdapter": ("generation", "interactive"),
         "abductionbench.adapters.medups:MedUPSAdapter": ("generation", "sequential"),
-        "abductionbench.adapters.vivabench:VivaBenchAdapter": ("selection", "static"),
+        # VivaBench is a multi-turn viva in its release and is run as one:
+        # ASSISTANT_BASE_PROMPT, the action vocabulary, the reviewed-patient
+        # gate and the limits all come from the published code. It was for a
+        # while declared static selection over the case's own differentials,
+        # which is a task the release does not pose.
+        "abductionbench.adapters.vivabench:VivaBenchAdapter": ("generation", "interactive"),
     }
     for impl, (mode, delivery) in expected.items():
         adapter = resolve_adapter(impl)
@@ -659,21 +664,25 @@ def test_medups_reads_the_mid_stream_release():
     assert medups.MedUPSAdapter.selection_cardinality is None
 
 
-def test_vivabench_does_not_sort_the_answer_to_the_front():
-    """The old ordering key put the gold option first on every single item."""
-    from abductionbench.adapters._common import choice_labels
+def test_vivabench_offers_no_option_list_at_all():
+    """The gold-first ordering bug is gone because the options are.
 
-    gold = "Pneumonia"
-    candidates = [gold, "Asthma", "COPD", "Heart failure"]
-    ordered = sorted(set(candidates))
-    labels = choice_labels(len(ordered))
-    assert labels[ordered.index(gold)] != "1", (
-        "alphabetical ordering must not coincide with gold-first for this case"
-    )
-    # The bug, for the record: this key is False for the gold and True for
-    # everything else, so the gold always sorted to index 0.
-    biased = sorted(set(candidates), key=lambda text: (text != gold, text))
-    assert biased.index(gold) == 0
+    This used to guard the ordering of a candidate list built from each case's
+    own `differentials`. VivaBench does not pose that task: its examinee is
+    never shown candidates. The adapter now runs the release's interactive
+    protocol and commits to a free-text diagnosis, so there is no option list
+    left to order, and no position for the gold to occupy.
+    """
+    import inspect
+
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+
+    assert VivaBenchAdapter.selection_cardinality is None
+    assert VivaBenchAdapter.hypothesis_modes == ("generation",)
+    source = inspect.getsource(VivaBenchAdapter.make_sample)
+    assert "option_labels" not in source
+    assert '"options"' not in source          # no options field is ever built
+    assert '"gold_label"' not in source       # and so nothing indexes into one
 
 
 def test_option_order_does_not_depend_on_which_option_is_gold():

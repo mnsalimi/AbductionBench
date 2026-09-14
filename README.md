@@ -416,6 +416,7 @@ needed four times as many investigations.
 
 | dataset | what the model does | where the environment comes from |
 |---|---|---|
+| VivaBench | takes a history, examines, orders investigations and imaging, then commits to a diagnosis | the case's own structured findings; the release's `ASSISTANT_BASE_PROMPT`, action vocabulary, workflow gate and limits |
 | DDXPlus | interviews the patient one symptom at a time | the patient record's evidence set, keyed by the release's own question text |
 | Med-Inquire | asks the patient, orders tests, submits a diagnosis | the case file's sections; `NOT AVAILABLE` for tests it does not record |
 | MedQDx | asks about symptoms, then names the condition | the case's symptom list |
@@ -431,11 +432,14 @@ so in its own caveats.
 `options.delivery: static` runs an interactive benchmark in its single-turn form
 as an ablation — useful for asking what the interaction actually buys.
 
-**VivaBench is the exception, and is not in the table above.** Its adapter ships
-the full finding-request loop, but it is configured `data_delivery_mode =
-"static"` and run as selection over the differentials the release records, so
-that loop never executes. The table used to list it as though it did. What it
-is run as is stated in its own entry in [`docs/datasets.md`](docs/datasets.md).
+VivaBench was for a time configured `data_delivery_mode = "static"` and run as
+selection over the differentials the release records, with the finding-request
+loop present but unreachable. It now runs the loop: the agent's system prompt is
+the release's own `ASSISTANT_BASE_PROMPT`, the examiner's replies are the
+release's strings, the workflow gate (`reviewed_patient`) closes history and
+examination once the work-up starts, and the limits are read from the release's
+own `configs/evaluate.yaml`. The one deviation is the lexical matcher above,
+which stands in for the release's LLM mapper.
 
 ## Making a run faster without touching quality
 
@@ -876,7 +880,7 @@ decisions cannot drift from the code. Current state: **44 datasets configured, a
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate.
 
-Four of the interactive benchmarks run their real environment; see
+Five of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 

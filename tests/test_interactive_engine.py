@@ -246,3 +246,146 @@ def test_two_models_do_not_score_each_others_episodes(
         # Each model's episodes ran to their own environment's demands.
         assert task.metrics["solved"] == 1.0, task.identity.model_id
         assert task.metrics["turns"] == 2.0
+
+
+# --------------------------------------------------------------------------- #
+# VivaBench: the release's own protocol, driven turn by turn
+# --------------------------------------------------------------------------- #
+
+
+def _response(text: str):
+    from abductionbench.core.types import ModelResponse, ResponseStatus
+
+    return ModelResponse(
+        sample_id="s", model_id="m", status=ResponseStatus.OK, content=text
+    )
+
+
+def _viva_adapter(tmp_path=None):
+    """A prepared VivaBench adapter, or a skip when the snapshot is absent."""
+    import pytest
+
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+    from abductionbench.core.adapter import AdapterContext
+    from pathlib import Path
+
+    context = AdapterContext(
+        dataset_id="vivabench",
+        data_dir=Path("data/vivabench"),
+        sample_size=3,
+        seed=20260903,
+        offline=True,
+        options={"table": "pubmed_reviewed"},
+    )
+    adapter = VivaBenchAdapter(context)
+    try:
+        adapter.prepare()
+    except Exception as exc:  # pragma: no cover - the snapshot is not committed
+        pytest.skip(f"VivaBench snapshot unavailable: {exc}")
+    return adapter
+
+
+def test_vivabench_runs_the_releases_examiner_protocol():
+    """The workflow gate, the limits and the examiner's own words.
+
+    Every assertion here is a line of vivabench/examiner.py: the
+    reviewed-patient gate that closes history once the work-up starts, the
+    per-category limit notices, the provisional acknowledgement, and the fact
+    that a diagnosis_final ends the episode. The strings are the release's
+    because the wording is what tells the agent a door has shut.
+    """
+    import json
+
+    adapter = _viva_adapter()
+    sample = adapter.build_samples()[0]
+    messages, state = adapter.interactive_start(sample)
+
+    # Opens with the release's agent prompt and its case stem.
+    assert "primary care medical AI assistant" in messages[0].content
+    assert messages[1].content.startswith("Clinical case stem:")
+    assert messages[1].content.rstrip().endswith("Please review and diagnose the patient.")
+
+    def act(action, query="something"):
+        return adapter.interactive_step(
+            sample, state, json.dumps({"reasoning": "r", "action": action, "query": query})
+        )
+
+    assert act("history", "how long has this been going on?") is not None
+    assert not state["reviewed_patient"]
+
+    # A provisional diagnosis closes the patient: Examiner.process_response.
+    assert act("diagnosis_provisional", [{"condition": "X", "confidence": 0.5}]) == (
+        "Thank you. Please proceed to imaging and lab investigations."
+    )
+    assert state["reviewed_patient"]
+    assert act("history", "one more question") == (
+        "You can no longer review the patient. Please proceed to order any "
+        "investigations or imaging to help with diagnosis."
+    )
+    assert act("examination", "listen to the chest") == (
+        "You can no longer review the patient. Please proceed to order any "
+        "investigations or imaging to help with diagnosis."
+    )
+
+    # diagnosis_final ends the episode, and the condition is recorded.
+    assert act("diagnosis_final", [{"condition": "Sarcoidosis", "confidence": 0.8}]) is None
+    assert state["final"]
+
+
+def test_vivabench_limits_come_from_the_releases_own_config():
+    """hx 10, phys 5, ix 5, img 5, actions 20 -- read, not restated."""
+    adapter = _viva_adapter()
+    assert adapter.category_limits == {
+        "history": 10,
+        "examination": 5,
+        "investigation": 5,
+        "imaging": 5,
+    }
+    assert adapter.max_turns == 20
+    assert "evaluate.yaml" in adapter.limits_source
+
+
+def test_vivabench_stops_answering_a_category_past_its_limit():
+    """Examiner.process_* appends the release's limit notice, then refuses."""
+    import json
+
+    adapter = _viva_adapter()
+    sample = adapter.build_samples()[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    replies = [
+        adapter.interactive_step(
+            sample,
+            state,
+            json.dumps({"reasoning": "r", "action": "imaging", "query": f"scan {n}"}),
+        )
+        for n in range(adapter.category_limits["imaging"] + 1)
+    ]
+    # The last answered request carries the notice ...
+    assert "Limit on ordering imaging reached" in replies[adapter.category_limits["imaging"] - 1]
+    # ... and the one past the limit is refused outright.
+    assert replies[-1].startswith("Limit on ordering imaging reached")
+
+
+def test_vivabench_scores_only_a_committed_diagnosis():
+    """An episode that never commits is not a diagnosis, however it reasoned."""
+    import json
+
+    adapter = _viva_adapter()
+    sample = adapter.build_samples()[0]
+    gold = sample.reference["gold"]
+
+    uncommitted = _response(f"I think this is probably {gold}, but I am out of turns")
+    score = adapter.score(sample, uncommitted)
+    assert score.metrics == {"diagnosis_judged": 0.0, "committed": 0.0}
+    assert score.parse_ok is False
+    # and the transcript is never offered to the judge
+    assert adapter.judge_request(sample, uncommitted, score) is None
+
+    final = _response(
+        json.dumps({"action": "diagnosis_final", "query": [{"condition": gold, "confidence": 0.9}]})
+    )
+    committed = adapter.score(sample, final)
+    assert committed.metrics["committed"] == 1.0
+    assert committed.prediction == gold
+    assert adapter.judge_request(sample, final, committed)["candidate"] == gold
