@@ -555,41 +555,80 @@ def test_uniadilr_premise_ids_read_only_the_left_of_the_arrow():
     assert _premise_ids("sent9") == {9}
 
 
-def test_uniadilr_scores_the_pair_order_independently():
+def test_uniadilr_scores_the_set_order_independently_and_any_size():
     from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
 
     adapter = object.__new__(UniADILRHGcAdapter)
-    sample = SampleSpec(
-        sample_id="u", fields={}, reference={"premises": [5, 13]}, metadata={}
-    )
 
-    def score(text):
+    def score(gold, text):
+        sample = SampleSpec(
+            sample_id="u", fields={}, reference={"premises": list(gold)}, metadata={}
+        )
         return UniADILRHGcAdapter.score(adapter, sample, _response(text))
 
-    assert score("5 13").metrics["premise_set_match"] == 1.0
-    assert score("13 5").metrics["premise_set_match"] == 1.0      # order-independent
-    assert score("sent13, sent5").metrics["premise_set_match"] == 1.0
-    assert score("5 99").metrics["premise_set_match"] == 0.0
-    assert score("5 99").metrics["premise_partial"] == 0.5        # diagnostic only
-    assert score("98 99").metrics["premise_partial"] == 0.0
+    # two premises
+    assert score([5, 13], "5 13").metrics["premise_set_match"] == 1.0
+    assert score([5, 13], "13 5").metrics["premise_set_match"] == 1.0      # order-free
+    assert score([5, 13], "sent13, sent5").metrics["premise_set_match"] == 1.0
+    # one premise, and three: both are real items and both must score
+    assert score([4], "4").metrics["premise_set_match"] == 1.0
+    assert score([1, 7, 19], "19 1 7").metrics["premise_set_match"] == 1.0
+    # cardinality counts -- the prompt does not say how many, so getting the
+    # number wrong is a wrong answer
+    assert score([5, 13], "5 13 99").metrics["premise_set_match"] == 0.0
+    assert score([5, 13], "5").metrics["premise_set_match"] == 0.0
+    assert score([1, 7, 19], "1 7").metrics["premise_count_match"] == 0.0
+    assert score([1, 7, 19], "1 7 99").metrics["premise_count_match"] == 1.0
 
 
-def test_uniadilr_wrong_number_of_numbers_is_a_parse_failure():
-    """One number, or three, has not answered the question that was asked.
+def test_uniadilr_partial_credit_does_not_reward_naming_everything():
+    """F1, not recall: listing the whole pool must not look like understanding."""
+    from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
 
-    Scoring those as a wrong pair would hide a formatting failure inside the
-    metric for finding the premises.
-    """
+    adapter = object.__new__(UniADILRHGcAdapter)
+    sample = SampleSpec(
+        sample_id="u", fields={}, reference={"premises": [1, 7, 19]}, metadata={}
+    )
+    shotgun = UniADILRHGcAdapter.score(
+        adapter, sample, _response(" ".join(str(i) for i in range(1, 24)))
+    )
+    assert shotgun.metrics["premise_set_match"] == 0.0
+    assert shotgun.metrics["premise_f1"] < 0.3      # recall would have been 1.0
+    assert shotgun.metrics["premise_count_match"] == 0.0
+
+    close = UniADILRHGcAdapter.score(adapter, sample, _response("1 7 99"))
+    assert close.metrics["premise_f1"] > shotgun.metrics["premise_f1"]
+
+
+def test_uniadilr_only_an_answer_with_no_numbers_fails_to_parse():
+    """A wrong count is a wrong answer, not a malformed one."""
     from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
 
     adapter = object.__new__(UniADILRHGcAdapter)
     sample = SampleSpec(
         sample_id="u", fields={}, reference={"premises": [5, 13]}, metadata={}
     )
-    for text in ("5", "5 13 7", "I think it is the programmer claim", ""):
+    for text in ("I cannot tell", ""):
         score = UniADILRHGcAdapter.score(adapter, sample, _response(text))
         assert score.parse_ok is False, text
+    # ... whereas these parse fine and are simply scored wrong
+    for text in ("5", "5 13 7"):
+        score = UniADILRHGcAdapter.score(adapter, sample, _response(text))
+        assert score.parse_ok is True, text
         assert score.metrics["premise_set_match"] == 0.0
+
+
+def test_uniadilr_keeps_items_of_every_premise_count():
+    """The prompt no longer fixes the count, so no item is unanswerable."""
+    import inspect
+
+    from abductionbench.adapters import uniadilr_hgc
+
+    source = inspect.getsource(uniadilr_hgc.UniADILRHGcAdapter.load_items)
+    assert "len(premises) == 2" not in source
+    assert "premise_counts" in source
+    constraints = " ".join(uniadilr_hgc.UniADILRHGcAdapter.answer_constraints)
+    assert "exactly two" not in constraints
 
 
 def test_uniadilr_is_objective_and_has_no_judge():

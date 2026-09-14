@@ -33,16 +33,17 @@ paraphrase the hypothesis convincingly from the pool's general subject matter
 without ever locating the two statements that entail it.  A pair of numbers is
 checkable outright.
 
-**Only the two-premise items are used.**  Of the 500 abductive items, 466 have
-exactly two supporting statements, 19 have one and 15 have three.  A prompt
-that asks for exactly two numbers is unanswerable on the other 34, so they are
-dropped rather than scored against an instruction they cannot satisfy; the
-count is reported.
+**How many statements is itself part of the question.**  All 500 abductive
+items are used: 466 have two supporting statements, 19 have one and 15 have
+three.  The prompt does not say which, so deciding *how many* to name is part
+of the task rather than something the instruction gives away -- a model told
+"exactly two" gets the cardinality for free on 93% of items.
 
-**Scoring.**  Order-independent exact match of the pair against the release's
-own ``proof``: ``13 5`` and ``5 13`` are the same answer, and anything that is
-not exactly two numbers is a parse failure rather than a wrong answer.  No
-judge -- there is nothing here a judge could settle that a set comparison
+**Scoring.**  Order-independent exact set match against the release's own
+``proof``: ``13 5`` and ``5 13`` are the same answer, and so is any ordering of
+a three-statement set.  Naming too many or too few is wrong, which is the point
+of not stating the count.  ``premise_f1`` sits beside it for partial credit.
+No judge -- there is nothing here a judge could settle that a set comparison
 cannot.
 """
 
@@ -52,7 +53,7 @@ import re
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span, set_prf
 from ..core.types import (
     AdapterDocumentation,
     ModelResponse,
@@ -66,9 +67,10 @@ REPO_URL = "https://github.com/YuSheng-00/UniADILR.git"
 #: The abductive split, and only it.
 ABDUCTION_FILE = "data/UniADILR-HGc/abduction.jsonl"
 _SENT_RE = re.compile(r"\bsent(\d+)\b")
-#: A bare integer in the model's answer. The prompt asks for "5 13"; this also
-#: reads "5, 13" and "sent5 sent13" without accepting prose that merely
-#: contains numbers, because the count is checked immediately afterwards.
+#: A bare integer in the model's answer. Reads "5 13", "5, 13" and
+#: "sent5 sent13" alike. Prose that happens to contain a number will be read as
+#: an answer, which is the price of not constraining the count; the Requirements
+#: block asks for numbers only, and a prose answer scores 0 on the set match.
 _NUMBER_RE = re.compile(r"\d+")
 
 
@@ -98,14 +100,14 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given a numbered pool of "
-        "statements, most of which are irrelevant. Exactly two of them together support a "
-        "single further claim. Identify which two."
+        "statements, most of which are irrelevant. A few of them together support a single "
+        "further claim. Identify which ones -- work out how many there are as well as which."
     )
-    answer_format = "two statement numbers"
+    answer_format = "the statement numbers"
     answer_constraints = (
-        "give exactly two numbers",
-        "separate them with a space, for example: 5 13",
-        "output only the two numbers",
+        "give the number of every supporting statement, and no others",
+        "separate them with spaces, for example: 5 13",
+        "output only the numbers",
         "do not name the claim",
         "do not explain your reasoning",
         "do not use introductory phrases or commentary",
@@ -151,41 +153,38 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
             )
         self.dropped_non_abductive = len(rows) - len(abductive)
 
-        # Exactly two supporting statements, because that is what the prompt
-        # asks for. 466 of the 500 items are two-premise; asking for two
-        # numbers on a one- or three-premise item would make it unanswerable by
-        # construction, so those are dropped and counted rather than scored
-        # against an instruction they cannot satisfy.
-        two_premise = []
-        self.dropped_premise_counts: dict[int, int] = {}
+        # Every item, whatever its premise count. The prompt does not state how
+        # many statements support the claim, so an item with one or three is as
+        # answerable as one with two -- and working out the cardinality is part
+        # of the task. Kept as a statistic because it is the shape of the set
+        # the model has to find.
+        usable = []
+        self.premise_counts: dict[int, int] = {}
         for row in abductive:
-            premises = _premise_ids(row.get("proof") or "")
-            if len(premises) == 2:
-                two_premise.append(row)
-            else:
-                self.dropped_premise_counts[len(premises)] = (
-                    self.dropped_premise_counts.get(len(premises), 0) + 1
-                )
-        if not two_premise:
+            count = len(_premise_ids(row.get("proof") or ""))
+            if count < 1:
+                continue
+            usable.append(row)
+            self.premise_counts[count] = self.premise_counts.get(count, 0) + 1
+        if not usable:
             raise SkippedDataset(
-                f"{path} has no items whose proof names exactly two supporting statements"
+                f"{path} has no items whose proof names any supporting statement"
             )
-        dropped = ", ".join(
-            f"{count} with {n}" for n, count in sorted(self.dropped_premise_counts.items())
+        spread = ", ".join(
+            f"{count} with {n}" for n, count in sorted(self.premise_counts.items())
         )
         self.split_used = (
-            f"{ABDUCTION_FILE}, the two-premise items ({len(two_premise)} of "
-            f"{len(abductive)}; dropped {dropped} supporting statement(s)); the deduction "
-            f"and induction files are not used"
+            f"{ABDUCTION_FILE} in full ({len(usable)} items: {spread} supporting "
+            f"statement(s)); the deduction and induction files are not used"
         )
-        return two_premise
+        return usable
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         context = item.get("context")
         gold_claim = C.normalize_whitespace(item.get("hypothesis"))
         proof = C.normalize_whitespace(item.get("proof"))
         premises = _premise_ids(proof)
-        if not isinstance(context, dict) or not context or len(premises) != 2:
+        if not isinstance(context, dict) or not context or not premises:
             return None
         # Numbered as the release numbers them -- `sent5` is statement 5 -- but
         # shown as a bare number, so the number the model reads is the number
@@ -202,8 +201,8 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
             fields={
                 "observation": "\n".join(statements),
                 "question": (
-                    "Exactly two of these statements together support a single further "
-                    "claim. Which two?"
+                    "Some of these statements together support a single further claim. "
+                    "Which ones?"
                 ),
             },
             reference={
@@ -214,7 +213,11 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
                 "claim_unscored": gold_claim,
             },
             task_kind="generation",
-            metadata={"n_statements": len(statements)},
+            metadata={
+                "n_statements": len(statements),
+                # How many the model has to find; the prompt never says.
+                "n_premises": len(premises),
+            },
         )
 
     # ------------------------------------------------------------------ #
@@ -228,38 +231,43 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        """Exactly two numbers, compared as a set against the release's proof.
+        """Whatever numbers were given, compared as a set against the proof.
 
-        "Exactly" is enforced rather than forgiven: an answer carrying one
-        number, or three, has not answered the question that was asked, and
-        counting it as a wrong pair would hide a model that cannot follow the
-        format inside the score for a model that cannot find the premises.
-        Those land in ``parse_failure_rate`` instead.
+        The count is not fixed by the prompt, so it is not fixed here either:
+        naming three statements where the proof names two is a wrong answer,
+        not a malformed one. Only an answer with NO numbers in it has failed to
+        answer the question, and that is what the parse failure is reserved for.
         """
         answer = extract_answer_span(response.text, output_contract)
         numbers = _NUMBER_RE.findall(answer or "")
-        if len(numbers) != 2:
+        if not numbers:
             return unparsed_score(
-                ["premise_set_match", "premise_partial"],
+                ["premise_set_match", "premise_f1"],
                 raw=(answer or response.text or "")[:200],
-                n_numbers=len(numbers),
             )
         chosen = {int(value) for value in numbers}
         gold = set(sample.reference["premises"])
-        # Order-independent: {5, 13} and {13, 5} are the same answer. A pair
-        # naming the same statement twice is not a pair, and cannot match a
-        # two-element gold.
-        exact = 1.0 if chosen == gold else 0.0
+        overlap = set_prf(chosen, gold)
         return SampleScore(
             metrics={
-                "premise_set_match": exact,
-                # Partial credit is reported but is NOT the score: it exists so
-                # a 0.0 can be read as "found one of the two" rather than
-                # "found neither".
-                "premise_partial": len(chosen & gold) / 2.0,
+                # Order-independent, and cardinality-sensitive: the set has to
+                # be right, not merely overlap.
+                "premise_set_match": 1.0 if chosen == gold else 0.0,
+                # Partial credit. F1 rather than recall on purpose: recall alone
+                # would reward naming every statement in the pool, which is
+                # exactly the answer that has understood nothing.
+                "premise_f1": overlap["f1"],
+                # Did the model work out HOW MANY support the claim? The prompt
+                # does not say, so this is a real part of the task and is worth
+                # separating from getting the right ones.
+                "premise_count_match": 1.0 if len(chosen) == len(gold) else 0.0,
             },
             prediction=" ".join(str(value) for value in sorted(chosen)),
-            details={"gold": " ".join(str(value) for value in sorted(gold))},
+            details={
+                "gold": " ".join(str(value) for value in sorted(gold)),
+                "n_given": len(chosen),
+                "n_gold": len(gold),
+            },
         )
 
     def aggregate(self, scores) -> dict[str, float]:
@@ -270,7 +278,8 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
     # ------------------------------------------------------------------ #
 
     def documentation(self) -> AdapterDocumentation:
-        dropped = getattr(self, "dropped_premise_counts", {})
+        counts = getattr(self, "premise_counts", {})
+        spread = ", ".join(f"{count} item(s) with {n}" for n, count in sorted(counts.items()))
         return AdapterDocumentation(
             dataset_id=self.dataset_id,
             name="UniADILR-HGc",
@@ -279,76 +288,88 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
             processing_mode="Generation",
             split_used=getattr(self, "split_used", ABDUCTION_FILE),
             abductive_subset=(
-                "THE ABDUCTION FILE ONLY, and within it the two-premise items. UniADILR ships "
+                "THE ABDUCTION FILE ONLY, in full. UniADILR ships "
                 "data/UniADILR-HGc/abduction.jsonl beside deduction.jsonl and induction.jsonl, "
                 "which apply the same construction to other reasoning types; those two are "
                 "never read, and a row in the abduction file whose reasoning_type is not "
-                "'abduction' is dropped. What remains is constrained abduction: which two of "
-                "many statements jointly support a further claim. The model names the pair; "
-                "finding it among the distractors is the whole difficulty."
+                "'abduction' is dropped. What remains is constrained abduction: which of many "
+                "statements jointly support a further claim. The model names them; finding "
+                "them among the distractors, and working out how many there are, is the whole "
+                "difficulty."
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
                 "premise_set_match": (
-                    "(PRIMARY, higher is better, 0-1) 1.0 when the two numbers given are the "
-                    "two the release's own proof field names, compared as a SET -- '13 5' and "
-                    "'5 13' are the same answer. Checked mechanically; there is no judge."
+                    "(PRIMARY, higher is better, 0-1) 1.0 when the numbers given are exactly "
+                    "the ones the release's own proof field names, compared as a SET -- order "
+                    "is irrelevant, but cardinality is not: naming three where the proof names "
+                    "two is wrong. Checked mechanically; there is no judge."
                 ),
-                "premise_partial": (
-                    "(diagnostic, higher is better, 0-1) how many of the two the model found, "
-                    "over two. Reported so a 0.0 on the primary metric can be read as 'found "
-                    "one' rather than 'found neither'. It is NOT the score."
+                "premise_f1": (
+                    "(diagnostic, higher is better, 0-1) F1 of the chosen set against the gold "
+                    "set. Reported so a 0.0 on the primary metric can be read as 'found some' "
+                    "rather than 'found none'. F1 rather than recall on purpose: recall alone "
+                    "would reward naming every statement in the pool, which is the answer that "
+                    "has understood nothing. It is NOT the score."
+                ),
+                "premise_count_match": (
+                    "(diagnostic, higher is better, 0-1) whether the model named the right "
+                    "NUMBER of statements, regardless of which. The prompt does not say how "
+                    "many support the claim, so this is a real part of the task, and it "
+                    "separates 'picked the wrong ones' from 'did not work out how many'."
                 ),
                 "parse_failure_rate": (
-                    "(lower is better, 0-1) fraction of responses that did not contain exactly "
-                    "two numbers. Answering with one number, or three, is a failure to answer "
-                    "the question rather than a wrong pair, and is counted here so it cannot "
-                    "hide inside the primary metric."
+                    "(lower is better, 0-1) fraction of responses containing no number at all. "
+                    "Only that counts as failing to answer: a wrong count is a wrong answer, "
+                    "not a malformed one, and belongs in the primary metric."
                 ),
                 "self_consistency_<metric>":
                 "Every metric also gets a self_consistency_ counterpart: the plurality answer "
                 "over modes.repeats samples of the same record, read off those samples rather "
-                "than bought again. Available because the answer is a pair of numbers, which "
+                "than bought again. Available because the answer is a set of numbers, which "
                 "repeats can agree on.",
             },
             primary_metric="premise_set_match",
             decisions=[
-                "THE ANSWER IS THE SUPPORTING PAIR, NOT THE CLAIM. Asking for the claim made "
-                "the answer free text that only an LLM judge could grade, and it graded the "
-                "wrong thing: a model can paraphrase a plausible hypothesis from the pool's "
-                "general subject matter without locating the two statements that entail it. "
-                "The pair is checkable outright, and the release's proof field is the key.",
+                "THE ANSWER IS THE SUPPORTING STATEMENTS, NOT THE CLAIM. Asking for the claim "
+                "made the answer free text that only an LLM judge could grade, and it graded "
+                "the wrong thing: a model can paraphrase a plausible hypothesis from the "
+                "pool's general subject matter without locating the statements that entail it. "
+                "A set of numbers is checkable outright, and the release's proof field is the "
+                "key.",
+                "THE PROMPT DOES NOT SAY HOW MANY to name. 466 of the 500 items have exactly "
+                "two supporting statements, so an instruction to give two would hand the model "
+                "the cardinality on 93% of the set; deciding how many is part of the task. An "
+                "earlier version of this adapter did fix the count at two, and dropped the 34 "
+                "items that did not fit it -- both are gone.",
+                f"Used every abductive item, whatever its premise count ({spread or 'n/a'}).",
                 "Statements are shown as bare numbers ('5. ...') rather than the release's "
                 "'sent5' labels, so the number the model reads is the number the answer format "
                 "asks it to write.",
                 "Read the premises from the LEFT of '->' in the proof only; the right side is "
                 "the claim, and parsing the whole string would read a stray token in the claim "
-                "text as a third premise.",
-                f"Used only the items whose proof names exactly two supporting statements "
-                f"({getattr(self, 'split_used', '')!r} records the counts). A prompt that asks "
-                "for exactly two numbers cannot be satisfied on a one- or three-premise item, "
-                "so those are dropped rather than scored against an impossible instruction: "
-                + (", ".join(f"{count} item(s) with {n} premise(s)"
-                             for n, count in sorted(dropped.items())) or "none were dropped")
-                + ".",
+                "text as an extra premise.",
                 "Used only the abductive split, and enforced it per row rather than trusting "
                 "the filename.",
                 "Presented the statements in the release's own numbering, which is what its "
                 "proof field refers to.",
             ],
             caveats=[
-                "Two numbers out of a pool of N gives a chance rate of 1 / C(N, 2) -- small, "
-                "but not zero, and it falls as the pool grows. Read the score against the pool "
-                "size in n_statements rather than against zero.",
-                "The release's proof is one derivation. If another pair of statements also "
+                "Chance is low but not zero, and it now depends on the model guessing the "
+                "cardinality as well as the members: for a pool of N there are C(N, k) sets of "
+                "size k. Read the score against n_statements rather than against zero.",
+                "The release's proof is one derivation. If another set of statements also "
                 "entailed the claim, naming it would score 0; the construction makes that "
                 "unlikely but nothing here verifies it.",
+                "premise_f1 gives partial credit to an over-long answer, so read it beside "
+                "premise_count_match -- a model that names half the pool will show a "
+                "respectable F1 and a count_match of 0.",
                 "Items are synthetic, so their distractors are drawn from unrelated corpora "
                 "and read as obviously unrelated more often than a natural pool would.",
             ],
             statistics={
                 **self.base_statistics(),
                 "dropped_non_abductive": getattr(self, "dropped_non_abductive", 0),
-                "dropped_by_premise_count": dropped,
+                "items_by_premise_count": counts,
             },
         )

@@ -4,8 +4,8 @@ dataset:
   options: {}
   notes: >-
     The abduction split of UniADILR-HGc only (data/UniADILR-HGc/abduction.jsonl),
-    and within it the two-premise items. The deduction and induction files are
-    the same construction over other reasoning types and are not read. The model
-    names the two statements that support the claim, as a pair of numbers, and
-    they are checked as a set against the release's own `proof` field -- no
-    judge.
+    in full. The deduction and induction files are the same construction over
+    other reasoning types and are not read. The model names the statements that
+    support the claim -- how many is part of the question, not something the
+    prompt gives away -- and they are compared as a set against the release's
+    own `proof` field. No judge.
