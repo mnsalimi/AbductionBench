@@ -537,3 +537,67 @@ def test_researchbench_selection_is_scored_by_its_answer_key():
     judged = ResearchBenchAdapter.score(scorer, generation, _response("a hypothesis"))
     assert "hypothesis_judged" in judged.metrics
     assert "accuracy" not in judged.metrics
+
+
+# --------------------------------------------------------------------------- #
+# UniADILR-HGc: the supporting pair, as a set
+# --------------------------------------------------------------------------- #
+
+
+def test_uniadilr_premise_ids_read_only_the_left_of_the_arrow():
+    """The right of `->` is the claim, not a premise."""
+    from abductionbench.adapters.uniadilr_hgc import _premise_ids
+
+    assert _premise_ids("sent5 & sent13 -> Sarah is a talented programmer.") == {5, 13}
+    # A claim whose own text contains a sent-like token must not become a third
+    # premise: this is why the split happens before the search.
+    assert _premise_ids("sent2 & sent19 -> sent7 was mentioned in the report.") == {2, 19}
+    assert _premise_ids("sent9") == {9}
+
+
+def test_uniadilr_scores_the_pair_order_independently():
+    from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
+
+    adapter = object.__new__(UniADILRHGcAdapter)
+    sample = SampleSpec(
+        sample_id="u", fields={}, reference={"premises": [5, 13]}, metadata={}
+    )
+
+    def score(text):
+        return UniADILRHGcAdapter.score(adapter, sample, _response(text))
+
+    assert score("5 13").metrics["premise_set_match"] == 1.0
+    assert score("13 5").metrics["premise_set_match"] == 1.0      # order-independent
+    assert score("sent13, sent5").metrics["premise_set_match"] == 1.0
+    assert score("5 99").metrics["premise_set_match"] == 0.0
+    assert score("5 99").metrics["premise_partial"] == 0.5        # diagnostic only
+    assert score("98 99").metrics["premise_partial"] == 0.0
+
+
+def test_uniadilr_wrong_number_of_numbers_is_a_parse_failure():
+    """One number, or three, has not answered the question that was asked.
+
+    Scoring those as a wrong pair would hide a formatting failure inside the
+    metric for finding the premises.
+    """
+    from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
+
+    adapter = object.__new__(UniADILRHGcAdapter)
+    sample = SampleSpec(
+        sample_id="u", fields={}, reference={"premises": [5, 13]}, metadata={}
+    )
+    for text in ("5", "5 13 7", "I think it is the programmer claim", ""):
+        score = UniADILRHGcAdapter.score(adapter, sample, _response(text))
+        assert score.parse_ok is False, text
+        assert score.metrics["premise_set_match"] == 0.0
+
+
+def test_uniadilr_is_objective_and_has_no_judge():
+    """A set comparison settles this; there is nothing for a judge to add."""
+    from abductionbench.adapters.uniadilr_hgc import UniADILRHGcAdapter
+
+    assert UniADILRHGcAdapter.objective_metrics is True
+    assert UniADILRHGcAdapter.primary_metric == "premise_set_match"
+    # judge_request/apply_judge are the base class's no-ops, not overrides.
+    assert "judge_request" not in vars(UniADILRHGcAdapter)
+    assert "apply_judge" not in vars(UniADILRHGcAdapter)
