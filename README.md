@@ -239,7 +239,7 @@ directory and its own row, identified by `template_mode`.
 | axis | values | who decides |
 |---|---|---|
 | `prompt_mode` | `io`, `cot`, `self-consistency` | the run config |
-| `selection_mode` | `SCS`, `MCS`, `BOV` | the run config, within what the benchmark allows |
+| `selection_mode` | `SCS`, `MCS`, `BOV` | the benchmark's task definition (see the rule below); the run config may restrict it, and gates `BOV` behind `modes.bov` |
 | `hypothesis_mode` | `generation`, `selection` | the benchmark's task definition |
 | `data_delivery_mode` | `static`, `interactive`, `sequential` | the benchmark — not a choice |
 
@@ -248,7 +248,8 @@ Orthogonal to all four is **`repeats`**: how many times each record is asked.
 ```yaml
 modes:
   prompt_modes:     [io, cot]          # crossed with:
-  selection_modes:  [SCS, BOV]         # ... for datasets whose task permits each
+  selection_modes:  []                 # empty -> every mode each benchmark admits
+  bov:              false              # BOV costs one request per candidate: opt in
   hypothesis_modes: [generation, selection]
   self_consistency_n: 5
   self_consistency_temperature: 0.7
@@ -318,15 +319,49 @@ scored by text overlap against one reference answer declines them, with a
 reason in the run's skipped-modes list, because a reasoning mode's effect
 cannot be read off a similarity score.
 
-**`SCS` / `MCS` / `BOV`.** Single-choice asks for exactly one hypothesis;
-multi-choice asks for every one that applies; **binary option verification**
-presents the hypotheses *one at a time* and asks whether each is the best
-explanation, then rebuilds the selected set from the answers that were a direct
-yes. A dataset whose task definition requires several selections (AER, DeFAb)
-never offers `SCS`; one whose items have exactly one correct answer never offers
-`MCS`. BOV is graded by the dataset's own scorer on the reconstructed set, so a
-BOV score and an MCS score are comparable, and `bov_yes_rate` reports how choosy
-the model was.
+**`SCS` / `MCS` / `BOV`.** Three ways to put the same pool of candidate
+hypotheses to a model.
+
+| mode | what the model is shown | what it is asked | requests per record |
+|---|---|---|---|
+| `SCS` | the whole candidate list | pick **exactly one** | 1 |
+| `MCS` | the whole candidate list | pick **as many as apply** — one, several, or all | 1 |
+| `BOV` | **one candidate**, with the task and observation, and no list | *does this hypothesis explain the observation?* — YES or NO | one **per candidate** |
+
+Which modes a dataset runs follows from its own task definition, and the rule is
+deliberately asymmetric:
+
+* **One correct hypothesis per item → `SCS`, `MCS` and `BOV`.** `SCS` is the
+  benchmark's own framing. Widening it to "select as many as apply" does not
+  change what the right answer is, so the scores stay comparable — what changes
+  is that the model is no longer told how many to name, and hedging across three
+  candidates is now visibly wrong rather than silently credited.
+* **Several correct hypotheses per item → `MCS` and `BOV`, never `SCS`.**
+  Forcing one choice on an item with three correct answers makes the item
+  unanswerable, so the score would measure the constraint instead of the model.
+  `AER` is the suite's only such dataset.
+
+Scoring is one code path for all three, which is what makes the columns
+comparable: the primary metric is an exact match against the gold set in every
+mode, so on a single-answer benchmark it is 1.0 only when the model named the
+gold candidate **and nothing else**. `MCS` and `BOV` add `set_f1` /
+`set_precision` / `set_recall` for the partial-credit view and `n_selected` for
+how much the model hedged; `BOV` adds `bov_yes_rate`, the share of candidates it
+said yes to.
+
+**BOV is off by default** — `modes.bov: false`. It is the one mode whose cost
+scales with the *candidate* count rather than the record count: DeFAb ships six
+candidates per item, so a BOV task is six times an MCS task, and on an
+interactive benchmark it is six whole episodes. Turn it on per run:
+
+```bash
+abench run configs/runs/full.yaml -s modes.bov=true
+```
+
+With it off, every selection dataset records a skipped mode saying so, because
+"BOV is missing from this report" and "BOV was switched off for this run" have
+to be distinguishable afterwards. Naming `BOV` in `selection_modes` while the
+flag is off is a config error rather than a silent no-op.
 
 **`generation` / `selection`.** Where the dataset table says "Generation /
 Selection (separate tasks)", the two run as independent evaluations with
@@ -736,8 +771,9 @@ squeezed budget cannot look like a clean result.
 
 | metric | meaning |
 |---|---|
-| `coverage` | scored samples ÷ planned samples |
-| `n_planned`, `n_scored`, `n_error`, `n_skipped` | request counts behind the score |
+| `coverage` | scored **items** ÷ planned **items** |
+| `n_planned`, `n_scored`, `n_error`, `n_skipped` | evaluation items behind the score |
+| `n_requests` | model calls those items cost. Equal to `n_planned` except where a mode asks one item as several calls: a `BOV` task over six candidates plans 4 items and sends 24 requests, and a self-consistency vote over k samples sends k times its items |
 | `parse_failure_rate` | fraction whose response yielded no prediction |
 | `truncation_rate` | fraction that stopped at the token budget. **Not retried** — a truncated answer is a result, and the budget is already the whole remaining context window |
 | `empty_response_rate` | fraction that returned no content at all |

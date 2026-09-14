@@ -159,12 +159,20 @@ def test_a_multi_answer_benchmark_is_never_offered_single_choice():
     assert MultiOnly.supports_modes(TaskModes(selection_mode="MCS")) is None
 
 
-def test_a_single_answer_benchmark_is_never_offered_multi_choice():
+def test_a_single_answer_benchmark_is_offered_all_three_modes():
+    """The rule is deliberately asymmetric, and this is the half that widens.
+
+    Widening a single-answer pool to "select as many as apply" leaves the item
+    answerable -- the answer is still that one candidate -- so SCS, MCS and BOV
+    all measure the same thing and their scores are comparable. Narrowing a
+    multi-answer pool to one choice does not, which is the sibling test above.
+    """
     class SingleOnly(_Selection):
         selection_cardinality = "single"
 
-    assert SingleOnly.selection_modes_offered() == ["SCS", "BOV"]
-    assert SingleOnly.supports_modes(TaskModes(selection_mode="MCS"))
+    assert SingleOnly.selection_modes_offered() == ["SCS", "MCS", "BOV"]
+    for mode in ("SCS", "MCS", "BOV"):
+        assert SingleOnly.supports_modes(TaskModes(selection_mode=mode)) is None
 
 
 def test_a_flexible_benchmark_offers_all_three():
@@ -771,3 +779,141 @@ def test_the_same_item_always_shuffles_the_same_way():
     assert first != shuffled_options(options, key="paper-43", seed=7)
     assert first != shuffled_options(options, key="paper-42", seed=8)
     assert sorted(first) == sorted(options)
+
+# --------------------------------------------------------------------------- #
+# the selection-mode rule, and the switch that gates BOV
+# --------------------------------------------------------------------------- #
+
+
+def _plan(tmp_path, *, cardinality, selection_modes=(), bov=False, prompt_modes=("io",)):
+    """The selection modes the engine would actually plan for one dataset."""
+    from abductionbench.core.config import DatasetConfig, ModesConfig
+    from abductionbench.core.engine import EvaluationEngine
+
+    class _Probe(_Selection):
+        selection_cardinality = cardinality
+
+    engine = EvaluationEngine.__new__(EvaluationEngine)
+    engine._skipped_modes = []
+    engine._introduced_modes = []
+    engine.config = type("_Cfg", (), {})()
+    engine.config.modes = ModesConfig(
+        prompt_modes=list(prompt_modes),
+        selection_modes=list(selection_modes),
+        bov=bov,
+        repeats=1,
+    )
+    dataset = DatasetConfig(id="probe", impl="tests.test_modes:_Selection")
+
+    import abductionbench.core.engine as engine_module
+
+    original = engine_module.resolve_adapter
+    engine_module.resolve_adapter = lambda _impl: _Probe
+    try:
+        planned = EvaluationEngine._modes_for(engine, dataset)
+    finally:
+        engine_module.resolve_adapter = original
+    return [m.selection_mode for m in planned], engine._skipped_modes
+
+
+def test_every_single_answer_dataset_is_planned_for_scs_and_mcs(tmp_path):
+    """Being SCS is not a reason to run only SCS: MCS asks the same pool harder."""
+    planned, _ = _plan(tmp_path, cardinality="single")
+    assert planned == ["SCS", "MCS"]
+
+
+def test_a_multi_answer_dataset_is_never_planned_for_scs(tmp_path):
+    planned, _ = _plan(tmp_path, cardinality="multi")
+    assert "SCS" not in planned
+    assert planned == ["MCS"]
+
+    # Not even when the run asks for it by name: it is recorded as skipped.
+    planned, skipped = _plan(tmp_path, cardinality="multi", selection_modes=["SCS", "MCS"])
+    assert planned == ["MCS"]
+    assert any("SCS is not offered" in entry["reason"] for entry in skipped)
+
+
+def test_bov_is_off_by_default_and_the_flag_turns_it_on(tmp_path):
+    off, skipped = _plan(tmp_path, cardinality="single")
+    assert "BOV" not in off
+    # Off, but not silently: the report can say the mode existed and was not run.
+    assert any("modes.bov" in entry["reason"] for entry in skipped)
+
+    on, _ = _plan(tmp_path, cardinality="single", bov=True)
+    assert on == ["SCS", "MCS", "BOV"]
+
+
+def test_asking_for_bov_without_the_flag_is_a_config_error():
+    """Planning nothing while the config names BOV would be the silent failure."""
+    from abductionbench.core.config import ModesConfig
+
+    with pytest.raises(ConfigError, match="modes.bov"):
+        ModesConfig(selection_modes=["BOV"])
+    assert ModesConfig(selection_modes=["BOV"], bov=True).selection_modes == ["BOV"]
+
+
+# --------------------------------------------------------------------------- #
+# scoring a selection answered as a set (MCS, and BOV's rebuilt set)
+# --------------------------------------------------------------------------- #
+
+
+def _score_selection(text, *, style, gold="B"):
+    from abductionbench.adapters._base import selection_score
+
+    response = ModelResponse(
+        sample_id="s1", model_id="m", status=ResponseStatus.OK, content=text
+    )
+    return selection_score(
+        response,
+        labels=["A", "B", "C"],
+        gold_label=gold,
+        output_contract={"answer_prefix": "Answer:", "style": style},
+    )
+
+
+def test_mcs_does_not_credit_a_model_for_hedging():
+    """The bug this guards: reading only the first label off a multi-select answer.
+
+    ``extract_choice_label`` stops at the first match, so "Answer: B, C" used to
+    score exactly like "Answer: B" -- a model could select every option and be
+    marked correct on every item.
+    """
+    exact = _score_selection("Answer: B", style="multi_label")
+    assert exact.metrics["accuracy"] == 1.0
+    assert exact.metrics["n_selected"] == 1.0
+
+    hedged = _score_selection("Answer: B, C", style="multi_label")
+    assert hedged.metrics["accuracy"] == 0.0, "selecting extra options is not correct"
+    assert hedged.metrics["set_f1"] == pytest.approx(2 / 3)
+    assert hedged.metrics["n_selected"] == 2.0
+
+    everything = _score_selection("Answer: A, B, C", style="multi_label")
+    assert everything.metrics["accuracy"] == 0.0
+    assert everything.metrics["set_recall"] == 1.0, "recall alone is not the score"
+    assert everything.metrics["set_precision"] == pytest.approx(1 / 3)
+
+
+def test_scs_still_reads_a_single_label():
+    assert _score_selection("Answer: B", style="single_label").metrics["accuracy"] == 1.0
+    assert _score_selection("Answer: A", style="single_label").metrics["accuracy"] == 0.0
+
+
+def test_a_multi_select_set_is_read_from_the_answer_line_only():
+    """Labels mentioned while reasoning are not selections."""
+    text = (
+        "Let me think. Option A is tempting and option C nearly works.\n"
+        "Answer: B"
+    )
+    score = _score_selection(text, style="multi_label")
+    assert score.prediction == "B"
+    assert score.metrics["accuracy"] == 1.0
+
+
+def test_an_empty_selection_parses_but_an_unreadable_one_does_not():
+    empty = _score_selection("Answer: none", style="multi_label")
+    assert empty.parse_ok is True
+    assert empty.metrics["accuracy"] == 0.0
+    assert empty.prediction == "none"
+
+    unreadable = _score_selection("I could not decide.", style="multi_label")
+    assert unreadable.parse_ok is False

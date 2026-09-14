@@ -66,7 +66,7 @@ from .errors import (
 )
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
-from .modes import TaskModes
+from .modes import BOV, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
@@ -144,7 +144,12 @@ class TaskResult:
     output_dir: Path
     metrics: dict[str, float] = field(default_factory=dict)
     checkpoint: TaskCheckpoint | None = None
+    #: Evaluation items this task set out to score. Not the request count: BOV
+    #: and self-consistency ask one item as several requests, and coverage is
+    #: items scored over items planned.
     n_planned: int = 0
+    #: Model requests those items cost, which is what a run is billed for.
+    n_requests: int = 0
     n_scored: int = 0
     n_error: int = 0
     n_skipped: int = 0
@@ -633,15 +638,43 @@ class EvaluationEngine:
     # Stage A
     # ------------------------------------------------------------------ #
 
+    def _note_bov_off(
+        self,
+        dataset_id: str,
+        prompt_mode: str,
+        hypothesis_mode: str | None,
+        delivery: str,
+    ) -> None:
+        """Record that a BOV task was available but the run's flag is off."""
+        modes = TaskModes(
+            prompt_mode=prompt_mode,
+            selection_mode=BOV,
+            hypothesis_mode=hypothesis_mode,
+            data_delivery_mode=delivery,
+        )
+        self._skipped_modes.append(
+            {
+                "dataset_id": dataset_id,
+                "mode": modes.slug,
+                "reason": "BOV is off for this run (modes.bov: false); set modes.bov: true "
+                          "to ask one yes/no question per candidate hypothesis",
+            }
+        )
+
     def _modes_for(self, dataset_cfg: DatasetConfig) -> list[TaskModes]:
         """Every mode combination this dataset will be evaluated in.
 
         The prompt modes come from the run config; the selection modes come from
         the run config *intersected with what the dataset's task definition
         admits*, so a benchmark whose items have several correct hypotheses is
-        never asked to pick one.  A dataset that is not a selection task gets a
-        single mode with no selection axis.  Delivery is read from the adapter:
-        it is a property of the benchmark, not a choice.
+        never asked to pick one.  With nothing requested, a selection dataset is
+        run in **every** mode it admits rather than only the one it was
+        published as -- SCS and MCS for a single-answer benchmark, MCS alone for
+        a multi-answer one -- with BOV gated behind ``modes.bov`` because its
+        cost scales with the candidate count rather than the record count.  A
+        dataset that is not a selection task gets a single mode with no
+        selection axis.  Delivery is read from the adapter: it is a property of
+        the benchmark, not a choice.
 
         Combinations the adapter rejects are logged once, with the reason, and
         recorded on the run so the report can say which modes were not run.
@@ -659,8 +692,13 @@ class EvaluationEngine:
         elif cfg.selection_modes:
             requested_selection = [m for m in cfg.selection_modes] or [None]
         else:
-            # No explicit request: run the mode the benchmark itself defines.
-            requested_selection = [offered[0]]
+            # No explicit request: every mode the benchmark's own task definition
+            # admits, not just the one it was published as. A pool of hypotheses
+            # with one right answer is also a pool you can ask "select as many as
+            # apply" of, and the answer is still that one -- so the comparison
+            # between SCS and MCS on the same records is a measurement, not a
+            # different benchmark. BOV is filtered below, on the run's flag.
+            requested_selection = list(offered)
 
         # "Generation / Selection (separate tasks)" in the dataset table means two
         # independent evaluations, so they are crossed here rather than mixed
@@ -688,6 +726,12 @@ class EvaluationEngine:
                     if hypothesis_mode == "generation" and selection_mode is not None:
                         # Generating a hypothesis has no candidate list to pick from.
                         selection_mode = None
+                    if selection_mode == BOV and not cfg.bov:
+                        # Recorded rather than dropped quietly: "BOV is missing
+                        # from this report" and "BOV was switched off for this
+                        # run" have to be distinguishable afterwards.
+                        self._note_bov_off(dataset_cfg.id, prompt_mode, hypothesis_mode, delivery)
+                        continue
                     modes = TaskModes(
                         prompt_mode=prompt_mode,
                         selection_mode=selection_mode,
@@ -1210,7 +1254,17 @@ class EvaluationEngine:
         # Includes the prompts skipped for having no room to answer: they were
         # part of what this task set out to evaluate, so leaving them out would
         # let coverage read 1.0 for a task that only managed four items in five.
-        result.n_planned = len(rendered) + len(no_room)
+        #
+        # Counted in *evaluation items*, not requests, because n_scored is. The
+        # two differ exactly where a mode asks one item as several requests: a
+        # BOV task over six candidates sends six requests and scores one item,
+        # so counting requests here made coverage read 1/6 for a task that
+        # scored everything -- and `<primary>_strict`, which is the primary
+        # metric times coverage, divided the score by six along with it.
+        planned_ids = {p.sample.group_id or p.sample.sample_id for p in rendered}
+        planned_ids.update(sample_id for sample_id, _tokens in no_room)
+        result.n_planned = len(planned_ids)
+        result.n_requests = len(rendered) + len(no_room)
         self._clamped_output_budgets = len(clamped)
         if clamped:
             worst = min(clamped, key=lambda item: item[2])
@@ -1501,6 +1555,7 @@ class EvaluationEngine:
                 "metrics": metrics,
                 "counts": {
                     "planned": result.n_planned,
+                    "requests": result.n_requests or result.n_planned,
                     "scored": result.n_scored,
                     "errors": result.n_error,
                     "skipped": result.n_skipped,
@@ -1526,6 +1581,7 @@ class EvaluationEngine:
             metrics=metrics,
             counts={
                 "planned": result.n_planned,
+                "requests": result.n_requests or result.n_planned,
                 "scored": result.n_scored,
                 "errors": result.n_error,
                 "skipped": result.n_skipped,
@@ -2013,7 +2069,10 @@ class EvaluationEngine:
         async with self._scoring_sem:
             try:
                 return await asyncio.to_thread(
-                    adapter.score, prompt.sample, response, output_contract=prompt.output_contract
+                    adapter.score_request,
+                    prompt.sample,
+                    response,
+                    output_contract=prompt.output_contract,
                 )
             except Exception as exc:  # noqa: BLE001 - a bad scorer must not kill the run
                 logger.exception(
@@ -2235,6 +2294,10 @@ class EvaluationEngine:
         coverage = result.n_scored / planned
         metrics["coverage"] = coverage
         metrics["n_planned"] = float(result.n_planned)
+        # Requests, where a mode asks one item as several. Reported beside
+        # n_planned rather than instead of it, because the two answer different
+        # questions: how much was evaluated, and how much it cost.
+        metrics["n_requests"] = float(result.n_requests or result.n_planned)
         metrics["n_scored"] = float(result.n_scored)
         metrics["n_error"] = float(result.n_error)
         metrics["n_skipped"] = float(result.n_skipped)

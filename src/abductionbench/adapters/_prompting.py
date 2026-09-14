@@ -39,6 +39,15 @@ _COT_INSTRUCTION = (
     "everything observed rather than only part of it."
 )
 
+#: Chain-of-thought for a BOV request, which has one candidate rather than a
+#: list. The general instruction says "consider what *each* candidate would have
+#: to be true for", which under BOV points at candidates the model was not shown.
+_COT_INSTRUCTION_BOV = (
+    "Work through the evidence step by step before answering. Consider what this "
+    "hypothesis would have to be true for, and whether it accounts for everything "
+    "observed rather than only part of it."
+)
+
 _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
 
 #: Answer constraints that forbid the model to reason or preface, which is
@@ -148,14 +157,23 @@ class PromptParts:
     contract: dict[str, Any] = field(default_factory=dict)
 
 
-def _observation_block(parts: PromptParts) -> list[str]:
+def _observation_block(parts: PromptParts, modes: TaskModes | None = None) -> list[str]:
     block: list[str] = []
     if parts.context:
         block.append(f"Background:\n{parts.context}")
     if parts.observation:
         block.append(f"Observation:\n{parts.observation}")
     if parts.question:
-        block.append(f"Question: {parts.question}")
+        if modes is not None and modes.selection_mode == BOV and parts.options:
+            # A BOV request shows one candidate and no list, so a dataset's own
+            # "Which of these candidates...?" would be asking the model to pick
+            # from something it was never shown -- the same failure the options
+            # guard in _closing exists to prevent, one block higher up. The
+            # question is rendered as the standing question this one candidate
+            # is being tested against instead of as the ask.
+            block.append(f"The question being asked of the candidates:\n{parts.question}")
+        else:
+            block.append(f"Question: {parts.question}")
     if parts.instructions:
         block.append(f"Task: {parts.instructions}")
     return block
@@ -219,9 +237,18 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
 
     if modes.selection_mode == BOV:
         # One hypothesis at a time; the selected set is rebuilt from the yeses.
+        #
+        # Deliberately NOT "is this the best explanation": the model is shown a
+        # single candidate and cannot see the others, so a superlative asks it
+        # to rank against an invisible field and the answer would depend on what
+        # it imagined the alternatives to be. The question BOV actually poses is
+        # whether this hypothesis, judged alone, accounts for the observation.
         contract.update({"style": "binary", "labels_from_field": None, "yes_no": True})
+        asks = "answers that question" if parts.question else "explains the observation"
         return (
-            "Decide whether this is the best explanation of the observation.\n"
+            "You are shown one candidate hypothesis at a time; the others are not listed "
+            "here, so judge this one on its own merits rather than against them.\n"
+            f"Decide whether this hypothesis {asks}.\n"
             "Answer with only YES or NO, on the last line, as:\n"
             f"{ANSWER_PREFIX} YES"
         ), contract
@@ -264,7 +291,7 @@ def build_messages(
         {"options": parts.options, "option_labels": parts.option_labels}
     )
 
-    body = _observation_block(parts)
+    body = _observation_block(parts, modes)
     if parts.options and modes.selection_mode == BOV:
         # One hypothesis at a time, and it has to be on the page: the model is
         # being asked about *this* candidate, not about the list it came from.
@@ -273,7 +300,8 @@ def build_messages(
         body.append(_options_block(parts, labels))
 
     if modes.prompt_mode in (COT, SELF_CONSISTENCY):
-        body.append(_COT_INSTRUCTION)
+        one_at_a_time = bool(parts.options) and modes.selection_mode == BOV
+        body.append(_COT_INSTRUCTION_BOV if one_at_a_time else _COT_INSTRUCTION)
     elif modes.prompt_mode == IO:
         body.append(_IO_INSTRUCTION)
 

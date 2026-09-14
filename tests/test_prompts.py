@@ -443,3 +443,94 @@ def test_no_dataset_states_the_answer_shape_in_its_task_line():
     if not checked:
         pytest.skip("no datasets are materialized on this machine")
     assert not offenders, f"answer shape stated in a task line: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# The selection-mode rule, checked against every dataset the suite ships
+# --------------------------------------------------------------------------- #
+
+
+def _shipped_adapters():
+    """Every adapter class a run config would resolve, without touching data."""
+    import os
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.registry import resolve_adapter
+
+    # The run config interpolates the model endpoint's key; this test never
+    # calls a model, it only resolves adapter classes.
+    os.environ.setdefault("ABENCH_API_KEY", "not-a-real-key")
+    config = load_run_config(Path("configs/runs/pilot.yaml"))
+    for dataset in config.datasets:
+        yield dataset.id, resolve_adapter(dataset.impl)
+
+
+def test_no_multi_answer_dataset_in_the_suite_offers_single_choice():
+    """The rule, applied to what actually ships rather than to a stand-in.
+
+    Forcing one choice on an item with several correct answers makes the item
+    unanswerable, so the score would measure the constraint instead of the
+    model.  The converse is allowed and is checked below.
+    """
+    from abductionbench.core.modes import TaskModes
+
+    multi = [
+        (dataset_id, cls)
+        for dataset_id, cls in _shipped_adapters()
+        if cls.selection_cardinality == "multi"
+    ]
+    for dataset_id, cls in multi:
+        assert "SCS" not in cls.selection_modes_offered(), dataset_id
+        assert cls.supports_modes(TaskModes(selection_mode="SCS")), dataset_id
+
+
+def test_every_selection_dataset_in_the_suite_offers_mcs_and_bov():
+    """Both are available everywhere there is a candidate list to ask about."""
+    from abductionbench.core.modes import TaskModes
+
+    selection = [
+        (dataset_id, cls)
+        for dataset_id, cls in _shipped_adapters()
+        if cls.selection_cardinality is not None
+    ]
+    assert selection, "the suite ships no selection datasets -- the guard is vacuous"
+    for dataset_id, cls in selection:
+        offered = cls.selection_modes_offered()
+        assert "MCS" in offered and "BOV" in offered, f"{dataset_id}: {offered}"
+        for mode in ("MCS", "BOV"):
+            assert cls.supports_modes(TaskModes(selection_mode=mode)) is None, dataset_id
+        if cls.selection_cardinality in ("single", "flexible"):
+            assert "SCS" in offered, dataset_id
+
+
+def test_a_bov_prompt_never_refers_to_a_list_it_does_not_show():
+    """BOV shows one candidate; nothing in the prompt may imply a visible list.
+
+    This is the aiops failure one level up: there the *closing* named a list the
+    prompt never rendered, here it would be the dataset's own question ("Which
+    of these candidates...?") or the shared CoT instruction ("consider what each
+    candidate would have to be true for").
+    """
+    import re
+
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system="You pick the best explanation.",
+        observation="the lawn is wet",
+        question="Which candidate, if added to the theory, would explain the observation?",
+        options=["it rained"],
+        option_labels=["1"],
+    )
+    plural = re.compile(r"each candidate|these candidates|the candidates below|listed below", re.I)
+    for prompt_mode in ("io", "cot"):
+        messages, contract = build_messages(
+            parts, TaskModes(prompt_mode=prompt_mode, selection_mode="BOV")
+        )
+        rendered = " ".join(m.content for m in messages)
+        assert contract["style"] == "binary"
+        assert not plural.search(rendered), f"{prompt_mode}: {rendered}"
+        # And it must not ask for a superlative over candidates it cannot see.
+        assert "best explanation of the observation" not in rendered
+        assert "YES or NO" in rendered

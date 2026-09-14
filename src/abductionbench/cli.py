@@ -94,7 +94,14 @@ def validate(
     table.add_row("prompt modes", ", ".join(run_config.modes.prompt_modes))
     table.add_row(
         "selection modes",
-        ", ".join(run_config.modes.selection_modes) or "as each benchmark defines",
+        ", ".join(run_config.modes.selection_modes)
+        or "every mode each benchmark admits (SCS+MCS if it has one answer, MCS if several)",
+    )
+    table.add_row(
+        "BOV",
+        "on -- one yes/no request per candidate hypothesis"
+        if run_config.modes.bov
+        else "off (modes.bov) -- set modes.bov: true to add it",
     )
 
     problems: list[str] = []

@@ -320,8 +320,14 @@ def test_self_consistency_votes_are_reduced_to_one_score(
     result, _ = _run(config_path)
     task = result.tasks[0]
     # Four items asked three times each: twelve requests, four scored answers.
-    assert task.n_planned == 12
+    # The two are counted separately, and coverage is over *items* -- counting
+    # requests there made a fully scored vote read as one third covered, and
+    # `<primary>_strict`, which is the score times coverage, divided by three.
+    assert task.n_planned == 4
+    assert task.n_requests == 12
     assert task.n_scored == 4
+    assert task.metrics["coverage"] == 1.0
+    assert task.metrics["accuracy_strict"] == task.metrics["accuracy"]
     assert task.metrics["self_consistency_agreement"] == 1.0
 
 

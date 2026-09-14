@@ -31,7 +31,9 @@ from ..core.metrics import (
     exact_match,
     extract_answer_span,
     extract_choice_label,
+    extract_choice_labels,
     rouge_l,
+    set_prf,
     token_f1,
 )
 from ..core.types import ChatMessage, ModelResponse, SampleScore, SampleSpec
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PooledDatasetAdapter",
     "PromptParts",
+    "multi_selection_score",
     "selection_score",
     "text_match_score",
     "unparsed_score",
@@ -276,7 +279,35 @@ def selection_score(
     metric_name: str = "accuracy",
     extra_metrics: dict[str, float] | None = None,
 ) -> SampleScore:
-    """Score a multiple-choice (hypothesis selection) response."""
+    """Score a multiple-choice (hypothesis selection) response.
+
+    The same function scores all three selection modes, which is what makes
+    their numbers comparable:
+
+    * ``SCS`` -- one label is read and compared with the gold label.
+    * ``MCS`` -- a *set* of labels is read, and ``metric_name`` is 1.0 only when
+      that set is exactly the gold one.  On a single-answer benchmark that means
+      naming the gold hypothesis **and nothing else**: a model that hedges by
+      selecting three options has not answered the question, and scoring it as
+      correct because the gold label was among them would measure recall while
+      claiming to measure accuracy.  ``set_f1`` is reported beside it for the
+      partial-credit view.
+    * ``BOV`` -- the engine rebuilds a selected set from the per-hypothesis
+      yes/no answers and hands it here as a synthetic multi-label response, so a
+      BOV score and an MCS score come out of this same code path.
+
+    The mode is read from the prompt's own ``output_contract`` rather than from
+    a flag, so an adapter does not have to know which mode it is being run in.
+    """
+    if (output_contract or {}).get("style") == "multi_label":
+        return multi_selection_score(
+            response,
+            labels=labels,
+            gold_labels=[gold_label],
+            output_contract=output_contract,
+            metric_name=metric_name,
+            extra_metrics=extra_metrics,
+        )
     chosen = extract_choice_label(response.text, labels, output_contract)
     if chosen is None:
         score = unparsed_score([metric_name], raw=response.text[:300])
@@ -286,6 +317,42 @@ def selection_score(
     metrics = {metric_name: correct}
     metrics.update(extra_metrics or {})
     return SampleScore(metrics=metrics, prediction=chosen, details={"gold": gold_label})
+
+
+def multi_selection_score(
+    response: ModelResponse,
+    *,
+    labels: Sequence[str],
+    gold_labels: Sequence[str],
+    output_contract: dict[str, Any] | None = None,
+    metric_name: str = "accuracy",
+    extra_metrics: dict[str, float] | None = None,
+) -> SampleScore:
+    """Score a selection answered as a set (MCS, or a rebuilt BOV set)."""
+    chosen = extract_choice_labels(response.text, labels, output_contract)
+    if chosen is None:
+        score = unparsed_score([metric_name, "set_f1"], raw=response.text[:300])
+        score.metrics.update(extra_metrics or {})
+        return score
+    selected = {str(label).strip().upper() for label in chosen}
+    gold = {str(label).strip().upper() for label in gold_labels if str(label).strip()}
+    prf = set_prf(selected, gold)
+    metrics = {
+        metric_name: float(selected == gold),
+        "set_f1": prf["f1"],
+        "set_precision": prf["precision"],
+        "set_recall": prf["recall"],
+        # How many hypotheses the model committed to. Against a single-answer
+        # benchmark this is the tell for hedging: the gold count is 1, so a mean
+        # well above 1 says the score is being propped up by recall.
+        "n_selected": float(len(selected)),
+    }
+    metrics.update(extra_metrics or {})
+    return SampleScore(
+        metrics=metrics,
+        prediction=",".join(sorted(selected)) or "none",
+        details={"gold": ",".join(sorted(gold)), "n_gold": len(gold)},
+    )
 
 
 def text_match_score(

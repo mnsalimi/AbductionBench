@@ -819,9 +819,23 @@ class ModesConfig(_Base):
     #: io | cot | self-consistency.  Applied only to datasets whose metrics are
     #: objectively verifiable; everything else runs ``io``.
     prompt_modes: list[str] = Field(default_factory=lambda: ["io"])
-    #: SCS | MCS | BOV.  Empty means "whatever each selection dataset's task
-    #: definition calls for", which is the safe default.
+    #: SCS | MCS | BOV.  Empty -- the default -- means "every selection mode
+    #: each dataset's task definition admits", which for a single-answer
+    #: benchmark is SCS *and* MCS and for a multi-answer one is MCS alone.
+    #: Listing modes here restricts the run to them; a mode a dataset does not
+    #: admit is recorded as a skipped mode rather than run.
     selection_modes: list[str] = Field(default_factory=list)
+    #: Whether to run Best-of-Verification, which asks one yes/no question per
+    #: candidate hypothesis and rebuilds the selected set from the yeses.
+    #:
+    #: **Off by default, and deliberately a separate switch from
+    #: ``selection_modes``**, because it is the one selection mode whose cost is
+    #: not one request per record: a BOV task costs one request per *candidate*,
+    #: so a dataset with six candidates is six times an MCS task, and an
+    #: interactive one is six whole episodes. Turning it on is a decision about
+    #: spend as much as about coverage, so it is made once per run rather than
+    #: hidden inside a list of mode names.
+    bov: bool = False
     #: generation | selection.  Empty means "every task the benchmark poses as
     #: an independent evaluation", which is what the dataset table's
     #: "Generation / Selection (separate tasks)" asks for.
@@ -875,6 +889,15 @@ class ModesConfig(_Base):
                 raise ConfigError(
                     f"unknown selection mode {mode!r}; expected one of {list(SELECTION_MODES)}"
                 )
+        if "BOV" in self.selection_modes and not self.bov:
+            # Silently planning nothing would be the worst outcome here: the run
+            # would finish, the report would have no BOV row, and nobody would
+            # know the mode had been asked for.
+            raise ConfigError(
+                "modes.selection_modes lists BOV but modes.bov is false, so no BOV task "
+                "would be planned. Set modes.bov: true to run it (one request per candidate "
+                "hypothesis), or drop BOV from modes.selection_modes."
+            )
         if not self.prompt_modes:
             raise ConfigError("modes.prompt_modes must list at least one mode")
         return self

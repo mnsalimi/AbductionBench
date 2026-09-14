@@ -59,7 +59,23 @@ prompts:
 modes:
   # Both elicitations, as separate tasks with separate scores.
   prompt_modes: [io, cot]
-  selection_modes: []         # empty -> whatever each benchmark's task defines
+  # Empty -> every selection mode each benchmark's task definition admits, which
+  # is SCS *and* MCS for a benchmark with one correct hypothesis, and MCS alone
+  # for one with several. The asymmetry is the rule: asking a single-answer pool
+  # "select as many as apply" leaves the answer unchanged and measures whether
+  # the model commits; asking a multi-answer pool for exactly one makes the item
+  # unanswerable. List modes here to restrict the run to them.
+  selection_modes: []
+  # Best-of-Verification: one yes/no request per candidate hypothesis, with the
+  # selected set rebuilt from the yeses and graded by the dataset's own scorer,
+  # so a BOV score is comparable with the MCS one.
+  #
+  # OFF BY DEFAULT, because it is the one mode whose cost scales with the
+  # candidate count rather than the record count: DeFAb ships six candidates per
+  # item, so a BOV task is six times an MCS task, and on an interactive
+  # benchmark it is six whole episodes. Turn it on per run:
+  #   abench run configs/runs/full.yaml -s modes.bov=true
+  bov: false
   hypothesis_modes: []        # empty -> every task the benchmark poses separately
   # Each record is asked this many times, as separate API calls, each scored on
   # its own; the dataset's score is the mean over repeats x records.
