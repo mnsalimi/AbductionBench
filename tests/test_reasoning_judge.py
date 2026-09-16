@@ -393,3 +393,156 @@ class _FakeAdapter:
 
     def documentation(self):
         raise RuntimeError("not needed")
+
+
+# --------------------------------------------------------------------------- #
+# in the engine, end to end
+# --------------------------------------------------------------------------- #
+
+
+def _reasoning_responder(conversation, max_tokens):
+    """A judge that answers whichever reasoning prompt it was handed."""
+    body = " ".join(str(message.get("content", "")) for message in conversation)
+    if "total_observations" in body and "observations_used" not in body:
+        return '{"total_observations": 2}'
+    if "observations_used" in body:
+        return '{"total_observations": 2, "observations_used": 1}'
+    if "backtracking_steps" in body:
+        return (
+            '{"total_steps": 4, "useless_steps": 1, "useful_steps": 3, '
+            '"backtracking_steps": 1}'
+        )
+    if "branchiness" in body:
+        return '{"branchiness": 2, "diversity": 1}'
+    if "redundancy" in body:
+        return '{"redundancy": 1, "completeness": 1}'
+    if "directionality" in body:
+        return '{"directionality": 1}'
+    if "differential_elimination" in body:
+        return '{"differential_elimination": 1}'
+    if "uncertainty_steps" in body:
+        return '{"uncertainty_steps": 2}'
+    if "prior_knowledge" in body:
+        return '{"prior_knowledge": 0}'
+    return "Answer: something"
+
+
+def test_the_engine_adds_the_columns_to_cot_and_leaves_io_alone(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    """The wiring, not the arithmetic: a real run, both prompt modes, one pass.
+
+    io and cot are planned as separate tasks off the same records, so this also
+    pins the guarantee the whole stage rests on -- the reasoning columns exist
+    on one and not on the other.
+    """
+    import asyncio
+    import json
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.engine import EvaluationEngine
+
+    fake_server.state.responder = _reasoning_responder
+
+    adapter_module = tmp_path / "reasoned_adapter.py"
+    adapter_module.write_text(
+        '''
+from typing import Sequence
+
+from abductionbench.core.adapter import DatasetAdapter
+from abductionbench.core.metrics import aggregate_mean_metrics
+from abductionbench.core.types import AdapterDocumentation, ChatMessage, SampleScore, SampleSpec
+
+
+class ReasonedAdapter(DatasetAdapter):
+    primary_metric = "accuracy"
+    system_prompt = "You explain observations."
+    objective_metrics = True
+
+    def build_messages(self, sample):
+        return (
+            [
+                ChatMessage(role="system", content=self.system_prompt),
+                ChatMessage(role="user", content=str(sample.fields["observation"])),
+            ],
+            {"answer_prefix": "Answer:"},
+        )
+
+    def build_samples(self):
+        return [
+            SampleSpec(
+                sample_id=f"r{i}",
+                fields={"observation": f"the grass is wet, case {i}"},
+                reference="the sprinkler ran",
+                max_tokens=64,
+            )
+            for i in range(2)
+        ]
+
+    def score(self, sample, response, *, output_contract=None):
+        return SampleScore(metrics={"accuracy": 1.0}, prediction=response.text[:50])
+
+    def aggregate(self, scores: Sequence[SampleScore]):
+        return aggregate_mean_metrics([s.metrics for s in scores])
+
+    def documentation(self):
+        return AdapterDocumentation(
+            dataset_id=self.dataset_id, name="reasoned", domain="test",
+            source_url="n/a", processing_mode="Generation", primary_metric="accuracy",
+        )
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {"id": "reasoned", "impl": "reasoned_adapter:ReasonedAdapter", "sample_size": 2}
+        ],
+        engine={
+            "reasoning_judge": {
+                "enabled": True,
+                "model": "fake-model",
+                "group_size": 4,
+                "max_parallel_calls": 4,
+                "max_tokens": 64,
+            }
+        },
+        modes={"prompt_modes": ["io", "cot"]},
+    )
+    config = load_run_config(config_path)
+    engine = EvaluationEngine(config)
+    result = asyncio.run(engine.run())
+
+    by_mode = {task.identity.prompt_mode: task for task in result.tasks}
+    assert set(by_mode) == {"io", "cot"}
+
+    def _metric_names(task):
+        records = [
+            json.loads(line)
+            for line in (task.output_dir / "records.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        return {
+            name
+            for record in records
+            for name in (record.get("metrics") or {})
+            if name.startswith("reasoning_")
+        }
+
+    cot_metrics = _metric_names(by_mode["cot"])
+    assert "reasoning_observation_coverage" in cot_metrics
+    assert "reasoning_backtracking_rate" in cot_metrics
+    assert "reasoning_useful_step_fraction" in cot_metrics
+    # io is untouched: no chain, so no columns.
+    assert _metric_names(by_mode["io"]) == set()
+
+    # ...and the standalone log lands inside the run directory, which is what
+    # engine.sync mirrors off-box.
+    log = by_mode["cot"].output_dir.parents[3] / "reasoning_metrics.jsonl"
+    assert log.exists()
+    lines = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    assert lines and all(entry["prompt_mode"] == "cot" for entry in lines)
+    assert lines[0]["raw"]["steps"]["backtracking_steps"] == 1
+    assert lines[0]["metrics"]["reasoning_backtracking_rate"] == 0.25
