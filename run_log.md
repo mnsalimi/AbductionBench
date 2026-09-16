@@ -250,3 +250,58 @@ not edited underneath it.
 
 Validation: `ruff check src tests` clean for the files touched, full suite
 **229 passed, 1 skipped**.
+
+
+## Nine defects from the code-review pass (2026-09-16)
+
+1. **Ctrl-C was retried.** `with_retry` caught `BaseException` and the classifier
+   filed `KeyboardInterrupt` as `unknown`, which is retryable by default, so an
+   interrupt re-issued the batch four more times over ~30 s of backoff before it
+   got out. It now catches `Exception`, with `KeyboardInterrupt`/`SystemExit`
+   re-raised explicitly next to `CancelledError`.
+2. **An out-of-budget reply was filed as empty.** `finish_reason=length` is now
+   checked *before* the content test, so a reasoning model that spends its whole
+   budget thinking is `truncated`, not `empty` -- the only cause a larger budget
+   fixes is no longer indistinguishable from a server that answered with
+   nothing. The case keeps its own metric, `empty_after_truncation_rate`, and a
+   warning naming the budget. Resume gained `_outgrew_its_budget`: a truncated
+   record is re-asked when the run now allows more tokens than produced it,
+   which is what keeps the `sample_id` policy honest (`strict` already had the
+   budget in its fingerprint).
+3. **The sample sheet truncated silently and unevenly.** It filled in task order
+   and stopped at `max_sample_rows_per_sheet`, so the cap was spent on the first
+   task and the later ones -- the cot tasks, since io runs first -- had no rows
+   at all. `_rows_per_task` now gives every task an equal share, hands back what
+   a small task does not use, and the drop is logged.
+4. **`update_scores` matched on `sample_id` alone** while records dedupe on
+   `(sample_id, prompt_fingerprint)`, so it patched every fingerprint variant of
+   a sample rather than the judged one.
+5. **A free-text dataset could not report a parse failure.**
+   `extract_answer_span` falls back to the whole response, so the unparsed
+   branch never fired and `parse_failure_rate` read 0.0 by construction. The new
+   `answer_span_is_marked` says whether the template's declared marker was
+   actually there; `text_match_score` still scores the fallback text -- the
+   answer may well be in it -- but sets `parse_ok=False` and records
+   `answer_marker_missing`.
+6. **Two worst-case values that looked like measurements.** `mean([])` returned
+   0.0 and `brier_score` returned 1.0 for an unreadable probability. Both are
+   `nan` now, which is what the aggregator and the record serializer already
+   read as "not measured".
+7. **`numeric_match` used its relative tolerance as an absolute one** against a
+   reference of zero. Same default, but it is named `abs_tol` and can be set.
+8. **Two mechanisms for one job.** The answer judge rewrote records in place
+   while the reasoning judge appended and let de-duplication retire the old row;
+   the append path already covered the answer judge's records, so the in-place
+   rewrite was redundant as well as mis-keyed, and is gone. The answer judge's
+   verdict cache moved from per-task to per-run, matching the reasoning judge's.
+18. **`kendall_tau` claimed tau-a and computed neither tau.** Tied pairs were
+   dropped from both counts *and* the normalizer, which reports 1.0 for data
+   whose ranks mostly coincide by being tied. It is tau-b now.
+
+Deliberately not changed: an empty or truncated answer is still *scored* rather
+than counted as an error. Reclassifying it would move every published number in
+the suite, and the signal is already there in `parse_failure_rate`,
+`truncation_rate` and now `empty_after_truncation_rate`.
+
+Validation: `ruff check src tests` shows the same 24 pre-existing errors as
+before the pass and no new ones; full suite **236 passed, 1 skipped**.

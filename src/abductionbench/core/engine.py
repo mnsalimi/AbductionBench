@@ -1326,6 +1326,18 @@ class EvaluationEngine:
                 else prompt.sample_id
             )
             record = reusable.get(key)
+            if record is not None and self._outgrew_its_budget(record, prompt):
+                # Reusing it would keep reporting an answer the model never got
+                # to finish, while the run is now willing to pay for one.
+                logger.info(
+                    "task %s: re-asking %s -- it was cut off at %s tokens and this run "
+                    "allows %d",
+                    identity.slug,
+                    prompt.sample_id,
+                    (record.get("sampling") or {}).get("max_tokens"),
+                    prompt.sampling.max_tokens,
+                )
+                record = None
             if record is not None:
                 reused_records.append(record)
             else:
@@ -1445,30 +1457,33 @@ class EvaluationEngine:
                     renderer=self.renderer,
                     clients=self._clients,
                     retry_policy=self.retry_policy,
-                    cache_dir=output_dir / "judge_cache",
+                    # Run-level, not task-level: the same (template, fields)
+                    # verdict is otherwise re-bought once per task, and the
+                    # reasoning judge already caches this way.
+                    cache_dir=self.run_dir / "judge_cache",
                     batch_disabled=self._batch_disabled,
                 )
                 before = {
                     sample.sample_id: score for sample, _r, score in scores
                 }
                 scores = await judge.apply(adapter, scores)
-                # The records were written per batch, before judging; bring the
-                # sample-level log up to date so a row shows the score its
-                # dataset is actually reported on.
-                rewritten = store.update_scores({
-                    sample.sample_id: {
-                        "metrics": dict(score.metrics),
-                        "prediction": score.prediction,
-                        "details": dict(score.details),
-                        "parse_ok": score.parse_ok,
-                    }
+                # The records were written per batch, before judging. They are
+                # brought up to date by the single refresh below, which appends
+                # the judged record and lets record de-duplication -- on
+                # (sample_id, prompt_fingerprint), the key records are actually
+                # identified by -- retire the pre-judge one. This used to be a
+                # second mechanism that rewrote the file in place and matched on
+                # sample_id alone, which patched every fingerprint variant of a
+                # sample rather than the one that was judged.
+                judged = sum(
+                    1
                     for sample, _response, score in scores
                     if before.get(sample.sample_id) is not score
-                })
-                if rewritten:
+                )
+                if judged:
                     logger.info(
                         "task %s: %d sample record(s) updated with the judge's verdict",
-                        identity.slug, rewritten,
+                        identity.slug, judged,
                     )
                 if judge.unavailable:
                     # Verdicts were asked for and never came back. `apply`
@@ -2089,19 +2104,26 @@ class EvaluationEngine:
             )
         content = choice.content
         finish = choice.finish_reason
-        if content is None or not content.strip():
-            status = ResponseStatus.EMPTY
-        elif finish == "length":
+        # The budget check comes first, and deliberately. A reasoning model that
+        # spends its whole budget thinking returns finish_reason=length with no
+        # content at all; filing that as EMPTY made it indistinguishable from a
+        # server that answered with nothing, and hid the one cause a larger
+        # budget would actually fix.
+        if finish == "length":
             status = ResponseStatus.TRUNCATED
+        elif content is None or not content.strip():
+            status = ResponseStatus.EMPTY
         else:
             status = ResponseStatus.OK
-        if status is ResponseStatus.EMPTY and client.model.reasoning_model:
-            logger.debug(
-                "sample %s: empty content with finish_reason=%s -- reasoning consumed the "
-                "%d-token budget",
+        if status is ResponseStatus.TRUNCATED and not (content or "").strip():
+            logger.warning(
+                "sample %s: no content at all -- the %d-token budget ran out first%s. "
+                "Raising engine/model max_tokens and resuming will re-ask it.",
                 prompt.sample_id,
-                finish,
                 prompt.sampling.max_tokens,
+                " (reasoning model: the hidden chain is what spent it)"
+                if client.model.reasoning_model
+                else "",
             )
         completion_est = None
         if content or choice.reasoning:
@@ -2438,6 +2460,22 @@ class EvaluationEngine:
             getattr(self, "_clamped_output_budgets", 0) / planned
         )
         metrics["empty_response_rate"] = (empty + reused_empty) / planned
+        # The reasoning-model case, kept visible under its own name now that it
+        # is filed as a truncation rather than as an empty reply: the budget ran
+        # out before a single token of answer, so there is nothing to score and
+        # a larger budget is the fix.
+        starved = sum(
+            1
+            for _, r, _ in fresh
+            if r.status is ResponseStatus.TRUNCATED and not (r.content or "").strip()
+        )
+        reused_starved = sum(
+            1
+            for rec in reused_records
+            if rec.get("status") == ResponseStatus.TRUNCATED.value
+            and not ((rec.get("response") or {}).get("content") or "").strip()
+        )
+        metrics["empty_after_truncation_rate"] = (starved + reused_starved) / planned
         return metrics
 
     def _reduce_groups(
@@ -2513,6 +2551,21 @@ class EvaluationEngine:
                 sum(len(m) for m in grouped.values()),
             )
         return out, records
+
+    @staticmethod
+    def _outgrew_its_budget(record: dict[str, Any], prompt: RenderedPrompt) -> bool:
+        """Was this stored answer cut off by a budget this run has since raised?
+
+        Only ``strict`` resume compares prompts, and the budget is part of the
+        fingerprint there, so this is what keeps the looser policies honest: a
+        ``sample_id`` resume would otherwise reuse a truncated answer forever,
+        and the larger budget the run was reconfigured with would never be spent
+        on the samples that needed it.
+        """
+        if record.get("status") != ResponseStatus.TRUNCATED.value:
+            return False
+        previous = (record.get("sampling") or {}).get("max_tokens")
+        return isinstance(previous, int) and prompt.sampling.max_tokens > previous
 
     def _make_record(
         self,

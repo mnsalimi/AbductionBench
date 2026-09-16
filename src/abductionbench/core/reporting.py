@@ -210,10 +210,55 @@ def _build_introduced_modes_frame(result: RunResult) -> pd.DataFrame:
     )
 
 
+def _rows_per_task(task_records: list[list[dict[str, Any]]], limit: int) -> list[int]:
+    """How many rows each task may contribute, when they do not all fit.
+
+    Filling the sheet in task order and stopping at the cap is what this
+    replaces: it spent the whole budget on the first task and left the later
+    ones -- the cot tasks, in practice, since io runs first -- with no rows in
+    the sheet at all, which reads as "that task produced nothing".  An equal
+    share each, with anything a small task does not use handed back to the
+    others, keeps every task visible.
+    """
+    counts = [len(records) for records in task_records]
+    if sum(counts) <= limit or not counts:
+        return counts
+    allowed = [0] * len(counts)
+    remaining = limit
+    # Give out equal shares, repeatedly: a task with fewer records than its
+    # share takes what it has and its leftover goes round again.
+    while remaining > 0:
+        hungry = [i for i, count in enumerate(counts) if allowed[i] < count]
+        if not hungry:
+            break
+        share = max(1, remaining // len(hungry))
+        for index in hungry:
+            take = min(share, counts[index] - allowed[index], remaining)
+            allowed[index] += take
+            remaining -= take
+            if remaining <= 0:
+                break
+    return allowed
+
+
 def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.DataFrame:
+    task_records = [
+        dedupe_records(load_records(directory / "records.jsonl")) for directory in task_dirs
+    ]
+    allowed = _rows_per_task(task_records, limit)
+    dropped = sum(len(records) for records in task_records) - sum(allowed)
+    if dropped:
+        logger.warning(
+            "sample sheet: %d of %d row(s) left out to stay under "
+            "engine.reporting.max_sample_rows_per_sheet=%d; every task is still "
+            "represented, and records.jsonl has all of them. Raise the cap to see more.",
+            dropped,
+            sum(len(records) for records in task_records),
+            limit,
+        )
     rows: list[dict[str, Any]] = []
-    for directory in task_dirs:
-        for record in dedupe_records(load_records(directory / "records.jsonl")):
+    for records, take in zip(task_records, allowed, strict=True):
+        for record in records[:take]:
             response = record.get("response") or {}
             details = record.get("details") or {}
             row: dict[str, Any] = {
@@ -263,10 +308,6 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
             for metric, value in (record.get("metrics") or {}).items():
                 row[f"metric.{metric}"] = _fmt(value)
             rows.append(row)
-            if len(rows) >= limit:
-                break
-        if len(rows) >= limit:
-            break
     return pd.DataFrame(rows)
 
 

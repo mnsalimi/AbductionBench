@@ -26,6 +26,7 @@ from typing import Any
 from ..core.adapter import DatasetAdapter, SkippedDataset
 from ..core.metrics import (
     aggregate_mean_metrics,
+    answer_span_is_marked,
     any_exact_match,
     contains_match,
     exact_match,
@@ -382,6 +383,12 @@ def text_match_score(
         return unparsed_score(
             [primary, "exact_match", "token_f1", "rouge_l"], raw=response.text[:300]
         )
+    # The span falls back to the whole response when the declared marker is
+    # absent, so it is never empty and the branch above never fires for a
+    # talkative model. Scoring still uses that fallback -- the answer may well
+    # be in there -- but the sample is flagged, so parse_failure_rate stops
+    # reading 0.0 for every free-text dataset by construction.
+    marked = answer_span_is_marked(response.text, output_contract)
     candidates = [gold, *(accepted or [])]
     strict = any_exact_match(answer, candidates)
     loose = max(
@@ -394,8 +401,12 @@ def text_match_score(
         "rouge_l": rouge_l(answer, gold)["f"],
     }
     metrics.update(extra_metrics or {})
+    details: dict[str, Any] = {"gold": str(gold)[:300]}
+    if not marked:
+        details["answer_marker_missing"] = (output_contract or {}).get("answer_prefix") or True
     return SampleScore(
         metrics=metrics,
+        parse_ok=marked,
         prediction=answer[:500],
-        details={"gold": str(gold)[:300]},
+        details=details,
     )
