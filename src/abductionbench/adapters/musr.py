@@ -41,6 +41,8 @@ class MuSRAdapter(PooledDatasetAdapter):
         "establishes them -- the culprit is the suspect all three converge on."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Options:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"
@@ -82,7 +84,7 @@ class MuSRAdapter(PooledDatasetAdapter):
             return None
         if not 0 <= answer < len(choices):
             return None
-        labels = C.letter_labels(len(choices))
+        labels = C.choice_labels(len(choices))
         return SampleSpec(
             sample_id=C.stable_id("musr", item["instance"], item["question_index"]),
             fields={
@@ -139,7 +141,11 @@ class MuSRAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; 250 murder-mystery questions exist, i.e. fewer than the 300 target",
             metrics_description={
-                "accuracy": "1 if the selected suspect is the gold murderer (the dataset's own "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected suspect is the gold murderer (the dataset's own "
                 "metric; chance is 50% with two suspects)"
             },
             primary_metric="accuracy",

@@ -46,8 +46,20 @@ class AIOps2025Adapter(PooledDatasetAdapter):
         "component that reported an anomaly downstream of it."
     )
     data_delivery_mode = "static"
+
+    answer_format = "the root cause"
+    answer_constraints = (
+        "write exactly one sentence",
+        "name only the root cause",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate root causes:"
     objective_metrics = True
-    selection_cardinality = "single"
+    #: NOT a selection task: no candidate list is ever shown, the answer is
+    #: an entity name read off the topology. Declaring "single" made the engine schedule it as SCS and
+    #: append "Select exactly one hypothesis / Answer: 1" to a prompt with no
+    #: hypotheses in it -- which taught the model to answer with a number.
+    selection_cardinality = None
     primary_metric = "root_cause_match"
 
     def load_items(self) -> list[dict[str, Any]]:
@@ -212,7 +224,11 @@ class AIOps2025Adapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; only 103 cases exist, so the draw covers all of them",
             metrics_description={
-                "root_cause_match": "1 if the answer line names a gold root-cause entity (primary)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "root_cause_match": "(PRIMARY, higher is better) 1 if the answer line names a gold root-cause entity (primary)",
                 "root_cause_mentioned": "1 if any part of the response names it -- the difference "
                 "from the primary metric shows how often the right entity was considered but not "
                 "committed to",

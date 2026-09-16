@@ -1,0 +1,65 @@
+Metric,SCS,MCS,BOV,Why
+Accuracy / Exact Match,✓,,+,"aNLI picks 1 of 2; a BOV yes/no is also a single label, so the same equality test applies. A set needs set semantics."
+Valid-Answer-Set F1 / Exact Match,+,✓,+,ProofWriter scores the whole set of facts that make the query provable. F1 on a singleton is the same formula; BOV's yeses form a set.
+Exact Match against Lone Explanation,✓,,+,AbductionRules is constructed to have exactly one explanation.
+Differential Diagnosis Recall,+,✓,+,"DDXPlus's gold is a ranked differential, i.e. a set. Top-k recall at k=1 is unchanged."
+MRR / Hits@k,✓,,,Rank of the one correct candidate. Several correct answers needs MAP; independent yes/no answers have no order to rank.
+Strong Accuracy,✓,,+,InAbHyd asks for exact equality with the single ground-truth hypothesis.
+Pairwise Preference Accuracy,✓,,,IBE compares two competing explanations; 'is this the best?' asked per hypothesis is not a pairwise judgement.
+BLEU / ROUGE / METEOR / CIDEr,,,,Scores generated text against a reference; there is no candidate list.
+BERTScore,,,,Same: similarity to a reference explanation.
+Hypothesis Discovery Rate,,+,,Discovery rate over a set of features; applies to a selected set unchanged.
+Atomic-Claim Precision / Recall / F1,,+,,Set comparison of extracted claims; a selected set can be compared the same way.
+AUC over Progressive Disclosure,,,,A wrapper that integrates a base metric across disclosure levels; the cardinality is whatever the base metric's is.
+Judge-Rated Match Rate,,,,"A judge rules on generated hypotheses, not on a choice among candidates."
+Recovery Rate,+,+,+,"Share of an enumerated admissible set that is recovered; the same fraction is computable from one pick, a set, or a set of yeses."
+Rendering-Robust Accuracy,,✓,+,"DEFAB's task admits several correct explanations, and this is worst-case accuracy across surface renderings of it."
+Set-Based Partial-Match Score,+,✓,+,SemEval scores the cause SET with partial credit for a correct proper subset.
+Kernel Identification (V_K),✓,,+,"Elenchos asks which single component was modified, from a closed ontology."
+Mutation Attribution (V_A),+,✓,+,Elenchos's recovered latent mutation SET must match exactly.
+Proof Correctness,,,,Compares a generated proof graph to a gold proof.
+Inference Retrieval (Mean Rank / P@1),✓,,,Sherlock ranks the true inference out of a candidate corpus.
+Evidence Localisation Accuracy,,,,Bounding-box overlap with visual evidence.
+Weak Accuracy,+,+,+,"A solver checks the hypothesis against the observations; that check is per hypothesis, so it runs unchanged on one, on a set, or on each yes."
+Hypothesis Quality (Occam Score),,,,Rewards axiom reuse in a generated hypothesis.
+KG Answer-Set Jaccard,+,✓,+,Scores the answer SET a query returns.
+Executional Consistency,,,,Requires the hypothesis to be an executable program.
+Generalisability (GEAR),,,,Fraction of an input space the hypothesis commits to.
+y-diversity,,+,,"Defined across a hypothesis set, so a selected set qualifies; a single pick has no diversity."
+b-diversity,,+,,Same dependency as y-diversity.
+Consistency via Autoformalisation,,,,Autoformalises free text and checks a proof.
+Proof Depth & Concept Drift,,,,Measures an autoformalised proof chain.
+Coherence,,,,Checks internal logical flow of a generated explanation.
+Uncertainty (Hedging Density),+,+,+,A lexical count over whatever the model wrote; nothing about it depends on the cardinality.
+Novelty / Plausibility / Clarity,,,,Judge scores on a generated hypothesis.
+Practical Utility,,,,Downstream accuracy from using the hypothesis as a rule.
+Generalisability (OOD / Cross-Model),,,,Utility retained out of distribution.
+Explanation-Based Evaluation,,,,A second agent predicts from the stated explanation.
+Expected Information Gain,,,,"Scores the choice of an experiment, not of a hypothesis."
+Reasoning Recall,,,,Coverage of gold expert reasoning in the trace.
+Evidence Coverage,,,,Atomic decomposition of how much of the observation the hypothesis accounts for.
+Directionality,,,,Whether reasoning flows observation-to-explanation.
+Turn Budget Use,,,,A property of an interactive episode.
+Hypothesis Retrodiction Accuracy,,,,Consistency of a stated hypothesis with evidence so far.
+Human Rating / Win Rate,+,,,"A head-to-head win rate is a two-way choice, which is SCS's shape."
+Six-Dimension Rubric Score,,,,Judge scores on a hypothesis space.
+Bradley-Terry-Davidson Arena,+,,,"Latent strength from pairwise comparisons, i.e. repeated single choices."
+Validity Rate,+,+,+,Share of hypotheses satisfying all observations; the test is per hypothesis.
+Novelty (Uniqueness) Rate,,+,+,"Non-redundancy needs two or more hypotheses, which a selected set or a set of yeses provides."
+Conservativity,,,,Whether a repair breaks other expectations; defeasible-logic specific.
+Exception Cost / Cost Gap,,,,Excess exceptions against a solver optimum.
+Holdout Validity,,,,Whether validity survives on unseen worlds.
+Explanation Correctness,,,,Whether stated reasoning supports the answer.
+Explanation Completeness,,,,Whether needed steps are missing.
+Explanation Redundancy,,,,Whether unnecessary steps are introduced.
+Round-Trip Agreement,+,+,+,"A forward deductive check on whatever was committed to; runs unchanged on one pick, a set, or each yes."
+Groundedness,,,,Share of atomic claims supported by retrieved knowledge.
+Relevance / Significance / Verifiability,,,,Expert-rated scientific dimensions.
+Comprehensiveness,,,,Prediction drop when the rationale is removed.
+Sufficiency,,,,Whether the rationale alone preserves the prediction.
+Rationale IOU-F1 / Token F1,,,,Overlap with gold-marked rationale spans.
+Area Over the Curve (AOC),,,,Answer sensitivity to corrupted reasoning.
+Indirect / Direct Effect,,,,Causal mediation on the reasoning trace.
+Faithfulness AUROC,,,,Separates labelled faithful from unfaithful traces.
+Rescaled Pairwise Plausibility Accuracy,+,,,"Agreement with pairwise plausibility orderings, i.e. two-way choices."
+Supporter / Defeater Accuracy,,,+,"A per-item binary check that confidence rises with a supporter and falls with a defeater, which is exactly BOV's shape."

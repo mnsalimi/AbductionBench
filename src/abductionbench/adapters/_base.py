@@ -31,7 +31,9 @@ from ..core.metrics import (
     exact_match,
     extract_answer_span,
     extract_choice_label,
+    extract_choice_labels,
     rouge_l,
+    set_prf,
     token_f1,
 )
 from ..core.types import ChatMessage, ModelResponse, SampleScore, SampleSpec
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PooledDatasetAdapter",
     "PromptParts",
+    "multi_selection_score",
     "selection_score",
     "text_match_score",
     "unparsed_score",
@@ -115,23 +118,44 @@ class PooledDatasetAdapter(DatasetAdapter):
 
     # -- prompts: mechanics here, wording in the dataset's own adapter --- #
 
+    #: What a well-formed answer looks like for this dataset, in its own terms
+    #: ("one short sentence", "a single diagnosis").  Rendered into the closing
+    #: line.  A sample may override it with an ``answer_format`` field.
+    answer_format: str = ""
+
+    #: What the answer must and must not do, one clause per item, rendered as a
+    #: "Requirements:" list.  Declared per dataset because the constraints are
+    #: the dataset's ("write exactly one sentence", "do not restate the
+    #: observation"), and declared as *data* because that is what keeps them
+    #: comparable: every generation task in the suite states its shape the same
+    #: way, so a difference in score is a difference in difficulty rather than
+    #: in how firmly the instruction was worded.
+    answer_constraints: tuple[str, ...] = ()
+
+    #: Heading above the candidate list, in the dataset's own words.
+    options_heading: str = ""
+
     def prompt_parts(self, sample: SampleSpec) -> PromptParts:
         """The dataset-owned content of this sample's prompt.
 
-        The default reads the fields adapters already produce.  An adapter with
-        a prompt published by its own benchmark overrides this and returns that
-        wording instead.
+        The default reads the fields adapters already produce, falling back to
+        the class-level answer shape.  An adapter whose prompt is published by
+        its own benchmark -- every interactive one -- overrides this and returns
+        that wording instead.
         """
         fields = sample.fields
+        constraints = fields.get("constraints")
         return PromptParts(
             system=self.system_prompt_for(sample),
             observation=str(fields.get("observation", "") or ""),
             context=str(fields.get("context", "") or ""),
             question=str(fields.get("question", "") or ""),
             instructions=str(fields.get("instructions", "") or ""),
-            answer_format=str(fields.get("answer_format", "") or ""),
+            answer_format=str(fields.get("answer_format") or self.answer_format or ""),
             options=[str(o) for o in (fields.get("options") or [])],
             option_labels=[str(o) for o in (fields.get("option_labels") or [])],
+            options_heading=str(fields.get("options_heading") or self.options_heading or ""),
+            constraints=[str(c) for c in (constraints or self.answer_constraints)],
         )
 
     def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
@@ -189,6 +213,63 @@ def unparsed_score(metric_names: Sequence[str], **details: Any) -> SampleScore:
     )
 
 
+def judged_only_score(
+    response: ModelResponse,
+    *,
+    metric: str,
+    output_contract: dict[str, Any] | None = None,
+    extra_metrics: dict[str, float] | None = None,
+    details: dict[str, Any] | None = None,
+) -> SampleScore:
+    """Score for a generation task that only an LLM judge can grade.
+
+    These datasets have no answer key: the reference is one human-written
+    explanation among many that would have been just as good.  Character and
+    n-gram overlap with it is not a weak measure of correctness, it is a
+    measure of something else -- it punishes a correct paraphrase and rewards a
+    wrong sentence that reuses the reference's words -- so none is emitted.
+
+    What this produces is the *parse*: the extracted answer as ``prediction``,
+    which is what the judge is handed, and ``metric`` seeded at 0.0 so the
+    number always exists.  :meth:`DatasetAdapter.apply_judge` overwrites it
+    with the verdict.  Seeding rather than omitting matters: an empty response
+    is never sent to the judge, and it should score zero rather than vanish
+    from the mean.
+    """
+    answer = extract_answer_span(response.text, output_contract)
+    if not answer:
+        return unparsed_score([metric], **(details or {}))
+    metrics = {metric: 0.0}
+    metrics.update(extra_metrics or {})
+    return SampleScore(metrics=metrics, prediction=answer, details=details or {})
+
+
+def apply_judged_metric(score: SampleScore, verdict: Any, metric: str) -> SampleScore:
+    """Fold a judge verdict into ``metric`` and every stratum of it.
+
+    A dataset that reports its score per domain, per task or per popularity
+    stratum seeds those alongside the base metric (``hypothesis_judged`` and
+    ``hypothesis_judged_chemistry``).  They are the same verdict viewed through
+    a filter, so one rule sets them all rather than each adapter remembering
+    which strata it declared.
+    """
+    value = getattr(verdict, "score", None)
+    value = float(value) if value is not None else (
+        1.0 if getattr(verdict, "positive", False) else 0.0
+    )
+    metrics = dict(score.metrics)
+    for name in list(metrics):
+        if name == metric or name.startswith(f"{metric}_"):
+            metrics[name] = value
+    metrics[metric] = value
+    return SampleScore(
+        metrics=metrics,
+        prediction=score.prediction,
+        parse_ok=score.parse_ok,
+        details={**score.details, "judge_label": getattr(verdict, "label", None)},
+    )
+
+
 def selection_score(
     response: ModelResponse,
     *,
@@ -198,7 +279,35 @@ def selection_score(
     metric_name: str = "accuracy",
     extra_metrics: dict[str, float] | None = None,
 ) -> SampleScore:
-    """Score a multiple-choice (hypothesis selection) response."""
+    """Score a multiple-choice (hypothesis selection) response.
+
+    The same function scores all three selection modes, which is what makes
+    their numbers comparable:
+
+    * ``SCS`` -- one label is read and compared with the gold label.
+    * ``MCS`` -- a *set* of labels is read, and ``metric_name`` is 1.0 only when
+      that set is exactly the gold one.  On a single-answer benchmark that means
+      naming the gold hypothesis **and nothing else**: a model that hedges by
+      selecting three options has not answered the question, and scoring it as
+      correct because the gold label was among them would measure recall while
+      claiming to measure accuracy.  ``set_f1`` is reported beside it for the
+      partial-credit view.
+    * ``BOV`` -- the engine rebuilds a selected set from the per-hypothesis
+      yes/no answers and hands it here as a synthetic multi-label response, so a
+      BOV score and an MCS score come out of this same code path.
+
+    The mode is read from the prompt's own ``output_contract`` rather than from
+    a flag, so an adapter does not have to know which mode it is being run in.
+    """
+    if (output_contract or {}).get("style") == "multi_label":
+        return multi_selection_score(
+            response,
+            labels=labels,
+            gold_labels=[gold_label],
+            output_contract=output_contract,
+            metric_name=metric_name,
+            extra_metrics=extra_metrics,
+        )
     chosen = extract_choice_label(response.text, labels, output_contract)
     if chosen is None:
         score = unparsed_score([metric_name], raw=response.text[:300])
@@ -208,6 +317,42 @@ def selection_score(
     metrics = {metric_name: correct}
     metrics.update(extra_metrics or {})
     return SampleScore(metrics=metrics, prediction=chosen, details={"gold": gold_label})
+
+
+def multi_selection_score(
+    response: ModelResponse,
+    *,
+    labels: Sequence[str],
+    gold_labels: Sequence[str],
+    output_contract: dict[str, Any] | None = None,
+    metric_name: str = "accuracy",
+    extra_metrics: dict[str, float] | None = None,
+) -> SampleScore:
+    """Score a selection answered as a set (MCS, or a rebuilt BOV set)."""
+    chosen = extract_choice_labels(response.text, labels, output_contract)
+    if chosen is None:
+        score = unparsed_score([metric_name, "set_f1"], raw=response.text[:300])
+        score.metrics.update(extra_metrics or {})
+        return score
+    selected = {str(label).strip().upper() for label in chosen}
+    gold = {str(label).strip().upper() for label in gold_labels if str(label).strip()}
+    prf = set_prf(selected, gold)
+    metrics = {
+        metric_name: float(selected == gold),
+        "set_f1": prf["f1"],
+        "set_precision": prf["precision"],
+        "set_recall": prf["recall"],
+        # How many hypotheses the model committed to. Against a single-answer
+        # benchmark this is the tell for hedging: the gold count is 1, so a mean
+        # well above 1 says the score is being propped up by recall.
+        "n_selected": float(len(selected)),
+    }
+    metrics.update(extra_metrics or {})
+    return SampleScore(
+        metrics=metrics,
+        prediction=",".join(sorted(selected)) or "none",
+        details={"gold": ",".join(sorted(gold)), "n_gold": len(gold)},
+    )
 
 
 def text_match_score(

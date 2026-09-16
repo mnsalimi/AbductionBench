@@ -41,12 +41,12 @@ def main() -> int:
     samples = bundle.samples
     print(f"\n=== {bundle.config.id}: {len(samples)} sample(s) built ===")
     print("task kinds:", dict(Counter(s.task_kind for s in samples)))
-    print("max_tokens:", summarize_numeric([s.max_tokens or 0 for s in samples]))
+    # The output budget is the model's remaining window, decided per model at
+    # run time, so it is not a property of a sample any more.
 
-    binding = engine.renderer.bindings_for_dataset(
-        bundle.config.id, bundle.config.prompt_bindings
-    )[0]
-    prompt_set = engine._build_prompt_set(bundle, binding)  # noqa: SLF001
+    # The adapter owns its prompts now, so a prompt set is built from the
+    # bundle alone -- there is no template binding to look up.
+    prompt_set = engine._build_prompt_set(bundle)  # noqa: SLF001
     tokens = [t for _, _, t in prompt_set.entries]
     print("template:", prompt_set.template.ref)
     print("input tokens:", summarize_numeric(tokens))

@@ -1,0 +1,129 @@
+# The pilot run: deterministically-sampled items per dataset (see
+# dataset_defaults.sample_size below), one model.
+#
+# This file is the single place that decides WHAT a run covers.  Datasets are
+# referenced by their own config file under configs/datasets/, so adding or
+# removing one from a run is a one-line change here.
+extends:
+  - ../engine/default.yaml
+
+name: pilot
+description: >-
+  Difficulty probe across the abductive-reasoning suite, to gauge how
+  hard each dataset is for a given model.
+seed: 20260903
+
+engine:
+  concurrency:
+    max_parallel_tasks: 2
+    max_parallel_batches_global: 4
+  limits:
+    input_token_budget: 16000
+    on_oversize: resample
+
+  # A dataset with no checkable answer is graded by an LLM judge, not by
+  # character overlap with a reference: ROUGE and BLEU punish a correct
+  # paraphrase and reward a wrong sentence that reuses the reference's words,
+  # which is not what those benchmarks are asking. Those datasets' primary
+  # metric is now the judge's verdict (the overlap numbers stay in the sheets
+  # as a diagnostic, not as the evaluation).
+  #
+  # THE JUDGE IS A DIFFERENT MODEL FROM THE ONE UNDER TEST. Grading a model's
+  # answers with that same model is a confound -- it scores its own reasoning
+  # -- so the judge is openai/gpt-oss-20b (served locally on :18003) while the
+  # model being measured is Qwen3.5-2B. The judge is listed under the
+  # run's `models:` because that is how the run reaches it, and is marked
+  # `judge_only: true` so no tasks are planned for it.
+  judge:
+    enabled: true
+    model: ${env:ABENCH_JUDGE_MODEL|gpt-oss-20b-local}
+    template: judge_binary_v1
+    temperature: 0.0
+    # gpt-oss-20b is a reasoning model: it thinks before it answers, and the
+    # verdict only appears in `content` once that finishes. Measured at 84
+    # completion tokens for an easy pair, so 2,048 is headroom for a hard one
+    # rather than a budget it will spend -- it stops as soon as it has ruled.
+    max_tokens: 2048
+    group_size: ${env:ABENCH_GROUP_SIZE|8}
+    cache: true
+
+prompts:
+  template_dirs: [../prompts]
+  bindings:
+    generation: gen_freeform_v1
+    selection: sel_mcq_letter_v1
+    knowledge_completion: gen_structured_v1
+
+# How each record is asked. Every combination a dataset admits becomes its own
+# task, with its own directory and its own row in the grid.
+modes:
+  # Both elicitations, as separate tasks with separate scores.
+  prompt_modes: [io, cot]
+  # Empty -> every selection mode each benchmark's task definition admits, which
+  # is SCS *and* MCS for a benchmark with one correct hypothesis, and MCS alone
+  # for one with several. The asymmetry is the rule: asking a single-answer pool
+  # "select as many as apply" leaves the answer unchanged and measures whether
+  # the model commits; asking a multi-answer pool for exactly one makes the item
+  # unanswerable. List modes here to restrict the run to them.
+  selection_modes: []
+  # Best-of-Verification: one yes/no request per candidate hypothesis, with the
+  # selected set rebuilt from the yeses and graded by the dataset's own scorer,
+  # so a BOV score is comparable with the MCS one.
+  #
+  # OFF BY DEFAULT, because it is the one mode whose cost scales with the
+  # candidate count rather than the record count: DeFAb ships six candidates per
+  # item, so a BOV task is six times an MCS task, and on an interactive
+  # benchmark it is six whole episodes. Turn it on per run:
+  #   abench run configs/runs/full.yaml -s modes.bov=true
+  bov: false
+  hypothesis_modes: []        # empty -> every task the benchmark poses separately
+  # Each record is asked this many times, as separate API calls, each scored on
+  # its own; the dataset's score is the mean over repeats x records.
+  #
+  # Self-consistency comes out of these same calls for free: a vote is a
+  # plurality over k samples of one question, and these *are* k samples of one
+  # question, so every metric also gets a self_consistency_ counterpart without
+  # a single extra request. That is why `self-consistency` is not listed as a
+  # separate prompt mode -- both io and cot report their own voted score.
+  repeats: 3
+  # Interactive and sequential datasets get the same 3 repeats as everything
+  # else, because a repeat is not a luxury here: self-consistency is a plurality
+  # over k samples and Best-of-N is the best of k, and at k=1 both are just the
+  # single answer wearing a different name. Leaving these at 1 meant the
+  # interactive benchmarks reported no voted and no best-of-n score at all.
+  #
+  # It is genuinely expensive -- an interactive record is already ten to twenty
+  # calls, so 3 repeats of the interactive datasets is tens of hours of episodes
+  # against about an hour for every static one. Lower it deliberately if you
+  # need a faster pass, knowing that SC and BoN go with it.
+  repeats_by_delivery:
+    interactive: 3
+    sequential: 3
+  # Repeating a question at temperature 0 measures the server's determinism,
+  # not the model, so repeats are drawn warm.
+  repeat_temperature: 0.7
+
+models:
+  - file: ../models/gemma-4-e4b.yaml
+
+dataset_defaults:
+  # Records per dataset, for the whole suite, in one place: the dataset files
+  # no longer carry their own copy of this number. A dataset with fewer records
+  # than this returns what it has and reports the shortfall.
+  #
+  # Each record is then asked `modes.repeats` times, so the calls a static
+  # dataset costs are sample_size x repeats -- 50 x 3 = 150 per task, and a
+  # dataset that poses two tasks in two prompt modes costs four times that.
+  #
+  # 100 -> 50 (2026-09-14). This is the base every run config inherits, so it
+  # halves the whole suite, not one run. The cost is statistical: a proportion
+  # measured on 50 records carries a standard error of at most 0.071 against
+  # 0.050 at 100, so differences smaller than roughly 0.2 are not separable at
+  # this size. Raise it back, or override per run with
+  #   -s dataset_defaults.sample_size=100
+  sample_size: 50
+
+# Every dataset config under configs/datasets/ is picked up automatically
+# (files starting with "_" are ignored).  Disable one with `enabled: false` in
+# its own file, or restrict a run with `abench run ... -d id1,id2`.
+datasets_glob: [../datasets/*.yaml]

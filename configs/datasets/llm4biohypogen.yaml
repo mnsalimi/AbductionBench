@@ -1,0 +1,15 @@
+dataset:
+  id: llm4biohypogen
+  impl: abductionbench.adapters.llm4biohypogen:LLM4BioHypoGenAdapter
+  options:
+    # unseen (default) = studies published after the evaluated models' cut-off.
+    # A hypothesis from a paper the model may have read is a memory test, not
+    # an abduction test. "seen" is available for a deliberate leakage check.
+    split: unseen
+    # Both directories hold the same studies; they differ in which model
+    # extracted the reference background/hypothesis from the paper.
+    extractor: gpt-4
+  notes: >-
+    Background of a biomedical study -> the hypothesis it set out to test.
+    Judge-scored against the paper's own hypothesis: the gold is one phrasing
+    of a conjecture that can be worded many ways.

@@ -173,11 +173,30 @@ class DatasetAdapter(ABC):
     #: can only be credited or penalised when correctness is decidable.
     objective_metrics: bool = False
 
-    #: For selection datasets, how many hypotheses the task admits:
+    #: Judge prompt this dataset is graded with, when the judge stage is on.
+    #: ``None`` keeps ``engine.judge.template``.  A dataset whose grading
+    #: criteria are its own -- "does this explanation make the outcome less
+    #: surprising?" is not "is this the same diagnosis?" -- names its own
+    #: template here, so the judged metric is as auditable as the main prompt.
+    judge_template: str | None = None
+
+    #: For selection datasets, how many hypotheses the *benchmark's own* task
+    #: definition admits.  This is a fact about the dataset, not a run choice;
+    #: which selection modes follow from it is fixed:
     #:
-    #: ``"single"``    exactly one is correct  -> SCS, BOV
-    #: ``"multi"``     several are correct, and selecting several is part of the
-    #:                 benchmark's semantics -> MCS, BOV (never SCS)
+    #: ``"single"``    exactly one candidate is correct -> SCS, MCS, BOV.
+    #:                 SCS is the benchmark's own framing.  MCS and BOV are run
+    #:                 on top of it because they ask the same pool a harder
+    #:                 question -- MCS lets the model hedge across several
+    #:                 candidates and scores it wrong unless it commits to the
+    #:                 one, BOV asks about each candidate in isolation with no
+    #:                 list to compare against.  Neither changes what counts as
+    #:                 the right answer, so all three numbers are comparable.
+    #: ``"multi"``     several candidates are correct and selecting several is
+    #:                 part of the benchmark's semantics -> MCS, BOV, and
+    #:                 **never SCS**: forcing one choice on an item with three
+    #:                 correct answers makes the item unanswerable, so the score
+    #:                 would measure the constraint rather than the model.
     #: ``"flexible"``  one *or* several are admissible -> SCS, MCS, BOV
     #: ``None``        not a selection dataset -> no selection_mode column value
     selection_cardinality: str | None = None
@@ -424,10 +443,18 @@ class DatasetAdapter(ABC):
         reported once as a skipped *mode* rather than producing a task whose
         numbers would not mean what the column says.
         """
-        if modes.prompt_mode != "io" and not cls.objective_metrics:
+        # CoT is offered for every dataset: how an answer is *elicited* is
+        # independent of how it is graded, and asking a judged generation task
+        # to reason first is exactly as meaningful as asking a labelled one to.
+        # A *vote*, on the other hand, needs answers that can coincide, so
+        # self-consistency stays restricted to datasets with a checkable
+        # answer; the judged ones report Best-of-N over the same repeats
+        # instead (see EvaluationEngine._best_of_n_metrics).
+        if modes.prompt_mode == SELF_CONSISTENCY and not cls.objective_metrics:
             return (
-                f"prompt_mode={modes.prompt_mode} applies only to datasets with objectively "
-                "verifiable metrics; this one is not scored statistically"
+                "self-consistency needs answers that can coincide, which free-text "
+                "hypotheses graded by a judge do not; this dataset reports Best-of-N "
+                "over its repeats instead"
             )
         if modes.selection_mode is None:
             return None
@@ -438,10 +465,11 @@ class DatasetAdapter(ABC):
                 "SCS is not offered: this benchmark's task definition requires selecting every "
                 "applicable hypothesis, so collapsing it to one choice would change the task"
             )
-        if modes.selection_mode == MCS and cls.selection_cardinality == "single":
-            return (
-                "MCS is not offered: this benchmark's items have exactly one correct hypothesis"
-            )
+        # MCS against a single-answer benchmark is deliberately allowed: the
+        # question stays "which candidate explains this?", the gold stays one
+        # label, and the score stays an exact set match. What changes is that
+        # the model is no longer told how many to pick, which is a harder ask
+        # and a measurable one -- n_selected reports how much it hedged.
         if modes.selection_mode not in SELECTION_MODES:
             return f"unknown selection_mode {modes.selection_mode!r}"
         return None
@@ -464,13 +492,19 @@ class DatasetAdapter(ABC):
 
     @classmethod
     def selection_modes_offered(cls) -> list[str]:
-        """Every selection mode this dataset legitimately admits."""
+        """Every selection mode this dataset legitimately admits, benchmark's own first.
+
+        The asymmetry is deliberate and is the whole rule: a single-answer
+        benchmark admits all three modes, a multi-answer one admits everything
+        *except* SCS.  Widening a single-answer pool to "select as many as
+        apply" still has one right answer, so the item stays answerable and the
+        score stays comparable; narrowing a multi-answer pool to "select exactly
+        one" does not, so it is never offered.
+        """
         if cls.selection_cardinality is None:
             return []
         if cls.selection_cardinality == "multi":
             return [MCS, BOV]
-        if cls.selection_cardinality == "single":
-            return [SCS, BOV]
         return [SCS, MCS, BOV]
 
     # ------------------------------------------------------------------ #
@@ -510,6 +544,44 @@ class DatasetAdapter(ABC):
     # ------------------------------------------------------------------ #
     # group reduction (self-consistency votes, BOV per-hypothesis answers)
     # ------------------------------------------------------------------ #
+
+    def score_request(
+        self,
+        sample: SampleSpec,
+        response: ModelResponse,
+        *,
+        output_contract: dict[str, Any] | None = None,
+    ) -> SampleScore:
+        """Score one *request*, which is not always one evaluation item.
+
+        The engine calls this rather than :meth:`score` directly, and it exists
+        for exactly one case: a BOV member answers YES or NO about a single
+        hypothesis, not with a label, so handing it to a dataset's label scorer
+        produces ``parse_ok=False`` and a zero for a response that was in fact
+        perfectly well formed.  The aggregate was never affected -- the item's
+        score comes from :meth:`reduce_group` -- but every per-request row in
+        the records file and the sample sheet read as a parse failure.
+
+        A member row therefore records what the member was actually asked:
+        whether it said yes, for which hypothesis.  Adapters do not override
+        this; they override :meth:`score`.
+        """
+        if self.context.modes.selection_mode == BOV and "bov_label" in sample.metadata:
+            said_yes = _said_yes(response.text)
+            return SampleScore(
+                metrics={"bov_yes": float(said_yes)},
+                prediction="YES" if said_yes else "NO",
+                # An unreadable answer is a "no" for set-building purposes (only
+                # a direct yes selects), but it is not a *parsed* no, and the
+                # difference is what tells a broken output format apart from a
+                # discriminating model.
+                parse_ok=bool(_parsed_yes_or_no(response.text)),
+                details={
+                    "bov_label": sample.metadata.get("bov_label"),
+                    "bov_hypothesis": sample.metadata.get("bov_hypothesis"),
+                },
+            )
+        return self.score(sample, response, output_contract=output_contract)
 
     def reduce_group(
         self,
@@ -635,9 +707,25 @@ class DatasetAdapter(ABC):
 
         ``verdict`` is a :class:`~abductionbench.core.judge.JudgeVerdict`; it is
         duck-typed here so this module stays independent of the judge stage.
-        Default: return the score unchanged.
+
+        The default records the verdict as a ``judged`` metric rather than
+        discarding it: an adapter that asked for a sample to be judged has
+        already paid for the call, and dropping the answer would leave the
+        judged metric silently missing.  Adapters that want a differently named
+        or differently shaped metric override this.
         """
-        return score
+        score_value = getattr(verdict, "score", None)
+        metrics = dict(score.metrics)
+        metrics["judged"] = (
+            float(score_value) if score_value is not None
+            else (1.0 if getattr(verdict, "positive", False) else 0.0)
+        )
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details={**score.details, "judge_label": getattr(verdict, "label", None)},
+        )
 
     # ------------------------------------------------------------------ #
     # documentation
@@ -701,6 +789,16 @@ def _said_yes(text: str) -> bool:
     if first in _NO_WORDS:
         return False
     return first in _YES_WORDS
+
+
+def _parsed_yes_or_no(text: str | None) -> bool:
+    """Whether a BOV answer actually said yes or no, rather than neither."""
+    if not text:
+        return False
+    span = extract_answer_span(text, {"answer_prefix": "Answer:"}) or text.strip()[-120:]
+    lowered = span.strip().strip("*_`\"' .").lower()
+    first = lowered.split()[0].strip(".,;:!") if lowered.split() else ""
+    return first in _YES_WORDS or first in _NO_WORDS
 
 
 def _option_labels_for(fields: dict[str, Any]) -> list[str]:

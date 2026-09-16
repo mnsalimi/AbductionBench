@@ -50,11 +50,11 @@ ABDUCTIVE_CORE = (
 
 TABLE: dict[str, dict] = {
     "abd": {
-        "system": ABDUCTIVE_CORE + " Here the evidence is a default-exception theory "
-        "and an observation it does not yet explain. A good answer is the minimal-cost "
-        "set of literals that, added to the theory, derives the observation without "
-        "contradicting a stated exception. Respect the theory's own predicate "
-        "vocabulary: an explanation outside it does not count.",
+        "system": ABDUCTIVE_CORE + " Here the evidence is a default theory whose "
+        "exception predicate Ab(x) is undefined, and several finite worlds in which the "
+        "theory must hold. Your hypothesis is the definition of Ab: one formula alpha(x), "
+        "shared across every world, that makes the theory true everywhere while calling "
+        "as few objects abnormal as possible.",
         "delivery": "static", "objective": True, "cardinality": None,
     },
     "abductionrules": {
@@ -224,13 +224,6 @@ TABLE: dict[str, dict] = {
         "explain the results the paper reports.",
         "delivery": "static", "objective": False, "cardinality": None,
     },
-    "hypospace": {
-        "system": ABDUCTIVE_CORE + " You are given perturbation observations over a set "
-        "of variables. Several distinct causal graphs can be compatible with them, and "
-        "the task is to cover that space: propose the distinct hypotheses that are all "
-        "consistent with the observations, rather than committing to one.",
-        "delivery": "static", "objective": True, "cardinality": None,
-    },
     "matter_to_mechanism": {
         "system": ABDUCTIVE_CORE + " You are given a materials-science research problem "
         "and its observations. Propose the mechanism that explains them at the level of "
@@ -309,13 +302,6 @@ TABLE: dict[str, dict] = {
         "premise missing. Name the missing premise that makes the argument go through.",
         "delivery": "static", "objective": True, "cardinality": None,
     },
-    "physgym": {
-        "system": ABDUCTIVE_CORE + " You are given a physical setup and the quantities it "
-        "involves. State the law relating the target quantity to the others, as an "
-        "equation in the given symbols. A relation that fits the described behaviour "
-        "matters more than one that looks like a familiar formula.",
-        "delivery": "interactive", "objective": True, "cardinality": None,
-    },
     "proof_writer": {
         "system": ABDUCTIVE_CORE + " You are given a rule base and a statement it can "
         "almost prove. State the single fact that is missing from the theory and would "
@@ -347,17 +333,19 @@ TABLE: dict[str, dict] = {
         "delivery": "static", "objective": False, "cardinality": None,
     },
     "vivabench": {
+        # The system prompt is NOT set from here: an interactive episode opens
+        # with the release's own ASSISTANT_BASE_PROMPT, read from the snapshot.
         "system": ABDUCTIVE_CORE + " You are given a clinical viva case. State the "
         "diagnosis that explains the presentation.",
-        "delivery": "interactive", "objective": True, "cardinality": "single",
+        "delivery": "interactive", "objective": False, "cardinality": None,
         "hypothesis": {
-            "modes": ("generation", "selection"),
-            "options": {"generation": {"subtask": "generation"},
-                        "selection": {"subtask": "selection"}},
-            "table": "Generation",
-            "justification": "Each VivaBench case ships an explicit differential-diagnosis "
-            "list next to its final diagnosis, so choosing among the case's own "
-            "differentials is a task the release defines.",
+            "modes": ("generation",),
+            "options": {"generation": {}},
+            "table": "Generation (interactive)",
+            "justification": "VivaBench is a viva: the agent asks for history, examines, "
+            "orders investigations and commits to a diagnosis. There is no selection "
+            "variant -- the release never shows the examinee a candidate list, and the "
+            "`differentials` column is part of the case's answer, not an option set.",
         },
     },
     "xcopa": {
@@ -366,13 +354,6 @@ TABLE: dict[str, dict] = {
         "cause of the premise, judging by everyday causal knowledge in that language's "
         "context.",
         "delivery": "static", "objective": True, "cardinality": "single",
-    },
-    "open_problems": {
-        "system": ABDUCTIVE_CORE + " You are given a research problem that was open as of "
-        "your knowledge cutoff. Judge it on the evidence available at the time and say "
-        "how confident you are; a calibrated 'probably not' is worth more than a "
-        "confident guess.",
-        "delivery": "static", "objective": True, "cardinality": None,
     },
 }
 

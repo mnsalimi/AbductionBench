@@ -27,10 +27,17 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import (
+    PooledDatasetAdapter,
+    apply_judged_metric,
+    judged_only_score,
+    selection_score,
+)
 
 REPO_URL = "https://github.com/Waste-Wood/e-CARE"
-LABELS = ["A", "B"]
+#: Numbered, from the one house helper, so the label the model sees and
+#: the label the gold refers to cannot drift apart.
+LABELS = C.choice_labels(2)
 
 
 class ECareAdapter(PooledDatasetAdapter):
@@ -46,6 +53,21 @@ class ECareAdapter(PooledDatasetAdapter):
         "similarity of wording."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one short factual statement"
+    answer_constraints = (
+        "write exactly one sentence",
+        "name the underlying property, rule or definition",
+        "use plain factual wording",
+        "do not refer to the cause and effect themselves",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Answer options:"
+    #: Set per instance in prepare(). The selection subtask picks one of two
+    #: hypotheses and is checkable; the explanation subtask writes a conceptual
+    #: explanation in free English, where the gold is one phrasing of a claim
+    #: that can be worded many ways.
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection",)
@@ -59,9 +81,17 @@ class ECareAdapter(PooledDatasetAdapter):
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "explanation_match",
+        "generation": "explanation_judged",
         "selection": "accuracy",
     }
+
+    def prepare(self) -> None:
+        # Selection is scored against the release's own label; the conceptual
+        # explanation is judged.
+        self.objective_metrics = (
+            str(self.context.option("subtask", "cause_selection")) == "cause_selection"
+        )
+        super().prepare()
 
     def load_items(self) -> list[dict[str, Any]]:
         subtask = str(self.context.option("subtask", "cause_selection"))
@@ -113,7 +143,7 @@ class ECareAdapter(PooledDatasetAdapter):
                         "What general conceptual relation explains why this cause "
                         "produces this effect?"
                     ),
-                    "instructions": "State the underlying conceptual explanation in one sentence.",
+                    "instructions": "State the underlying conceptual explanation.",
                 },
                 reference={"gold": explanation},
                 task_kind="generation",
@@ -162,12 +192,35 @@ class ECareAdapter(PooledDatasetAdapter):
                 output_contract=output_contract,
                 metric_name="accuracy",
             )
-        return text_match_score(
+        return judged_only_score(
             response,
-            gold=sample.reference["gold"],
+            metric="explanation_judged",
             output_contract=output_contract,
-            primary="explanation_match",
+            details={"gold": str(sample.reference["gold"])[:300]},
         )
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        if sample.task_kind != "generation" or not response.text:
+            return None
+        return {
+            "candidate": score.prediction or response.text[:600],
+            "gold": sample.reference["gold"],
+            "observation": C.clip_words(sample.fields["observation"], 200),
+            "criteria": (
+                "The candidate is correct if it states the same general fact, property or rule "
+                "as the reference explanation, however it is worded. Restating the cause and "
+                "the effect, or asserting that one leads to the other without naming why, is "
+                "not an explanation and does not count. A statement about a different mechanism "
+                "than the reference gives does not count."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "explanation_judged")
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
@@ -192,13 +245,23 @@ class ECareAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "selection: 1 if the chosen hypothesis label matches the gold cause",
-                "explanation_match": "generation: answer equals or contains the gold conceptual explanation",
-                "exact_match": "generation: normalized string equality with the gold explanation",
-                "token_f1": "generation: bag-of-tokens F1 against the gold explanation",
-                "rouge_l": "generation: LCS-based F-measure against the gold explanation",
+                "self_consistency_<metric>":
+                "Selection only: every metric gets a self_consistency_ counterpart, the plurality "
+                "answer over modes.repeats samples of the same record, read off those samples "
+                "rather than bought again. A label can coincide across repeats; a free-text "
+                "explanation cannot.",
+                "best_of_n_<metric>":
+                "Generation only: every metric gets a best_of_n_ counterpart, the repeat the judge "
+                "scored highest, which is what replaces a plurality when answers never repeat "
+                "verbatim.",
+                "accuracy": "(PRIMARY, higher is better) selection: 1 if the chosen hypothesis label matches the gold cause",
+                "explanation_judged": "(PRIMARY, higher is better, 0-1) generation: LLM-judge "
+                "verdict on whether the stated explanation names the same general fact, property "
+                "or rule as the gold conceptual explanation, however worded.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses nothing could "
+                "be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="accuracy" if subtask != "explanation" else "explanation_match",
+            primary_metric="accuracy" if subtask != "explanation" else "explanation_judged",
             decisions=[
                 "Used the dev split: e-CARE's test labels are not public.",
                 "Restricted the selection subtask to ask-for == 'cause', the abductive half.",
@@ -208,9 +271,10 @@ class ECareAdapter(PooledDatasetAdapter):
                 "hidden chain-of-thought before the answer line.",
             ],
             caveats=[
-                "Conceptual explanations are free text with many valid paraphrases, so "
-                "explanation_match/token_f1 under-credit correct rewordings; enable the "
-                "LLM-judge stage for a semantic view.",
+                "Conceptual explanations are free text with many valid paraphrases, so they "
+                "are scored by an LLM judge rather than by string overlap. The judge is required "
+                "for the generation subtask: with engine.judge disabled that half of the dataset "
+                "has no metric and the run fails rather than reporting an overlap number.",
             ],
             statistics={
                 **self.base_statistics(),

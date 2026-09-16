@@ -10,14 +10,31 @@
 extends: [gpt-oss-120b.yaml]
 model:
   id: gpt-oss-120b-local
+  # Serves the judge, and is not itself evaluated: see ModelConfig.judge_only.
+  # A run needs a client for its judge, which means the judge has to be listed
+  # under `models:` -- but it is grading, not being graded, so planning tasks
+  # for it would double the run.
+  judge_only: true
   endpoint:
-    base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18004}
+    # Its OWN variable, not ABENCH_LOCAL_URL: that one is qwen's, and sharing
+    # it would silently point both models at the same port.
+    base_url: ${env:ABENCH_JUDGE_URL|http://127.0.0.1:18004}
     api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
     batch:
-      base_url: ${env:ABENCH_LOCAL_URL|http://127.0.0.1:18004}
+      base_url: ${env:ABENCH_JUDGE_URL|http://127.0.0.1:18004}
       path: /v1/chat/completions/batch
       group_size: 8
     discovery:
       # A fixed local address never rotates, so discovery is disabled.
       base_url_command: null
       batch_base_url_command: null
+
+  limits:
+    # MAX_MODEL_LEN=65536 in /workspace/vllm_serving/gpt-oss-120b/.env, the
+    # same window qwen3.5-2b is served with, so a judged answer and the answer
+    # being judged are bounded by the same context length. The model itself
+    # supports 131,072; the GPU is shared, and 64k is what its KV budget buys.
+    context_window: 65536
+    # 32 sequences in flight on the server (MAX_NUM_SEQS=32); a judge verdict
+    # is short, so this is about keeping the scheduler fed, not about length.
+    max_parallel_batches: 2

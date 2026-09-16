@@ -46,6 +46,8 @@ class AgentRxAdapter(PooledDatasetAdapter):
         "behaviour, not a downstream symptom of it."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Candidate root causes:"
     objective_metrics = True
     selection_cardinality = "single"
     primary_metric = "accuracy"
@@ -110,7 +112,7 @@ class AgentRxAdapter(PooledDatasetAdapter):
             ]
             context_parts.append(C.clip_words("Observed problems during the run:\n" + "\n".join(steps), words))
         options = list(self._categories)
-        labels = C.letter_labels(len(options))
+        labels = C.choice_labels(len(options))
         return SampleSpec(
             sample_id=C.stable_id("agentrx", item.get("collection"), item.get("trajectory_id", index)),
             fields={
@@ -172,7 +174,11 @@ class AgentRxAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "accuracy": "1 if the selected failure category is the root-cause failure's "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "accuracy": "(PRIMARY, higher is better) 1 if the selected failure category is the root-cause failure's "
                 "category (primary)",
                 "accuracy_<collection>": "accuracy per ground-truth collection "
                 "(magentic-one / tau)",

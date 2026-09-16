@@ -1,0 +1,10 @@
+dataset:
+  id: b_copa
+  impl: abductionbench.adapters.copa:BalancedCOPAAdapter
+  options: {}
+  notes: >-
+    Balanced COPA (train.csv -- the only file carrying the mirrored
+    counterparts), CAUSE questions only. Reports accuracy on original and
+    mirrored items separately plus mirror_gap between them, which is the effect
+    the dataset was built to expose. Shares premises with copa, so the two are
+    not independent evidence.

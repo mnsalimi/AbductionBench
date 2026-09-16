@@ -47,6 +47,8 @@ class AERAdapter(PooledDatasetAdapter):
         "merely preceded or accompanied it. Several candidates can be direct causes."
     )
     data_delivery_mode = "static"
+
+    options_heading = "Candidate explanations:"
     objective_metrics = True
     selection_cardinality = "multi"
     primary_metric = "set_f1"
@@ -106,18 +108,32 @@ class AERAdapter(PooledDatasetAdapter):
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         event = C.normalize_whitespace(item.get("target_event"))
-        options = [C.normalize_whitespace(item.get(key)) for key in OPTION_KEYS]
-        options = [option for option in options if option]
-        gold = [
+        # Kept parallel to OPTION_KEYS, because the gold answer names options by
+        # the *letter in their key* ("A,C") while the prompt labels them by
+        # position ("1", "2", ...).  Dropping an empty option shifts every
+        # position after it, so the translation has to go through the key the
+        # release used, not through the index in the filtered list.
+        present = [
+            (key[-1], C.normalize_whitespace(item.get(key)))
+            for key in OPTION_KEYS
+            if C.normalize_whitespace(item.get(key))
+        ]
+        options = [text for _letter, text in present]
+        labels = C.choice_labels(len(options))
+        by_letter = {letter: labels[index] for index, (letter, _t) in enumerate(present)}
+        gold_letters = [
             part.strip().upper()
             for part in str(item.get("golden_answer", "")).split(",")
             if part.strip()
         ]
-        labels = C.letter_labels(len(options))
-        if not event or len(options) < 2 or not gold:
+        if not event or len(options) < 2 or not gold_letters:
             return None
-        if not set(gold) <= set(labels):
+        # An unknown letter means the row's gold points at an option the row
+        # does not carry; that item cannot be scored, so it is dropped rather
+        # than silently scored against a wrong option.
+        if not set(gold_letters) <= set(by_letter):
             return None
+        gold = [by_letter[letter] for letter in gold_letters]
         return SampleSpec(
             sample_id=C.stable_id("aer", item.get("id", index)),
             fields={
@@ -149,9 +165,12 @@ class AERAdapter(PooledDatasetAdapter):
     ) -> SampleScore:
         labels = sample.fields["option_labels"]
         answer = extract_answer_span(response.text, output_contract)
+        # Labels are numbers now, so the token pattern is alphanumeric: a
+        # letters-only pattern found nothing and every response parsed as a
+        # failure.
         found = {
             token.upper()
-            for token in re.findall(r"[A-Za-z]+", answer or "")
+            for token in re.findall(r"[A-Za-z0-9]+", answer or "")
             if token.upper() in labels
         }
         if not found:
@@ -186,7 +205,11 @@ class AERAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "set_f1": "F1 between the predicted and gold label sets (primary; the gold answer "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "set_f1": "(PRIMARY, higher is better) F1 between the predicted and gold label sets (primary; the gold answer "
                 "is a set, so single-label accuracy would misreport it)",
                 "exact_set_match": "1 only if the predicted set equals the gold set exactly",
                 "set_precision": "precision of the predicted labels",

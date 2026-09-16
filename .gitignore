@@ -5,9 +5,19 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 # Materialized datasets and run outputs are large and reproducible; keep them out of git.
-data/
-runs/
-!runs/.gitkeep
-!data/.gitkeep
+# ANCHORED to the repository root. Unanchored, `runs/` also matched
+# `configs/runs/`, so every run configuration -- full.yaml, pilot.yaml and the
+# smoke configs, i.e. the only way to actually run the benchmark -- was silently
+# excluded from the repository. Same for `data/` and `configs/data*` were one to
+# appear later.
+/data/
+/runs/
+!/runs/.gitkeep
+!/data/.gitkeep
 .env
 full_run.log
+
+# Render output from game-world environments (DiscoveryWorld drew one PNG per
+# frame per episode). 254 of these were committed once by a `git add -A`; they
+# are generated, large, and belong to nothing that is read back.
+video/

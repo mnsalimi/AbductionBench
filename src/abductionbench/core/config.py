@@ -758,6 +758,13 @@ class ModelConfig(_Base):
     limits: ModelLimitsConfig = Field(default_factory=ModelLimitsConfig)
     #: Free-form notes surfaced in the run documentation.
     notes: dict[str, Any] = Field(default_factory=dict)
+    #: Serve this model to the judge stage without evaluating it.  The judge
+    #: has to be one of the run's models -- that is how the run reaches it --
+    #: but grading is not being measured, so a judge listed like any other
+    #: model would silently double the run and report scores for a model
+    #: nobody asked about.  ``engine.judge.model`` should name a model with
+    #: this set.
+    judge_only: bool = False
 
     @property
     def slug(self) -> str:
@@ -818,6 +825,14 @@ class DatasetConfig(_Base):
     seed: int | None = None
     #: Per-dataset overrides of the engine's input-size policy.
     input_token_budget: int | None = None
+    #: Per-dataset override of the model's output-token cap.  Most datasets want
+    #: the model's 32,000; a few carry records long enough that the *answer* is
+    #: what runs out of room, and truncating those measures the budget rather
+    #: than the model.  This raises the ask -- the model's context window is
+    #: still the hard limit, so asking for 64,000 against a 32,768-token window
+    #: yields what the window holds and the shortfall is logged as an
+    #: output-budget clamp.
+    max_output_tokens: int | None = Field(default=None, ge=1)
     #: Per-dataset override of a model's batch group size, when a dataset's
     #: items are unusually long.
     batch_group_size: int | None = None
@@ -845,9 +860,23 @@ class ModesConfig(_Base):
     #: io | cot | self-consistency.  Applied only to datasets whose metrics are
     #: objectively verifiable; everything else runs ``io``.
     prompt_modes: list[str] = Field(default_factory=lambda: ["io"])
-    #: SCS | MCS | BOV.  Empty means "whatever each selection dataset's task
-    #: definition calls for", which is the safe default.
+    #: SCS | MCS | BOV.  Empty -- the default -- means "every selection mode
+    #: each dataset's task definition admits", which for a single-answer
+    #: benchmark is SCS *and* MCS and for a multi-answer one is MCS alone.
+    #: Listing modes here restricts the run to them; a mode a dataset does not
+    #: admit is recorded as a skipped mode rather than run.
     selection_modes: list[str] = Field(default_factory=list)
+    #: Whether to run Best-of-Verification, which asks one yes/no question per
+    #: candidate hypothesis and rebuilds the selected set from the yeses.
+    #:
+    #: **Off by default, and deliberately a separate switch from
+    #: ``selection_modes``**, because it is the one selection mode whose cost is
+    #: not one request per record: a BOV task costs one request per *candidate*,
+    #: so a dataset with six candidates is six times an MCS task, and an
+    #: interactive one is six whole episodes. Turning it on is a decision about
+    #: spend as much as about coverage, so it is made once per run rather than
+    #: hidden inside a list of mode names.
+    bov: bool = False
     #: generation | selection.  Empty means "every task the benchmark poses as
     #: an independent evaluation", which is what the dataset table's
     #: "Generation / Selection (separate tasks)" asks for.
@@ -901,6 +930,15 @@ class ModesConfig(_Base):
                 raise ConfigError(
                     f"unknown selection mode {mode!r}; expected one of {list(SELECTION_MODES)}"
                 )
+        if "BOV" in self.selection_modes and not self.bov:
+            # Silently planning nothing would be the worst outcome here: the run
+            # would finish, the report would have no BOV row, and nobody would
+            # know the mode had been asked for.
+            raise ConfigError(
+                "modes.selection_modes lists BOV but modes.bov is false, so no BOV task "
+                "would be planned. Set modes.bov: true to run it (one request per candidate "
+                "hypothesis), or drop BOV from modes.selection_modes."
+            )
         if not self.prompt_modes:
             raise ConfigError("modes.prompt_modes must list at least one mode")
         return self
@@ -941,6 +979,15 @@ class RunConfig(_Base):
 
     def enabled_datasets(self) -> list[DatasetConfig]:
         return [d for d in self.datasets if d.enabled]
+
+    def evaluated_models(self) -> list[ModelConfig]:
+        """The models the run measures -- everything but a judge-only entry.
+
+        A judge has to appear in ``models:`` for the run to have a client for
+        it, but it is grading, not being graded: planning tasks for it would
+        double the run and report a column nobody asked for.
+        """
+        return [m for m in self.models if not m.judge_only]
 
     def model_by_id(self, model_id: str) -> ModelConfig:
         for model in self.models:
@@ -1077,7 +1124,13 @@ def load_run_config(
 
     if model_filter:
         wanted = set(model_filter)
-        body["models"] = [m for m in body["models"] if m.get("id") in wanted]
+        # A judge-only model survives the filter. `--models` picks which models
+        # are *measured*; dropping the judge with it would silently disable the
+        # judged metrics of every dataset that has no answer key, turning a
+        # narrowing of scope into a change of what is being computed.
+        body["models"] = [
+            m for m in body["models"] if m.get("id") in wanted or m.get("judge_only")
+        ]
         missing = wanted - {m.get("id") for m in body["models"]}
         if missing:
             raise ConfigError(f"--models refers to unknown model ids: {sorted(missing)}")

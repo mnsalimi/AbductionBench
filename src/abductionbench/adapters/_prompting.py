@@ -20,7 +20,8 @@ reasoning instruction whichever dataset it came from.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..core.modes import BOV, COT, IO, MCS, SCS, SELF_CONSISTENCY, TaskModes
@@ -38,13 +39,72 @@ _COT_INSTRUCTION = (
     "everything observed rather than only part of it."
 )
 
+#: Chain-of-thought for a BOV request, which has one candidate rather than a
+#: list. The general instruction says "consider what *each* candidate would have
+#: to be true for", which under BOV points at candidates the model was not shown.
+_COT_INSTRUCTION_BOV = (
+    "Work through the evidence step by step before answering. Consider what this "
+    "hypothesis would have to be true for, and whether it accounts for everything "
+    "observed rather than only part of it."
+)
+
 _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
+
+#: Answer constraints that forbid the model to reason or preface, which is
+#: exactly what chain-of-thought asks it to do.
+#:
+#: 27 of the suite's datasets carry one. They were written for the io prompt --
+#: where "do not explain" is the whole point -- but `answer_constraints` are a
+#: property of the dataset, not of the mode, so they were rendered into the cot
+#: prompt too. A model was told "Work through the evidence step by step before
+#: answering" and then, three lines later, "- do not explain": the same request
+#: and its refusal in one prompt. Under cot these clauses are dropped.
+#:
+#: Only clauses about *reasoning* are dropped. Ones about the answer's shape --
+#: "output exactly one fact", "write exactly one sentence" -- still hold, and
+#: the heading below says so: under cot they govern the answer line, not the
+#: whole response.
+_REASONING_SUPPRESSING = re.compile(
+    r"""
+      do\s+not\s+explain            # "do not explain", "... why", "... your reasoning"
+    | do\s+not\s+justify
+    | do\s+not\s+reason
+    | do\s+not\s+use\s+introductory  # "... phrases or commentary"
+    | without\s+explanation
+    | no\s+commentary
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _requirements(constraints: list[str], modes: TaskModes) -> list[str]:
+    """The Requirements block, scoped to the mode that is being rendered."""
+    if not constraints:
+        return []
+    reasoning_first = modes.prompt_mode in (COT, SELF_CONSISTENCY)
+    if reasoning_first:
+        constraints = [c for c in constraints if not _REASONING_SUPPRESSING.search(c)]
+        if not constraints:
+            return []
+        heading = "Requirements for the answer line:"
+    else:
+        heading = "Requirements:"
+    return [heading, *(f"- {clause}" for clause in constraints), ""]
 
 
 def letters(count: int, start: str = "A") -> list[str]:
-    """``["A", "B", ...]`` -- the default labels for an option list."""
+    """``["A", "B", ...]``.
+
+    Only for a dataset whose source data keys its options by letter and whose
+    gold answer refers to that key.
+    """
     first = ord(start)
     return [chr(first + index) for index in range(count)]
+
+
+def numbers(count: int) -> list[str]:
+    """``["1", "2", ...]`` -- the house labels for a candidate list."""
+    return [str(index + 1) for index in range(count)]
 
 
 def option_labels_for(sample_fields: dict[str, Any]) -> list[str]:
@@ -53,7 +113,7 @@ def option_labels_for(sample_fields: dict[str, Any]) -> list[str]:
     if labels:
         return [str(label) for label in labels]
     options = sample_fields.get("options") or []
-    return letters(len(options))
+    return numbers(len(options))
 
 
 @dataclass(slots=True)
@@ -83,61 +143,138 @@ class PromptParts:
     options: list[str] = field(default_factory=list)
     #: Labels for those options (defaults to A, B, C...).
     option_labels: list[str] = field(default_factory=list)
+    #: Heading above the candidate list, in the dataset's own words
+    #: ("Answer options:", "Candidate diagnoses:").  Defaults to
+    #: "Candidate hypotheses:".
+    options_heading: str = ""
+    #: What a well-formed answer must and must not do, one clause per item,
+    #: rendered as a "Requirements:" list.  This is where a generation task
+    #: gets its shape -- one sentence, no restating the observation, no
+    #: explaining why -- and writing it as data rather than prose is what keeps
+    #: those constraints comparable across datasets.
+    constraints: list[str] = field(default_factory=list)
     #: Extra keys merged into the output contract handed to the scorer.
     contract: dict[str, Any] = field(default_factory=dict)
 
 
-def _observation_block(parts: PromptParts) -> list[str]:
+def _observation_block(parts: PromptParts, modes: TaskModes | None = None) -> list[str]:
     block: list[str] = []
     if parts.context:
         block.append(f"Background:\n{parts.context}")
     if parts.observation:
         block.append(f"Observation:\n{parts.observation}")
     if parts.question:
-        block.append(f"Question: {parts.question}")
+        if modes is not None and modes.selection_mode == BOV and parts.options:
+            # A BOV request shows one candidate and no list, so a dataset's own
+            # "Which of these candidates...?" would be asking the model to pick
+            # from something it was never shown -- the same failure the options
+            # guard in _closing exists to prevent, one block higher up. The
+            # question is rendered as the standing question this one candidate
+            # is being tested against instead of as the ask.
+            block.append(f"The question being asked of the candidates:\n{parts.question}")
+        else:
+            block.append(f"Question: {parts.question}")
     if parts.instructions:
         block.append(f"Task: {parts.instructions}")
     return block
 
 
 def _options_block(parts: PromptParts, labels: list[str]) -> str:
-    lines = [f"{label}) {option}" for label, option in zip(labels, parts.options, strict=False)]
-    return "Candidate hypotheses:\n" + "\n".join(lines)
+    lines = [f"{label}. {option}" for label, option in zip(labels, parts.options, strict=False)]
+    return (parts.options_heading or "Candidate hypotheses:") + "\n" + "\n".join(lines)
+
+
+def _label_list(labels: list[str]) -> str:
+    """``"1, 2 or 3"`` -- how the closing line names the admissible answers."""
+    if not labels:
+        return "the label"
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " or " + labels[-1]
 
 
 def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[str, dict[str, Any]]:
-    """The answer instruction and the contract that parses what it asks for."""
+    """The answer instruction and the contract that parses what it asks for.
+
+    One wording per (selection mode, task shape) across the whole suite.  The
+    point is comparability: a dataset should be hard because its data is hard,
+    not because its answer instruction was clearer than its neighbour's.  So
+    the shape is fixed here -- say what to answer with, name the admissible
+    answers, and require the answer on its own last line behind a marker --
+    and only the dataset's own nouns vary.
+
+    The ``Answer:`` marker is load-bearing, not decoration.  Numbered labels
+    are far easier to confuse with numbers that appear in reasoning than
+    letters were, and the marker is what lets the parser take the label the
+    model *submitted* rather than the last digit it happened to write.
+    """
     contract: dict[str, Any] = {"answer_prefix": ANSWER_PREFIX, "strip_markdown": True}
+
+    # THE SCAFFOLDING FOLLOWS THE CONTENT, NOT THE DECLARATION. A selection
+    # closing tells the model to answer with a label from a list; if the prompt
+    # never showed a list, the instruction is a lie and the example is worse
+    # than useless.
+    #
+    # Observed on aiops2025, which asks for a root-cause entity by name but
+    # declares selection_cardinality = "single", so the engine ran it as SCS.
+    # With no options the closing rendered as:
+    #
+    #     Select exactly one hypothesis.
+    #     Answer with only one of: the label, on the last line, as:
+    #     Answer: 1
+    #
+    # -- "the label" being the empty-list fallback of _label_list. The model was
+    # shown a numeric example for an answer that is a service name, and duly
+    # replied "Answer: 1" instead of "Answer: inventory". The contract was also
+    # set to style=single_label with an empty label set, so the parser was
+    # configured for a label that could never arrive.
+    #
+    # A dataset that renders no candidate list gets the free-form closing, which
+    # is built from its own answer_format and constraints, whatever selection
+    # mode the run is labelled with.
+    if not parts.options:
+        modes = replace(modes, selection_mode=None)
 
     if modes.selection_mode == BOV:
         # One hypothesis at a time; the selected set is rebuilt from the yeses.
-        contract.update({"style": "binary", "labels_from_field": None,
-                         "yes_no": True})
+        #
+        # Deliberately NOT "is this the best explanation": the model is shown a
+        # single candidate and cannot see the others, so a superlative asks it
+        # to rank against an invisible field and the answer would depend on what
+        # it imagined the alternatives to be. The question BOV actually poses is
+        # whether this hypothesis, judged alone, accounts for the observation.
+        contract.update({"style": "binary", "labels_from_field": None, "yes_no": True})
+        asks = "answers that question" if parts.question else "explains the observation"
         return (
-            "Is this the best explanation of the observation? "
-            f"Reply with exactly one word on the last line, as:\n{ANSWER_PREFIX} YES  "
-            f"(or {ANSWER_PREFIX} NO)"
+            "You are shown one candidate hypothesis at a time; the others are not listed "
+            "here, so judge this one on its own merits rather than against them.\n"
+            f"Decide whether this hypothesis {asks}.\n"
+            "Answer with only YES or NO, on the last line, as:\n"
+            f"{ANSWER_PREFIX} YES"
         ), contract
 
     if modes.selection_mode == MCS:
         contract.update({"style": "multi_label", "labels_from_field": "option_labels"})
+        example = ", ".join(labels[:2]) if len(labels) > 1 else (labels[0] if labels else "1")
         return (
-            "Select every hypothesis that applies -- there may be one or several. "
-            f"On the last line list their labels separated by commas, as:\n"
-            f"{ANSWER_PREFIX} {labels[0] if labels else 'A'}, "
-            f"{labels[1] if len(labels) > 1 else 'B'}"
+            "Select every hypothesis that applies -- there may be one or several.\n"
+            f"Answer with only their numbers, separated by commas, on the last line, as:\n"
+            f"{ANSWER_PREFIX} {example}"
         ), contract
 
     if modes.selection_mode == SCS:
         contract.update({"style": "single_label", "labels_from_field": "option_labels"})
         return (
-            "Select exactly one hypothesis. On the last line give only its label, as:\n"
-            f"{ANSWER_PREFIX} <label>"
+            "Select exactly one hypothesis.\n"
+            f"Answer with only one of: {_label_list(labels)}, on the last line, as:\n"
+            f"{ANSWER_PREFIX} {labels[0] if labels else '1'}"
         ), contract
 
     contract.update({"style": "free_form"})
     shape = parts.answer_format or "your answer"
-    return f"On the last line, give your final answer as:\n{ANSWER_PREFIX} <{shape}>", contract
+    lines = _requirements(list(parts.constraints), modes)
+    lines.append(f"On the last line, give your final answer as:\n{ANSWER_PREFIX} <{shape}>")
+    return "\n".join(lines), contract
 
 
 def build_messages(
@@ -154,7 +291,7 @@ def build_messages(
         {"options": parts.options, "option_labels": parts.option_labels}
     )
 
-    body = _observation_block(parts)
+    body = _observation_block(parts, modes)
     if parts.options and modes.selection_mode == BOV:
         # One hypothesis at a time, and it has to be on the page: the model is
         # being asked about *this* candidate, not about the list it came from.
@@ -163,7 +300,8 @@ def build_messages(
         body.append(_options_block(parts, labels))
 
     if modes.prompt_mode in (COT, SELF_CONSISTENCY):
-        body.append(_COT_INSTRUCTION)
+        one_at_a_time = bool(parts.options) and modes.selection_mode == BOV
+        body.append(_COT_INSTRUCTION_BOV if one_at_a_time else _COT_INSTRUCTION)
     elif modes.prompt_mode == IO:
         body.append(_IO_INSTRUCTION)
 

@@ -14,37 +14,66 @@ Each ``System_*`` directory contains
 * ``consequence.txt`` and ``consequence_<noise>.dat`` -- a derived consequence.
 
 **The abductive item** (constructed, and documented as such): the model is shown
-a corrupted system (one equation replaced), told that exactly one equation is
-inconsistent with the measurements, given a sample of the true system's data,
-and asked for the corrected equation.  The gold answer is that equation from
-``system.txt``.  Which system, which replacement and which data rows are shown
-is decided by a seeded RNG, so all models see identical items.
+a corrupted system -- one equation replaced -- together with the system's
+variables, constants and derivatives *and their units of measure*, and is told
+which equation is the wrong one and what units the correct one must carry.  It
+must state the corrected equation.  The gold answer is that equation from
+``system.txt``.
 
-Scoring uses SymPy: equations are expressions equal to zero, so a candidate is
-correct if it is equal to the gold expression **up to a non-zero scalar factor**.
+**No data rows are shown.**  The ``.dat`` files are generated *from* the true
+system, so a sample of them is a set of worked examples: a model can fit an
+equation to the numbers and never form a hypothesis about the system at all.
+That is induction from instances, which is the inference type this suite exists
+to separate abduction from.  What is left is the abductive question -- which
+axiom, added to this theory, would make it a coherent physical system -- posed
+from the theory alone.
+
+**Scoring.**  Equations here are expressions set to zero, so what matters is
+where the expression *vanishes*, not what it looks like.  SymPy decides that:
+two expressions match when their numerators have the same irreducible factors,
+which credits a sign flip, a scalar multiple, and a rearrangement by a
+non-constant factor (``Fg/Fc - dxdt/c`` for ``c*Fg - dxdt*Fc``) alike.  That is
+a proof rather than an estimate, and all 540 of the release's own equations are
+decided by it.  An LLM judge grades only the residue SymPy cannot parse.
 """
 
 from __future__ import annotations
 
-import random
 import re
 from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span, token_f1
+from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, unparsed_score
+from ._mathnorm import equal_as_zero_set as _shared_equal_as_zero_set
 from ._mathnorm import equal_up_to_scale as _shared_equal_up_to_scale
+from ._mathnorm import same_monomials as _shared_same_monomials
 
 HF_REPO = "Karan0901/synpat-dataset"
 GITHUB_URL = "https://github.com/jlenchner/theorizer"
 
 
 def _parse_system(text: str) -> dict[str, Any]:
-    """Parse a SynPAT ``system.txt`` / ``replacement_k.txt`` file."""
-    out: dict[str, Any] = {"equations": [], "variables": [], "constants": [], "derivatives": []}
+    """Parse a SynPAT ``system.txt`` / ``replacement_k.txt`` file.
+
+    The units are read as well as the equations. They are not decoration: with
+    the generated data withheld, the dimensions of the quantities and of the
+    equation to be recovered are what keep the task determinate rather than a
+    guess, and they are part of the axiom system rather than a sample from it.
+    """
+    out: dict[str, Any] = {
+        "equations": [],
+        "variables": [],
+        "constants": [],
+        "derivatives": [],
+        "units_variables": [],
+        "units_constants": [],
+        "units_derivatives": [],
+        "units_equations": [],
+    }
     section = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -62,11 +91,32 @@ def _parse_system(text: str) -> dict[str, Any]:
             section = None
         elif lowered.startswith("equations:"):
             section = "equations"
+        elif lowered.startswith("units of measure of variables"):
+            out["units_variables"] = _parse_list(stripped)
+            section = None
+        elif lowered.startswith("units of measure of constants"):
+            out["units_constants"] = _parse_list(stripped)
+            section = None
+        elif lowered.startswith("units of measure of derivatives"):
+            out["units_derivatives"] = _parse_list(stripped)
+            section = None
+        elif lowered.startswith("units of measure of equations"):
+            # This one is a block, one unit per following line.
+            section = "units_equations"
         elif lowered.startswith("units of measure"):
             section = None
-        elif section == "equations":
-            out["equations"].append(stripped)
+        elif section:
+            out[section].append(stripped)
     return out
+
+
+def _with_units(names: Sequence[str], units: Sequence[str]) -> str:
+    """``Fc [s^(-2)*kg*m], Fg [s^(-2)*kg*m], ...`` -- names with their units."""
+    if not names:
+        return "(none)"
+    if len(units) != len(names):
+        return ", ".join(names)
+    return ", ".join(f"{name} [{unit}]" for name, unit in zip(names, units, strict=True))
 
 
 def _parse_list(line: str) -> list[str]:
@@ -84,13 +134,28 @@ class SynPATAdapter(PooledDatasetAdapter):
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given an axiom system of "
-        "physical equations and data that contradicts it. Identify the equation that is wrong "
-        "and state its corrected form, in the symbols the system uses."
+        "physical equations, one of which is known to be wrong, together with the quantities "
+        "it is written in and their units. State the corrected form of that equation: the law "
+        "that would make the system a coherent physical theory. Dimensional consistency is a "
+        "hard constraint -- an equation whose terms do not share the stated units cannot be it."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one equation in the given symbols"
+    answer_constraints = (
+        "output exactly one equation",
+        "use only the symbols given",
+        "output only the equation",
+        "do not use introductory phrases or commentary",
+    )
+    #: Verifiable, and checked as such: an equation set to zero has a zero set,
+    #: and SymPy decides whether two expressions share it. The judge sees only
+    #: what SymPy cannot parse, so this dataset keeps self-consistency over its
+    #: repeats -- read as a floor, since the vote is over the formula as written
+    #: and two equivalent phrasings of the right answer do not pool their votes.
     objective_metrics = True
     selection_cardinality = None
-    primary_metric = "symbolic_match"
+    primary_metric = "equation_equivalent"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -153,52 +218,43 @@ class SynPATAdapter(PooledDatasetAdapter):
         position = differing[0]
         gold = true_system["equations"][position]
 
-        noise = str(self.context.option("noise_level", "0.001"))
-        data_path = directory / f"system_{noise}.dat"
-        if not data_path.exists():
-            candidates = sorted(directory.glob("system_*.dat"))
-            data_path = candidates[0] if candidates else None
-        rows = int(self.context.option("data_rows", 8))
-        data_block = ""
-        if data_path is not None:
-            lines = C.read_lines(data_path)
-            if lines:
-                rng = random.Random(f"{self.context.seed}::synpat::{item['directory']}")
-                header, body = lines[0], lines[1:]
-                chosen = rng.sample(body, min(rows, len(body))) if body else []
-                formatted = [
-                    "\t".join(f"{float(value):.4g}" for value in line.split())
-                    for line in chosen
-                ]
-                data_block = "\n".join([header, *formatted])
-
         equations_text = "\n".join(
-            f"{i + 1}. {equation}" + ("   <- inconsistent with the data" if i == position else "")
+            f"{i + 1}. {equation}" + ("   <- this one is wrong" if i == position else "")
             for i, equation in enumerate(corrupted["equations"])
         )
+        # The dimension the corrected equation must carry, from the true
+        # system. It is a property of the law being recovered, not a sample
+        # drawn from it, and without it -- and with the data withheld -- the
+        # task would be underdetermined rather than hard.
+        target_units = ""
+        units = true_system.get("units_equations") or []
+        if position < len(units):
+            target_units = units[position]
         return SampleSpec(
             sample_id=C.stable_id("synpat", item["config"], item["system_name"], item["replacement"]),
             fields={
                 "context": (
-                    f"Variables: {', '.join(true_system['variables'])}\n"
-                    f"Constants: {', '.join(true_system['constants'])}\n"
-                    f"Derivatives: {', '.join(true_system['derivatives'])}\n\n"
+                    "Quantities, with their units of measure:\n"
+                    f"  Variables: {_with_units(true_system['variables'], true_system['units_variables'])}\n"
+                    f"  Constants: {_with_units(true_system['constants'], true_system['units_constants'])}\n"
+                    f"  Derivatives: {_with_units(true_system['derivatives'], true_system['units_derivatives'])}\n\n"
                     "Proposed axiom system (each equation is an expression equal to 0):\n"
                     + equations_text
+                ),
+                "observation": (
+                    f"Equation {position + 1} of the proposed system is not a law of this system: "
+                    "it is inconsistent with the rest of the theory."
                     + (
-                        f"\n\nMeasurements from the real system (noise level {noise}):\n{data_block}"
-                        if data_block
+                        f" The correct equation in its place has units of {target_units}."
+                        if target_units
                         else ""
                     )
                 ),
-                "observation": (
-                    f"Equation {position + 1} of the proposed system is inconsistent with the "
-                    "measurements."
-                ),
                 "instructions": (
                     f"Give the corrected equation {position + 1}: a single expression that equals "
-                    "zero for the measured data, using only the listed variables, constants and "
-                    "derivatives, written in Python-style notation (** for powers)."
+                    "zero, using only the listed variables, constants and derivatives, written in "
+                    "Python-style notation (** for powers). Every term of it must carry the same "
+                    "units."
                 ),
             },
             reference={
@@ -207,15 +263,15 @@ class SynPATAdapter(PooledDatasetAdapter):
                 + true_system["constants"]
                 + true_system["derivatives"],
                 "position": position,
+                "units": target_units,
             },
             task_kind="knowledge_completion",
-            # Fitting an equation to data needs working room.
+            # Dimensional analysis over ten-odd quantities needs working room.
             max_tokens=1536,
             metadata={
                 "config": item["config"],
                 "system": item["system_name"],
                 "replacement": item["replacement"],
-                "noise_level": noise,
             },
         )
 
@@ -229,34 +285,75 @@ class SynPATAdapter(PooledDatasetAdapter):
         answer = extract_answer_span(response.text, output_contract)
         if not answer:
             return unparsed_score(
-                ["symbolic_match", "equation_token_f1"], raw=response.text[:200]
+                ["equation_equivalent", "structure_match"], raw=response.text[:200]
             )
         gold = sample.reference["gold"]
         candidate = _clean_expression(answer)
-        verdict = _equal_up_to_scale(candidate, gold, sample.reference["symbols"])
+        verdict = _equal_as_zero_set(candidate, gold, sample.reference["symbols"])
+        equivalent = 0.0 if verdict is None else float(verdict)
+        # Reported beside the verdict, not folded into it: a reference such as
+        # `4*c*dx1dt + d2x1dt2*d1` carries a coefficient that nothing in the
+        # theory fixes, so an answer with the right terms and the wrong number
+        # is wrong -- and this is how often that is what went wrong.
+        structure = _shared_same_monomials(candidate, gold, sample.reference["symbols"])
         metrics = {
-            "equation_token_f1": token_f1(candidate or answer, gold),
-            "symbolic_match": 0.0 if verdict is None else float(verdict),
+            "equation_equivalent": equivalent,
+            "structure_match": 0.0 if structure is None else float(structure),
             "symbolic_undecidable": 1.0 if verdict is None else 0.0,
         }
         config = sample.metadata.get("config")
         if config:
-            metrics[f"symbolic_match_{config}"] = metrics["symbolic_match"]
+            metrics[f"equation_equivalent_{config}"] = equivalent
         return SampleScore(
             metrics=metrics,
             prediction=(candidate or answer)[:300],
-            details={"gold": gold[:200]},
+            details={"gold": gold[:200], "decided": verdict is not None},
         )
+
+    def judge_request(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore
+    ) -> dict[str, Any] | None:
+        """Only what SymPy could not parse.
+
+        A judge asked to second-guess an algebraic proof can only make it
+        worse, so a decided verdict is never sent and never paid for.
+        """
+        if not response.text or not score.metrics.get("symbolic_undecidable"):
+            return None
+        return {
+            "candidate": score.prediction or response.text[:400],
+            "gold": sample.reference["gold"],
+            "observation": (
+                "Both are expressions that the system sets equal to zero, in the symbols: "
+                + ", ".join(sample.reference["symbols"])
+            ),
+            "criteria": (
+                "Judge mathematical equivalence, not wording. Because both sides are set "
+                "equal to zero, the candidate is correct if it vanishes exactly where the "
+                "reference does: multiplying through by a non-zero factor, flipping every "
+                "sign, or moving terms across the equals sign all give the same equation. "
+                "A different relationship between the quantities, or one that merely shares "
+                "symbols with the reference, is not equivalent. The candidate reached you "
+                "only because it could not be parsed as an expression, so say no unless it "
+                "clearly states one."
+            ),
+        }
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        return apply_judged_metric(score, verdict, "equation_equivalent")
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
         decidable = [
-            score.metrics["symbolic_match"]
+            score.metrics["equation_equivalent"]
             for score in scores
-            if not score.metrics.get("symbolic_undecidable")
+            if "equation_equivalent" in score.metrics
+            and not score.metrics.get("symbolic_undecidable")
         ]
         if decidable:
-            metrics["symbolic_match_decidable"] = sum(decidable) / len(decidable)
+            metrics["equation_equivalent_decidable"] = sum(decidable) / len(decidable)
         return metrics
 
     def documentation(self) -> AdapterDocumentation:
@@ -269,44 +366,81 @@ class SynPATAdapter(PooledDatasetAdapter):
             split_used=self.split_used,
             abductive_subset=(
                 "Constructed from the release's own files: a system whose equation k has been "
-                "replaced (replacement_k.txt) plus data generated from the true system, with the "
-                "true equation k as the reference. Items where the corruption does not isolate to "
-                "exactly one equation are skipped."
+                "replaced (replacement_k.txt), with the true equation k as the reference. The "
+                "generated data files are NOT used -- they are samples drawn from the true "
+                "system, and fitting an equation to them is induction from instances rather "
+                "than abduction from a theory. What the model sees is the corrupted theory, "
+                "the quantities with their units, and the units the corrected equation must "
+                "carry. Items where the corruption does not isolate to exactly one equation "
+                "are skipped."
             ),
-            sampling_procedure=self.sampling_note()
-            + "; the data rows shown are chosen by a directory-seeded RNG, identical across models",
+            sampling_procedure=self.sampling_note(),
             metrics_description={
-                "symbolic_match": "1 if SymPy proves the answer equal to the gold expression up to "
-                "a non-zero scalar factor (equations are expressions equal to zero) -- primary; an "
-                "undecidable comparison counts as 0",
-                "symbolic_match_decidable": "the same over items SymPy could compare",
-                "symbolic_undecidable": "fraction of items where parsing/simplification failed",
-                "equation_token_f1": "token F1 against the gold expression, a lenient view",
-                "symbolic_match_<config>": "per system-size configuration (variables/derivatives/"
-                "equations counts encoded in the directory name)",
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide. "
+                "It votes on the expression as written, so two equivalent phrasings of the right "
+                "equation do not pool their votes -- read it as a floor.",
+                "equation_equivalent": "(PRIMARY, higher is better, 0-1) 1 when SymPy proves the "
+                "answer vanishes exactly where the gold expression does: the numerators share "
+                "their irreducible factors. A sign flip, a scalar multiple and a rearrangement "
+                "by a non-constant factor (Fg/Fc - dxdt/c for c*Fg - dxdt*Fc) all count as "
+                "correct. An answer SymPy cannot parse is graded by the LLM judge instead.",
+                "equation_equivalent_decidable": "the same, over the items SymPy could compare",
+                "symbolic_undecidable": "(lower is better, 0-1) fraction SymPy could not parse. "
+                "These, and only these, are sent to the judge, whose verdict then fills "
+                "equation_equivalent for them.",
+                "structure_match": "(diagnostic, higher is better, 0-1) 1 when the answer uses "
+                "the same monomials as the gold, ignoring numeric coefficients. The gap to "
+                "equation_equivalent is the cost of withholding the data: a coefficient like the "
+                "4 in 4*c*dx1dt + d2x1dt2*d1 is fixed by the measurements and by nothing else in "
+                "the theory, so an answer with the right form and the wrong number is scored "
+                "wrong -- correctly, but this is what makes that visible.",
+                "equation_equivalent_<config>": "per system-size configuration (variables/"
+                "derivatives/equations counts encoded in the directory name)",
             },
-            primary_metric="symbolic_match",
+            primary_metric="equation_equivalent",
             decisions=[
-                "Used the low-noise data file (0.001) by default; options.noise_level selects "
-                "0.01/0.05/0.1, which makes the task progressively harder.",
-                "Showed 8 randomly chosen data rows (options.data_rows) -- enough to constrain an "
-                "equation while keeping the prompt inside the input budget.",
-                "Marked which equation is inconsistent, so the task is recovering that equation "
-                "rather than also locating it; locating it as well would conflate two abilities.",
-                "Scored equality up to a scalar factor, since an equation set to zero is invariant "
-                "under non-zero scaling.",
+                "REMOVED THE DATA ROWS FROM THE PROMPT. Earlier versions showed 8 rows sampled "
+                "from the true system's .dat file. Those rows are generated by the equation "
+                "being asked for, so a model can regress an equation onto them and never "
+                "hypothesise about the system at all -- induction from examples, which is the "
+                "inference type this suite exists to hold apart from abduction. The .dat files "
+                "and options.noise_level are therefore no longer read.",
+                "Showed the units of every variable, constant and derivative, and the units the "
+                "corrected equation must carry. These are part of the axiom system rather than "
+                "samples from it, and with the data gone they are what keeps the task "
+                "determinate: dimensional consistency rules out most candidate equations.",
+                "Marked which equation is wrong, so the task is recovering that equation rather "
+                "than also locating it; locating it as well would conflate two abilities.",
+                "Scored by zero set rather than by scalar factor. An equation set to zero is "
+                "invariant under multiplication by any non-zero factor, constant or not, so the "
+                "comparison is of the numerators' irreducible factors. All 540 equations in the "
+                "release decide against themselves under this test.",
+                "Sent only the unparseable residue to the LLM judge. Where SymPy decides, it has "
+                "proved the answer; a judge could only make that verdict less reliable.",
             ],
             caveats=[
                 "Items are constructed here, so scores are not comparable to published SynPAT "
-                "results.",
-                "A different equation can fit 8 noisy rows; symbolic_match against the generating "
-                "equation is therefore a strict lower bound.",
+                "results -- and less so now, since the published setting supplies the data this "
+                "adapter withholds.",
+                "Without the data the task is genuinely underdetermined: more than one "
+                "dimensionally consistent equation can complete the system, and only the "
+                "generating one is credited. The score is a strict lower bound on physical "
+                "reasonableness, and should be read as 'recovered the intended law', not "
+                "'proposed a wrong law'.",
+                "NUMERIC COEFFICIENTS ARE NOT RECOVERABLE from the theory alone. Golds such as "
+                "4*c*dx1dt + d2x1dt2*d1 carry a factor that only the measurements fix, so a "
+                "model that reasons perfectly about the structure can still score 0 on the "
+                "primary metric. structure_match is reported alongside for exactly this reason, "
+                "and the two should be read together.",
+                "The units of the corrected equation are shown. That is a real hint -- it fixes "
+                "the dimension of the answer -- and it is given deliberately, because without "
+                "it and without the data the item would be a lottery rather than a hard "
+                "problem.",
             ],
-            statistics={
-                **self.base_statistics(),
-                "noise_level": str(self.context.option("noise_level", "0.001")),
-                "data_rows": int(self.context.option("data_rows", 8)),
-            },
+            statistics=self.base_statistics(),
         )
 
 
@@ -330,5 +464,19 @@ def _clean_expression(text: str) -> str:
 
 
 def _equal_up_to_scale(candidate: str, gold: str, symbols: Sequence[str]) -> bool | None:
-    """Equality up to a non-zero scalar factor, tolerant of LaTeX/unicode input."""
+    """Equality up to a non-zero *scalar* factor, tolerant of LaTeX/unicode input.
+
+    Kept as the narrow test; :func:`_equal_as_zero_set` is what scoring uses.
+    """
     return _shared_equal_up_to_scale(candidate, gold, symbols)
+
+
+def _equal_as_zero_set(candidate: str, gold: str, symbols: Sequence[str]) -> bool | None:
+    """Do the two expressions vanish in the same place?
+
+    The right question for this dataset. A scalar-factor test misses a correct
+    answer written as a ratio -- ``Fg/Fc - dxdt/c`` is not a constant multiple
+    of ``c*Fg - dxdt*Fc``, but the two equations say the same thing once both
+    are set to zero.
+    """
+    return _shared_equal_as_zero_set(candidate, gold, symbols)

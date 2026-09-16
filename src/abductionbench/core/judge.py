@@ -87,7 +87,21 @@ class JudgeStage:
         #: Held by reference: the engine fills it in when a batch endpoint
         #: turns out to be unusable, which can happen after this is built.
         self._batch_disabled = batch_disabled if batch_disabled is not None else set()
-        self.template = registry.get(config.template)
+        self.registry = registry
+        self.default_template = registry.get(config.template)
+        #: Resolved per adapter: a dataset whose task has its own grading
+        #: criteria gets its own judge prompt, because "is this the same
+        #: hypothesis?" and "does this explanation make the outcome less
+        #: surprising?" are different questions and a single generic judge
+        #: answers neither well.  Adapters that declare nothing keep the
+        #: configured default.
+        self.template = self.default_template
+        #: Verdicts that were asked for and never obtained, because the judge
+        #: endpoint failed permanently.  Read by the engine after `apply`: for
+        #: a dataset with no verifiable answer the judge *is* the score, so a
+        #: missing verdict has to be a task failure rather than a zero.
+        self.unavailable: int = 0
+        self.last_error: str = ""
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
         if config.cache and self._cache_path.exists():
@@ -98,12 +112,33 @@ class JudgeStage:
 
     # ------------------------------------------------------------------ #
 
+    def _template_for(self, adapter: DatasetAdapter):
+        """The judge prompt this dataset is graded with.
+
+        An unknown id is a configuration mistake in the adapter, not a reason
+        to abandon the judged metric, so it falls back to the configured
+        default and says so once.
+        """
+        wanted = getattr(adapter, "judge_template", None)
+        if not wanted or wanted == self.default_template.id:
+            return self.default_template
+        try:
+            return self.registry.get(wanted)
+        except Exception as exc:  # noqa: BLE001 - a bad id must not lose the metric
+            logger.warning(
+                "adapter %s asks for judge template %r which is unavailable (%s); "
+                "grading with %s instead",
+                adapter.dataset_id, wanted, exc, self.default_template.id,
+            )
+            return self.default_template
+
     async def apply(
         self,
         adapter: DatasetAdapter,
         scored: list[tuple[SampleSpec, ModelResponse, SampleScore]],
     ) -> list[tuple[SampleSpec, ModelResponse, SampleScore]]:
         """Judge what the adapter asks to be judged; return updated scores."""
+        self.template = self._template_for(adapter)
         pending: list[tuple[int, dict[str, Any], str]] = []
         for index, (sample, response, score) in enumerate(scored):
             try:
@@ -155,7 +190,16 @@ class JudgeStage:
                     description=f"judge batch ({len(conversations)} item(s))",
                 )
             except EndpointError as exc:
-                logger.warning("judge batch failed permanently: %s", exc)
+                # Counted, not just logged. Swallowing this is what let an
+                # unreachable judge produce a full set of plausible-looking
+                # zeros: every sample kept its seeded 0.0 and the run reported
+                # it as if the model had answered and been wrong.
+                self.unavailable += len(chunk)
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "judge batch failed permanently, %d verdict(s) unavailable: %s",
+                    len(chunk), exc,
+                )
                 continue
             if len(result.choices) != len(chunk):
                 logger.warning(

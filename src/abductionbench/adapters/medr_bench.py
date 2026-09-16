@@ -27,7 +27,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics, extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 REPO_URL = "https://github.com/MAGIC-AI4Med/MedRBench"
 
@@ -44,9 +44,21 @@ class MedRBenchAdapter(PooledDatasetAdapter):
         "disease, the common look-alike is not the answer."
     )
     data_delivery_mode = "static"
-    objective_metrics = True
+
+    answer_format = "a single diagnosis"
+    answer_constraints = (
+        "give exactly one diagnosis",
+        "output only the diagnosis name",
+        "do not explain why",
+        "do not use introductory phrases or commentary",
+    )
+    #: Measured, not assumed: the model writes a disease name into an open
+    #: vocabulary with no candidate list, so a correct answer routinely differs
+    #: from the gold in wording -- synonym, eponym, abbreviation, subtype -- and
+    #: fails a string comparison. The gold exists; its surface form is not the answer.
+    objective_metrics = False
     selection_cardinality = None
-    primary_metric = "diagnosis_match"
+    primary_metric = "diagnosis_judged"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
@@ -102,20 +114,25 @@ class MedRBenchAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        score = text_match_score(
-            response,
-            gold=sample.reference["gold"],
-            output_contract=output_contract,
-            primary="diagnosis_match",
+        key = (
+            "diagnosis_judged_rare"
+            if sample.metadata.get("rare_disease")
+            else "diagnosis_judged_common"
         )
-        key = "diagnosis_match_rare" if sample.metadata.get("rare_disease") else "diagnosis_match_common"
-        score.metrics[key] = score.metrics.get("diagnosis_match", 0.0)
-        return score
+        # The stratum is seeded here and filled by the judge along with the base
+        # metric, so the rare/common split is the same verdict seen through a filter.
+        return judged_only_score(
+            response,
+            metric="diagnosis_judged",
+            output_contract=output_contract,
+            extra_metrics={key: 0.0},
+            details={"gold": str(sample.reference["gold"])[:300]},
+        )
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
-        rare = metrics.get("diagnosis_match_rare")
-        common = metrics.get("diagnosis_match_common")
+        rare = metrics.get("diagnosis_judged_rare")
+        common = metrics.get("diagnosis_judged_common")
         if rare is not None and common is not None:
             metrics["rare_disease_gap"] = common - rare
         return metrics
@@ -129,20 +146,19 @@ class MedRBenchAdapter(PooledDatasetAdapter):
             "candidate": extract_answer_span(response.text, None)[:600],
             "gold": sample.reference["gold"],
             "observation": C.clip_words(sample.fields["observation"], 200),
-            "criteria": "Equivalent disease entities (synonyms, abbreviations) count as correct.",
+            "criteria": (
+                "The candidate is correct if it names the same disease entity as the "
+                "reference, however it is written: synonyms, abbreviations, eponyms and "
+                "spelling variants all count. A broader category that does not identify "
+                "the reference disease, or a different disease that shares symptoms with "
+                "it, does not count."
+            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        metrics = dict(score.metrics)
-        metrics["diagnosis_match_judged"] = 1.0 if getattr(verdict, "positive", False) else 0.0
-        return SampleScore(
-            metrics=metrics,
-            prediction=score.prediction,
-            parse_ok=score.parse_ok,
-            details={**score.details, "judge_label": getattr(verdict, "label", None)},
-        )
+        return apply_judged_metric(score, verdict, "diagnosis_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -161,23 +177,29 @@ class MedRBenchAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "diagnosis_match": "1 if the answer equals or contains the concise gold diagnosis "
-                "(primary)",
-                "exact_match": "strict normalized equality with the gold diagnosis",
-                "token_f1": "bag-of-tokens F1 against the gold diagnosis",
-                "rouge_l": "LCS F-measure against the gold diagnosis",
-                "diagnosis_match_rare/_common": "the primary metric restricted to cases MedR-Bench "
-                "flags as rare / not rare",
-                "rare_disease_gap": "common minus rare accuracy -- how much rarity costs",
-                "diagnosis_match_judged": "LLM-judge equivalence verdict (only when "
-                "engine.judge.enabled)",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the "
+                "judge scored highest. A diagnosis is free text with many correct surface forms, "
+                "so a plurality over repeats is not meaningful and Best-of-N replaces it.",
+                "diagnosis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on "
+                "whether the stated diagnosis is the same disease entity as the concise gold "
+                "diagnosis, however written. 1.0 when the judge affirms.",
+                "diagnosis_judged_rare/_common": "the primary metric restricted to cases "
+                "MedR-Bench flags as rare / not rare",
+                "rare_disease_gap": "common minus rare score -- how much rarity costs",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
+                "could be read from; these score 0 and are counted separately from being wrong.",
             },
-            primary_metric="diagnosis_match",
+            primary_metric="diagnosis_judged",
             decisions=[
                 "Used diagnosis_results (the concise gold string) as the reference rather than the "
                 "long final_diagnosis discussion, which mixes the answer with its justification.",
                 "Reported a rare/common breakdown using the dataset's own checked_rare_disease "
                 "field, since that distinction is the benchmark's headline claim.",
+                "Scored by an LLM judge rather than by string comparison: no candidate list is "
+                "shown, so a correct diagnosis is written into an open vocabulary where the same "
+                "disease has many correct surface forms -- and rare diseases, the point of this "
+                "benchmark, are exactly where synonyms and eponyms proliferate.",
                 "No selection mode: the release provides no candidate diagnosis sets.",
                 "Did not attempt MedR-Bench's reasoning-quality metrics (factuality, efficiency), "
                 "which require their own LLM-judge pipeline over intermediate reasoning steps; "

@@ -1,0 +1,19 @@
+# A short live pilot: 12 samples per dataset, for verifying the whole pipeline
+# (every task kind, real adapters, real endpoint) in a few minutes.
+extends: [pilot.yaml]
+
+name: pilot-smoke
+description: Small live subset of the pilot run, for verifying the pipeline end to end.
+
+engine:
+  concurrency:
+    max_parallel_tasks: 2
+    max_parallel_batches_global: 3
+
+models:
+  - file: ../models/gemma-4-e4b-local.yaml
+
+# dataset_force wins over each dataset's own sample_size; dataset_defaults would
+# not, since a dataset's own config overrides defaults.
+dataset_force:
+  sample_size: 12

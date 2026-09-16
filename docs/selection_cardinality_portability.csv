@@ -1,0 +1,65 @@
+Metric,SCS,MCS,BOV
+Accuracy / Exact Match,✓,,+
+Valid-Answer-Set F1 / Exact Match,+,✓,+
+Exact Match against Lone Explanation,✓,,+
+Differential Diagnosis Recall,+,✓,+
+MRR / Hits@k,✓,,
+Strong Accuracy,✓,,+
+Pairwise Preference Accuracy,✓,,
+BLEU / ROUGE / METEOR / CIDEr,,,
+BERTScore,,,
+Hypothesis Discovery Rate,,+,
+Atomic-Claim Precision / Recall / F1,,+,
+AUC over Progressive Disclosure,,,
+Judge-Rated Match Rate,,,
+Recovery Rate,+,+,+
+Rendering-Robust Accuracy,,✓,+
+Set-Based Partial-Match Score,+,✓,+
+Kernel Identification (V_K),✓,,+
+Mutation Attribution (V_A),+,✓,+
+Proof Correctness,,,
+Inference Retrieval (Mean Rank / P@1),✓,,
+Evidence Localisation Accuracy,,,
+Weak Accuracy,+,+,+
+Hypothesis Quality (Occam Score),,,
+KG Answer-Set Jaccard,+,✓,+
+Executional Consistency,,,
+Generalisability (GEAR),,,
+y-diversity,,+,
+b-diversity,,+,
+Consistency via Autoformalisation,,,
+Proof Depth & Concept Drift,,,
+Coherence,,,
+Uncertainty (Hedging Density),+,+,+
+Novelty / Plausibility / Clarity,,,
+Practical Utility,,,
+Generalisability (OOD / Cross-Model),,,
+Explanation-Based Evaluation,,,
+Expected Information Gain,,,
+Reasoning Recall,,,
+Evidence Coverage,,,
+Directionality,,,
+Turn Budget Use,,,
+Hypothesis Retrodiction Accuracy,,,
+Human Rating / Win Rate,+,,
+Six-Dimension Rubric Score,,,
+Bradley-Terry-Davidson Arena,+,,
+Validity Rate,+,+,+
+Novelty (Uniqueness) Rate,,+,+
+Conservativity,,,
+Exception Cost / Cost Gap,,,
+Holdout Validity,,,
+Explanation Correctness,,,
+Explanation Completeness,,,
+Explanation Redundancy,,,
+Round-Trip Agreement,+,+,+
+Groundedness,,,
+Relevance / Significance / Verifiability,,,
+Comprehensiveness,,,
+Sufficiency,,,
+Rationale IOU-F1 / Token F1,,,
+Area Over the Curve (AOC),,,
+Indirect / Direct Effect,,,
+Faithfulness AUROC,,,
+Rescaled Pairwise Plausibility Accuracy,+,,
+Supporter / Defeater Accuracy,,,+

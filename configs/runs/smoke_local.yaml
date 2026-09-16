@@ -1,0 +1,5 @@
+# Smoke test over the direct (tunnel-free) path -- see configs/models/gpt-oss-120b-local.yaml.
+extends: [smoke.yaml]
+name: smoke-local
+models:
+  - file: ../models/gemma-4-e4b-local.yaml

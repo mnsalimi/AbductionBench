@@ -55,10 +55,18 @@ from .adapter import (
 from .checkpoint import RecordStore, TaskCheckpoint
 from .client import BatchResult, ModelClient, RawChoice
 from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
-from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
+from .errors import (
+    AbenchError,
+    AdapterError,
+    AuthError,
+    ConfigError,
+    EndpointError,
+    ErrorClass,
+    TemplateError,
+)
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
-from .modes import COT, SELF_CONSISTENCY, TaskModes
+from .modes import BOV, COT, SELF_CONSISTENCY, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
@@ -137,7 +145,12 @@ class TaskResult:
     output_dir: Path
     metrics: dict[str, float] = field(default_factory=dict)
     checkpoint: TaskCheckpoint | None = None
+    #: Evaluation items this task set out to score. Not the request count: BOV
+    #: and self-consistency ask one item as several requests, and coverage is
+    #: items scored over items planned.
     n_planned: int = 0
+    #: Model requests those items cost, which is what a run is billed for.
+    n_requests: int = 0
     n_scored: int = 0
     n_error: int = 0
     n_skipped: int = 0
@@ -310,14 +323,14 @@ class EvaluationEngine:
         logger.info(
             "run %s: %d model(s) x %d dataset(s), output=%s",
             self.run_id,
-            len(self.config.models),
+            len(self.config.evaluated_models()),
             len(self.config.enabled_datasets()),
             self.run_dir,
         )
         self.events.emit(
             "run_started",
             run_id=self.run_id,
-            models=[m.id for m in self.config.models],
+            models=[m.id for m in self.config.evaluated_models()],
             datasets=[d.id for d in self.config.enabled_datasets()],
             dry_run=self.dry_run,
         )
@@ -346,6 +359,13 @@ class EvaluationEngine:
 
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
+
+            # A dataset with no answer key is scored by the judge and by
+            # nothing else, so a missing judge is a broken run, not a quieter
+            # one. Checked before any model is called: the alternative is
+            # discovering it hours in, when every judged dataset has reported
+            # whatever metric happened to survive the fallback.
+            self._require_judge_for_unverifiable()
 
             # --- Stage A: dataset bundles --------------------------------- #
             bundles = self._build_bundles()
@@ -513,6 +533,51 @@ class EvaluationEngine:
             tasks_so_far=len(snapshot.tasks),
         )
 
+    def _require_judge_for_unverifiable(self) -> None:
+        """Fail fast if an unverifiable dataset is scheduled with no judge.
+
+        These datasets' primary metric *is* the judge's verdict.  Without the
+        stage the metric is simply absent, and the report falls back to another
+        number -- so the run would finish, look complete, and quietly answer a
+        different question than the one asked.
+        """
+        judge = self.engine_cfg.judge
+        needing: list[str] = []
+        for dataset_cfg in self.config.enabled_datasets():
+            try:
+                adapter_cls = resolve_adapter(dataset_cfg.impl)
+            except Exception:  # noqa: BLE001 - a bad impl is reported later
+                continue
+            if not adapter_cls.objective_metrics:
+                needing.append(dataset_cfg.id)
+        if not needing:
+            return
+
+        if not judge.enabled:
+            raise ConfigError(
+                f"{len(needing)} dataset(s) have no verifiable answer and are scored by the "
+                f"LLM judge alone ({', '.join(sorted(needing)[:5])}"
+                f"{', ...' if len(needing) > 5 else ''}), but engine.judge.enabled is false. "
+                "Set engine.judge.enabled: true and engine.judge.model, or disable those "
+                "datasets -- running them without the judge reports no score for them."
+            )
+        known = {model.id for model in self.config.models}
+        if judge.model not in known:
+            raise ConfigError(
+                f"engine.judge.model={judge.model!r} is not one of the run's models "
+                f"({sorted(known)}), and {len(needing)} dataset(s) are scored by the judge "
+                f"alone. Add the judge to `models:` (with judge_only: true so it is not "
+                f"itself evaluated)."
+            )
+        judge_model = self.config.model_by_id(judge.model)
+        if not judge_model.judge_only and len(self.config.evaluated_models()) > 1:
+            logger.warning(
+                "engine.judge.model=%r is also being evaluated in this run; a model that "
+                "grades its own answers scores its own reasoning. Mark it judge_only, or "
+                "point the judge at a different model.",
+                judge.model,
+            )
+
     def flush_sync(self) -> dict[str, Any]:
         """Upload once more, after reports have been written."""
         if not self.engine_cfg.sync.enabled:
@@ -588,15 +653,43 @@ class EvaluationEngine:
     # Stage A
     # ------------------------------------------------------------------ #
 
+    def _note_bov_off(
+        self,
+        dataset_id: str,
+        prompt_mode: str,
+        hypothesis_mode: str | None,
+        delivery: str,
+    ) -> None:
+        """Record that a BOV task was available but the run's flag is off."""
+        modes = TaskModes(
+            prompt_mode=prompt_mode,
+            selection_mode=BOV,
+            hypothesis_mode=hypothesis_mode,
+            data_delivery_mode=delivery,
+        )
+        self._skipped_modes.append(
+            {
+                "dataset_id": dataset_id,
+                "mode": modes.slug,
+                "reason": "BOV is off for this run (modes.bov: false); set modes.bov: true "
+                          "to ask one yes/no question per candidate hypothesis",
+            }
+        )
+
     def _modes_for(self, dataset_cfg: DatasetConfig) -> list[TaskModes]:
         """Every mode combination this dataset will be evaluated in.
 
         The prompt modes come from the run config; the selection modes come from
         the run config *intersected with what the dataset's task definition
         admits*, so a benchmark whose items have several correct hypotheses is
-        never asked to pick one.  A dataset that is not a selection task gets a
-        single mode with no selection axis.  Delivery is read from the adapter:
-        it is a property of the benchmark, not a choice.
+        never asked to pick one.  With nothing requested, a selection dataset is
+        run in **every** mode it admits rather than only the one it was
+        published as -- SCS and MCS for a single-answer benchmark, MCS alone for
+        a multi-answer one -- with BOV gated behind ``modes.bov`` because its
+        cost scales with the candidate count rather than the record count.  A
+        dataset that is not a selection task gets a single mode with no
+        selection axis.  Delivery is read from the adapter: it is a property of
+        the benchmark, not a choice.
 
         Combinations the adapter rejects are logged once, with the reason, and
         recorded on the run so the report can say which modes were not run.
@@ -614,8 +707,13 @@ class EvaluationEngine:
         elif cfg.selection_modes:
             requested_selection = [m for m in cfg.selection_modes] or [None]
         else:
-            # No explicit request: run the mode the benchmark itself defines.
-            requested_selection = [offered[0]]
+            # No explicit request: every mode the benchmark's own task definition
+            # admits, not just the one it was published as. A pool of hypotheses
+            # with one right answer is also a pool you can ask "select as many as
+            # apply" of, and the answer is still that one -- so the comparison
+            # between SCS and MCS on the same records is a measurement, not a
+            # different benchmark. BOV is filtered below, on the run's flag.
+            requested_selection = list(offered)
 
         # "Generation / Selection (separate tasks)" in the dataset table means two
         # independent evaluations, so they are crossed here rather than mixed
@@ -643,6 +741,12 @@ class EvaluationEngine:
                     if hypothesis_mode == "generation" and selection_mode is not None:
                         # Generating a hypothesis has no candidate list to pick from.
                         selection_mode = None
+                    if selection_mode == BOV and not cfg.bov:
+                        # Recorded rather than dropped quietly: "BOV is missing
+                        # from this report" and "BOV was switched off for this
+                        # run" have to be distinguishable afterwards.
+                        self._note_bov_off(dataset_cfg.id, prompt_mode, hypothesis_mode, delivery)
+                        continue
                     modes = TaskModes(
                         prompt_mode=prompt_mode,
                         selection_mode=selection_mode,
@@ -711,7 +815,16 @@ class EvaluationEngine:
             adapter.prepare()
             samples = list(adapter.build_samples())
             if not samples:
-                raise SkippedDataset("adapter produced no samples")
+                # Reported, not silent -- but the reason has to be actionable:
+                # "no samples" almost always means make_sample rejected every
+                # row, and the usual cause is the adapter disagreeing with the
+                # release about a field name or a label convention (AER's gold
+                # names options by key letter while the prompt numbers them).
+                raise SkippedDataset(
+                    "adapter produced no samples: make_sample rejected every item. "
+                    "Check the adapter against the release's field names and its "
+                    "gold-answer/option-label convention."
+                )
             # One evaluation item can need several requests: BOV asks about each
             # hypothesis separately, self-consistency asks k times. Expanding
             # here rather than inside a base class means every adapter gets the
@@ -984,7 +1097,7 @@ class EvaluationEngine:
             bundle = by_key[key]
             modes = bundle.modes
             kinds = sorted({sample.task_kind for sample in bundle.samples})
-            for model in self.config.models:
+            for model in self.config.evaluated_models():
                 identity = TaskIdentity(
                     run_id=self.run_id,
                     dataset_id=bundle.config.id,
@@ -1077,6 +1190,7 @@ class EvaluationEngine:
                 context_window=model.limits.context_window,
                 input_tokens=tokens,
                 exact_tokens=getattr(self.token_counter, "exact", False),
+                max_output_tokens=bundle.config.max_output_tokens,
             )
             mode_temperature = prompt_set.modes.sampling_temperature
             if mode_temperature is not None:
@@ -1114,12 +1228,13 @@ class EvaluationEngine:
                 # the sample is fine, this model's window is too small for it.
                 no_room.append((sample.sample_id, tokens))
                 continue
-            if sampling.max_tokens < model.sampling.max_tokens_cap:
+            asked = bundle.config.max_output_tokens or model.sampling.max_tokens_cap
+            if sampling.max_tokens < asked:
                 # The window, not the cap, is what limits this request. Counted
-                # so a dataset whose prompts crowd out the answer is visible.
-                clamped.append(
-                    (sample.sample_id, model.sampling.max_tokens_cap, sampling.max_tokens)
-                )
+                # so a dataset whose prompts crowd out the answer is visible --
+                # and against what *this* dataset asked for, which a dataset
+                # with its own max_output_tokens has raised.
+                clamped.append((sample.sample_id, asked, sampling.max_tokens))
             rendered.append(
                 RenderedPrompt(
                     sample=sample,
@@ -1154,7 +1269,17 @@ class EvaluationEngine:
         # Includes the prompts skipped for having no room to answer: they were
         # part of what this task set out to evaluate, so leaving them out would
         # let coverage read 1.0 for a task that only managed four items in five.
-        result.n_planned = len(rendered) + len(no_room)
+        #
+        # Counted in *evaluation items*, not requests, because n_scored is. The
+        # two differ exactly where a mode asks one item as several requests: a
+        # BOV task over six candidates sends six requests and scores one item,
+        # so counting requests here made coverage read 1/6 for a task that
+        # scored everything -- and `<primary>_strict`, which is the primary
+        # metric times coverage, divided the score by six along with it.
+        planned_ids = {p.sample.group_id or p.sample.sample_id for p in rendered}
+        planned_ids.update(sample_id for sample_id, _tokens in no_room)
+        result.n_planned = len(planned_ids)
+        result.n_requests = len(rendered) + len(no_room)
         self._clamped_output_budgets = len(clamped)
         if clamped:
             worst = min(clamped, key=lambda item: item[2])
@@ -1259,18 +1384,11 @@ class EvaluationEngine:
                 pairs = await self._run_episodes(
                     adapter, pending, client=client, store=store, use_batch=use_batch,
                     checkpoint=checkpoint, model=model, group_size=group_size,
+                    max_output_tokens=bundle.config.max_output_tokens,
                 )
-            records: list[EvalRecord] = []
-            for prompt, response in pairs:
-                score = await self._score(adapter, prompt, response)
-                records.append(self._make_record(identity, prompt, response, score))
-                if response.status is ResponseStatus.ERROR:
-                    checkpoint.failed += 1
-                elif response.status is ResponseStatus.SKIPPED:
-                    checkpoint.skipped += 1
-                else:
-                    checkpoint.completed += 1
-                    scores.append((prompt.sample, response, score))
+            records = await self._score_batch(
+                adapter, identity, pairs, checkpoint=checkpoint, scores=scores
+            )
             store.append_many(records)
             store.save_checkpoint(checkpoint)
             batches = []
@@ -1307,17 +1425,9 @@ class EvaluationEngine:
                         for prompt in batch.prompts
                     ]
 
-            records: list[EvalRecord] = []
-            for prompt, response in pairs:
-                score = await self._score(adapter, prompt, response)
-                records.append(self._make_record(identity, prompt, response, score))
-                if response.status is ResponseStatus.ERROR:
-                    checkpoint.failed += 1
-                elif response.status is ResponseStatus.SKIPPED:
-                    checkpoint.skipped += 1
-                else:
-                    checkpoint.completed += 1
-                    scores.append((prompt.sample, response, score))
+            records = await self._score_batch(
+                adapter, identity, pairs, checkpoint=checkpoint, scores=scores
+            )
             store.append_many(records)
             store.save_checkpoint(checkpoint)
 
@@ -1338,10 +1448,54 @@ class EvaluationEngine:
                     cache_dir=output_dir / "judge_cache",
                     batch_disabled=self._batch_disabled,
                 )
+                before = {
+                    sample.sample_id: score for sample, _r, score in scores
+                }
                 scores = await judge.apply(adapter, scores)
-            except Exception as exc:  # noqa: BLE001 - judging is best-effort
+                # The records were written per batch, before judging; bring the
+                # sample-level log up to date so a row shows the score its
+                # dataset is actually reported on.
+                rewritten = store.update_scores({
+                    sample.sample_id: {
+                        "metrics": dict(score.metrics),
+                        "prediction": score.prediction,
+                        "details": dict(score.details),
+                        "parse_ok": score.parse_ok,
+                    }
+                    for sample, _response, score in scores
+                    if before.get(sample.sample_id) is not score
+                })
+                if rewritten:
+                    logger.info(
+                        "task %s: %d sample record(s) updated with the judge's verdict",
+                        identity.slug, rewritten,
+                    )
+                if judge.unavailable:
+                    # Verdicts were asked for and never came back. `apply`
+                    # applies whatever it did obtain, so partial results are
+                    # kept -- but the task cannot be reported as scored.
+                    raise EndpointError(
+                        f"{judge.unavailable} judge verdict(s) unavailable "
+                        f"({judge.last_error})"
+                    )
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("task %s: judge stage failed: %s", identity.slug, exc)
                 checkpoint.notes["judge_error"] = str(exc)
+                if not adapter.objective_metrics:
+                    # For this dataset the judge IS the score. Its seeded 0.0
+                    # would otherwise be reported as if the model had got
+                    # everything wrong, which is indistinguishable from a
+                    # genuine zero -- and that is how an unreachable judge
+                    # produced a full set of plausible-looking zeros. The task
+                    # fails instead, and `abench run --resume` will retry it.
+                    result.failure = (
+                        f"judge stage failed and this dataset has no verifiable answer, so "
+                        f"there is no score without it: {type(exc).__name__}: {exc}"
+                    )
+                    logger.error(
+                        "task %s: refusing to report a judged metric the judge never "
+                        "produced; the task is marked failed", identity.slug,
+                    )
 
         # Reconstruct checkpointed outputs for the reasoning judge. Scoring
         # code changes do not alter a request fingerprint, so a resumed COT run
@@ -1510,6 +1664,7 @@ class EvaluationEngine:
                 "metrics": metrics,
                 "counts": {
                     "planned": result.n_planned,
+                    "requests": result.n_requests or result.n_planned,
                     "scored": result.n_scored,
                     "errors": result.n_error,
                     "skipped": result.n_skipped,
@@ -1535,6 +1690,7 @@ class EvaluationEngine:
             metrics=metrics,
             counts={
                 "planned": result.n_planned,
+                "requests": result.n_requests or result.n_planned,
                 "scored": result.n_scored,
                 "errors": result.n_error,
                 "skipped": result.n_skipped,
@@ -1558,6 +1714,7 @@ class EvaluationEngine:
         checkpoint: TaskCheckpoint,
         model: ModelConfig,
         group_size: int,
+        max_output_tokens: int | None = None,
     ) -> list[tuple[RenderedPrompt, ModelResponse]]:
         """Drive an interactive benchmark to completion, one turn at a time.
 
@@ -1646,6 +1803,7 @@ class EvaluationEngine:
                     context_window=model.limits.context_window,
                     input_tokens=tokens,
                     exact_tokens=getattr(self.token_counter, "exact", False),
+                    max_output_tokens=max_output_tokens,
                 )
                 turn_prompts.append(
                     RenderedPrompt(
@@ -1968,6 +2126,49 @@ class EvaluationEngine:
     # scoring / aggregation / records
     # ------------------------------------------------------------------ #
 
+    async def _score_batch(
+        self,
+        adapter: DatasetAdapter,
+        identity: TaskIdentity,
+        pairs: list[tuple[RenderedPrompt, ModelResponse]],
+        *,
+        checkpoint: TaskCheckpoint,
+        scores: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+    ) -> list[EvalRecord]:
+        """Score a completed batch's responses concurrently, in order.
+
+        Scoring used to walk the batch one ``await`` at a time, so every
+        scorer ran alone however many threads ``scoring_workers`` allowed. For
+        the cheap scorers -- a label comparison, a set intersection -- that
+        cost nothing worth measuring. For the ones that call a solver it cost
+        the whole batch: ABD runs Z3 per answer at roughly 1 to 30 seconds a
+        time, so a group of 16 spent minutes evaluating in single file on a box
+        with 48 idle cores.
+
+        The results are gathered and then walked **in the original order**, so
+        the records file, the checkpoint counters and the scores list are
+        byte-identical to what the sequential version produced. Concurrency is
+        still bounded by ``scoring_workers`` inside :meth:`_score`, and a
+        scorer that raises is still caught there rather than taking the batch
+        with it.
+        """
+        if not pairs:
+            return []
+        computed = await asyncio.gather(
+            *(self._score(adapter, prompt, response) for prompt, response in pairs)
+        )
+        records: list[EvalRecord] = []
+        for (prompt, response), score in zip(pairs, computed, strict=True):
+            records.append(self._make_record(identity, prompt, response, score))
+            if response.status is ResponseStatus.ERROR:
+                checkpoint.failed += 1
+            elif response.status is ResponseStatus.SKIPPED:
+                checkpoint.skipped += 1
+            else:
+                checkpoint.completed += 1
+                scores.append((prompt.sample, response, score))
+        return records
+
     async def _score(
         self, adapter: DatasetAdapter, prompt: RenderedPrompt, response: ModelResponse
     ) -> SampleScore:
@@ -1977,7 +2178,10 @@ class EvaluationEngine:
         async with self._scoring_sem:
             try:
                 return await asyncio.to_thread(
-                    adapter.score, prompt.sample, response, output_contract=prompt.output_contract
+                    adapter.score_request,
+                    prompt.sample,
+                    response,
+                    output_contract=prompt.output_contract,
                 )
             except Exception as exc:  # noqa: BLE001 - a bad scorer must not kill the run
                 logger.exception(
@@ -1994,7 +2198,10 @@ class EvaluationEngine:
         fresh: list[tuple[SampleSpec, ModelResponse, SampleScore]],
         result: TaskResult,
         *,
+        reused_records: list[dict[str, Any]] = (),
         votable: bool = True,
+        judged: bool = False,
+        higher_is_better: bool = True,
     ) -> dict[str, float]:
         """How much the repeats of one record disagreed with each other.
 
@@ -2005,11 +2212,32 @@ class EvaluationEngine:
         answer) and ``<primary>_repeat_std`` (the typical spread of the primary
         metric within a record).
         """
-        by_record: dict[str, list[tuple[SampleSpec, SampleScore]]] = {}
+        by_record: dict[str, list[tuple[SampleSpec | None, SampleScore]]] = {}
         for sample, _response, score in fresh:
             if "repeat_of" not in sample.metadata:
                 continue
             by_record.setdefault(str(sample.metadata["repeat_of"]), []).append((sample, score))
+        # A record resumed from a prior session has some (or all) of its
+        # repeats sitting in reused_records, not fresh -- grouping fresh alone
+        # silently drops those repeats from the vote/Best-of-N, or drops the
+        # record from them entirely if every repeat had already completed
+        # before this session started. all_scores (the primary metric) already
+        # folds reused_records in for exactly this reason; this must too, or
+        # self_consistency_/best_of_n_ silently change depending on whether a
+        # run happened to be interrupted and resumed, with no error or warning.
+        # `sample` has no counterpart for a reused record and is never read by
+        # _plurality/_best_of_n_metrics (only `score` is), so None stands in.
+        for rec in reused_records:
+            repeat_of = (rec.get("metadata") or {}).get("repeat_of")
+            if repeat_of is None:
+                continue
+            score = SampleScore(
+                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
+                prediction=rec.get("prediction"),
+                parse_ok=bool(rec.get("parse_ok", True)),
+                details=rec.get("details") or {},
+            )
+            by_record.setdefault(str(repeat_of), []).append((None, score))
         repeated = [members for members in by_record.values() if len(members) > 1]
         if not repeated:
             return {}
@@ -2043,7 +2271,14 @@ class EvaluationEngine:
         # verbatim, so every sample would be its own plurality of one and the
         # "voted" score would just be whichever sample happened to come first.
         # Those datasets report the spread of their repeats and nothing else.
+        # What they get instead is Best-of-N, below.
         if not votable:
+            if judged:
+                out.update(
+                    EvaluationEngine._best_of_n_metrics(
+                        repeated, result.primary_metric, higher_is_better
+                    )
+                )
             return out
 
         # A vote is a plurality over k samples of the same question, and the
@@ -2060,6 +2295,38 @@ class EvaluationEngine:
                 )
             )
             out["self_consistency_n_records"] = float(len(voted_scores))
+        return out
+
+    @staticmethod
+    def _best_of_n_metrics(
+        repeated: list[list[tuple[SampleSpec, SampleScore]]],
+        primary: str,
+        higher_is_better: bool,
+    ) -> dict[str, float]:
+        """Best-of-N: per record, the repeat the judge scored highest.
+
+        The counterpart of self-consistency for a task with no checkable
+        answer.  A vote needs answers that can coincide, and free-text
+        hypotheses never repeat verbatim -- so instead of asking which answer
+        the repeats agreed on, this asks which of them was *best*, and reports
+        that.  It is the same k samples either way; nothing is bought twice.
+
+        Read off the judged primary metric, so it means "best as the judge
+        scored it" and not "best by string overlap".  ``higher_is_better``
+        respects a primary metric that is an error.
+        """
+        picks: list[SampleScore] = []
+        for members in repeated:
+            scored = [score for _s, score in members if primary in score.metrics]
+            if not scored:
+                continue
+            chooser = max if higher_is_better else min
+            picks.append(chooser(scored, key=lambda score: score.metrics[primary]))
+        if not picks:
+            return {}
+        out = aggregate_mean_metrics([score.metrics for score in picks], prefix="best_of_n_")
+        out["best_of_n_n_records"] = float(len(picks))
+        out["best_of_n_n"] = float(max(len(members) for members in repeated))
         return out
 
     @staticmethod
@@ -2120,13 +2387,26 @@ class EvaluationEngine:
         # A dataset whose answers are graded by an LLM judge, or by overlap with
         # a reference, has no discrete answer space for a vote to be taken over.
         metrics.update(
-            self._repeat_metrics(fresh, result, votable=adapter.objective_metrics)
+            self._repeat_metrics(
+                fresh,
+                result,
+                reused_records=reused_records,
+                votable=adapter.objective_metrics,
+                # A dataset with no checkable answer is judged, and its repeats
+                # are reported as Best-of-N rather than as a vote.
+                judged=not adapter.objective_metrics,
+                higher_is_better=adapter.higher_is_better,
+            )
         )
 
         planned = max(1, result.n_planned)
         coverage = result.n_scored / planned
         metrics["coverage"] = coverage
         metrics["n_planned"] = float(result.n_planned)
+        # Requests, where a mode asks one item as several. Reported beside
+        # n_planned rather than instead of it, because the two answer different
+        # questions: how much was evaluated, and how much it cost.
+        metrics["n_requests"] = float(result.n_requests or result.n_planned)
         metrics["n_scored"] = float(result.n_scored)
         metrics["n_error"] = float(result.n_error)
         metrics["n_skipped"] = float(result.n_skipped)

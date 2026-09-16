@@ -239,7 +239,7 @@ directory and its own row, identified by `template_mode`.
 | axis | values | who decides |
 |---|---|---|
 | `prompt_mode` | `io`, `cot`, `self-consistency` | the run config |
-| `selection_mode` | `SCS`, `MCS`, `BOV` | the run config, within what the benchmark allows |
+| `selection_mode` | `SCS`, `MCS`, `BOV` | the benchmark's task definition (see the rule below); the run config may restrict it, and gates `BOV` behind `modes.bov` |
 | `hypothesis_mode` | `generation`, `selection` | the benchmark's task definition |
 | `data_delivery_mode` | `static`, `interactive`, `sequential` | the benchmark — not a choice |
 
@@ -248,7 +248,8 @@ Orthogonal to all four is **`repeats`**: how many times each record is asked.
 ```yaml
 modes:
   prompt_modes:     [io, cot]          # crossed with:
-  selection_modes:  [SCS, BOV]         # ... for datasets whose task permits each
+  selection_modes:  []                 # empty -> every mode each benchmark admits
+  bov:              false              # BOV costs one request per candidate: opt in
   hypothesis_modes: [generation, selection]
   self_consistency_n: 5
   self_consistency_temperature: 0.7
@@ -318,15 +319,49 @@ scored by text overlap against one reference answer declines them, with a
 reason in the run's skipped-modes list, because a reasoning mode's effect
 cannot be read off a similarity score.
 
-**`SCS` / `MCS` / `BOV`.** Single-choice asks for exactly one hypothesis;
-multi-choice asks for every one that applies; **binary option verification**
-presents the hypotheses *one at a time* and asks whether each is the best
-explanation, then rebuilds the selected set from the answers that were a direct
-yes. A dataset whose task definition requires several selections (AER, DeFAb)
-never offers `SCS`; one whose items have exactly one correct answer never offers
-`MCS`. BOV is graded by the dataset's own scorer on the reconstructed set, so a
-BOV score and an MCS score are comparable, and `bov_yes_rate` reports how choosy
-the model was.
+**`SCS` / `MCS` / `BOV`.** Three ways to put the same pool of candidate
+hypotheses to a model.
+
+| mode | what the model is shown | what it is asked | requests per record |
+|---|---|---|---|
+| `SCS` | the whole candidate list | pick **exactly one** | 1 |
+| `MCS` | the whole candidate list | pick **as many as apply** — one, several, or all | 1 |
+| `BOV` | **one candidate**, with the task and observation, and no list | *does this hypothesis explain the observation?* — YES or NO | one **per candidate** |
+
+Which modes a dataset runs follows from its own task definition, and the rule is
+deliberately asymmetric:
+
+* **One correct hypothesis per item → `SCS`, `MCS` and `BOV`.** `SCS` is the
+  benchmark's own framing. Widening it to "select as many as apply" does not
+  change what the right answer is, so the scores stay comparable — what changes
+  is that the model is no longer told how many to name, and hedging across three
+  candidates is now visibly wrong rather than silently credited.
+* **Several correct hypotheses per item → `MCS` and `BOV`, never `SCS`.**
+  Forcing one choice on an item with three correct answers makes the item
+  unanswerable, so the score would measure the constraint instead of the model.
+  `AER` is the suite's only such dataset.
+
+Scoring is one code path for all three, which is what makes the columns
+comparable: the primary metric is an exact match against the gold set in every
+mode, so on a single-answer benchmark it is 1.0 only when the model named the
+gold candidate **and nothing else**. `MCS` and `BOV` add `set_f1` /
+`set_precision` / `set_recall` for the partial-credit view and `n_selected` for
+how much the model hedged; `BOV` adds `bov_yes_rate`, the share of candidates it
+said yes to.
+
+**BOV is off by default** — `modes.bov: false`. It is the one mode whose cost
+scales with the *candidate* count rather than the record count: DeFAb ships six
+candidates per item, so a BOV task is six times an MCS task, and on an
+interactive benchmark it is six whole episodes. Turn it on per run:
+
+```bash
+abench run configs/runs/full.yaml -s modes.bov=true
+```
+
+With it off, every selection dataset records a skipped mode saying so, because
+"BOV is missing from this report" and "BOV was switched off for this run" have
+to be distinguishable afterwards. Naming `BOV` in `selection_modes` while the
+flag is off is a config error rather than a silent no-op.
 
 **`generation` / `selection`.** Where the dataset table says "Generation /
 Selection (separate tasks)", the two run as independent evaluations with
@@ -348,6 +383,75 @@ examiner prompt, EvoClinician's actor prompt, Cloud-OpsBench's RCA prompt.
 `configs/prompts/` now holds only the **judge** templates: an LLM judge is the
 harness prompting a model of its own, not a dataset being evaluated, so its
 wording stays swappable configuration.
+
+## Prompts: one structure, so the data is what differs
+
+**Static and sequential datasets get prompts written for this suite**, not the
+ones their papers published. The reason is comparability: if each dataset
+inherited its authors' wording, a score gap could just as easily be a gap in how
+firmly the instruction was phrased. So the structure is fixed once in
+`adapters/_prompting.py` and only the dataset's own nouns vary.
+
+**Interactive datasets are the exception** and keep the prompts their own
+benchmark publishes -- an environment's action grammar is part of the benchmark,
+not a style choice. That is why `ddxplus`, `med_inquire`, `medqdx` and
+`vivabench` still label their options `A`, `B`, `C`.
+
+Every static/sequential prompt is assembled the same way:
+
+```
+[system]   what this dataset's task is, in its own terms
+
+[user]     Observation:  <the evidence>
+           Question:     <the dataset's question, if it asks one>
+           Answer options:                     <-- numbered, never lettered
+           1. ...
+           2. ...
+           Answer directly. Do not explain your reasoning.     <-- io
+             (or: Work through the evidence step by step...)   <-- cot
+           Requirements:                        <-- generation tasks, io
+           - write exactly one sentence
+           - do not restate the observation
+           - do not explain your reasoning
+             (under cot: "Requirements for the answer line:",
+              and the reasoning-suppressing clauses are dropped)
+           Select exactly one hypothesis.       <-- selection tasks
+           Answer with only one of: 1, 2 or 3, on the last line, as:
+           Answer: 1
+```
+
+Three pieces are dataset-owned and declared as **data**, so the same constraint
+reads identically everywhere it applies (`tools/declare_answer_shapes.py` is the
+one-shot table that set all 34):
+
+| attribute | what it says |
+|---|---|
+| `answer_format` | what a well-formed answer is (`"one short sentence"`), rendered into the closing line |
+| `answer_constraints` | what the answer must and must not do, one clause each, rendered as `Requirements:` |
+| `options_heading` | what the candidate list is called (`"Answer options:"`, `"Candidate diagnoses:"`) |
+
+**The Requirements block is scoped to the mode.** `answer_constraints` belong to
+the dataset, not to the mode, and many were written for `io`, where "do not
+explain" *is* the instruction. Rendered unchanged into a `cot` prompt they
+contradicted it: the model was told to work through the evidence step by step
+and then, three lines later, not to explain. 27 of the 44 datasets carried such
+a clause. Under `cot` and `self-consistency` those clauses are now dropped and
+the heading becomes **`Requirements for the answer line:`**, so the clauses that
+remain -- "write exactly one sentence", "output only the diagnosis name" --
+plainly govern the answer rather than the whole response. Under `io` nothing
+changes. A test renders every mode of every dataset and fails if a `cot` prompt
+ever tells the model not to reason.
+
+**Options are numbered.** One helper (`_common.choice_labels`) produces both the
+labels shown and the labels the gold refers to, so they cannot drift apart --
+which is what a per-adapter `LABELS = ["A", "B"]` constant risked.
+
+**The `Answer:` marker is load-bearing, not decoration.** A numbered label is
+much easier to confuse with a number that appears in reasoning than a letter
+was, and the marker is what lets the parser take the label the model
+*submitted* rather than the last digit it happened to write. Measured across
+xcopa, ecare, musr, true_detective and aer in both io and cot:
+`parse_failure_rate` 0.0 on nine of ten tasks and 0.1 on the tenth.
 
 ### COT reasoning-chain metrics
 
@@ -395,15 +499,11 @@ needed four times as many investigations.
 
 | dataset | what the model does | where the environment comes from |
 |---|---|---|
-| VivaBench | asks for history, examination, investigations, imaging; commits to a diagnosis | the case's own structured findings; release's action vocabulary and limits |
+| VivaBench | takes a history, examines, orders investigations and imaging, then commits to a diagnosis | the case's own structured findings; the release's `ASSISTANT_BASE_PROMPT`, action vocabulary, workflow gate and limits |
 | DDXPlus | interviews the patient one symptom at a time | the patient record's evidence set, keyed by the release's own question text |
 | Med-Inquire | asks the patient, orders tests, submits a diagnosis | the case file's sections; `NOT AVAILABLE` for tests it does not record |
 | MedQDx | asks about symptoms, then names the condition | the case's symptom list |
 | Cloud-OpsBench | issues `kubectl`-style tool calls, then finalises a root cause | the release's recorded `tool_cache.json` — a real cluster, replayed |
-| PhysGym | sets the inputs, reads the output, states the law | the release's own `env_function`, executed |
-| CausaLab | intervenes on controllable variables, observes the rest | the released structural model, simulated under intervention |
-| BoxingGym | designs experiments, then predicts what the system will do | the release's own simulators, run; scored by its own `evaluate_predictions` |
-| SciLab | runs a laboratory whose law is hidden and *not* the textbook one | the release's vendored NewtonBench oracles, run |
 
 Requests are matched to findings **lexically**, not by a second model. Several
 of these benchmarks resolve a free-text request with an LLM mapper; doing that
@@ -414,6 +514,15 @@ so in its own caveats.
 
 `options.delivery: static` runs an interactive benchmark in its single-turn form
 as an ablation — useful for asking what the interaction actually buys.
+
+VivaBench was for a time configured `data_delivery_mode = "static"` and run as
+selection over the differentials the release records, with the finding-request
+loop present but unreachable. It now runs the loop: the agent's system prompt is
+the release's own `ASSISTANT_BASE_PROMPT`, the examiner's replies are the
+release's strings, the workflow gate (`reviewed_patient`) closes history and
+examination once the work-up starts, and the limits are read from the release's
+own `configs/evaluate.yaml`. The one deviation is the lexical matcher above,
+which stands in for the release's LLM mapper.
 
 ## Making a run faster without touching quality
 
@@ -474,11 +583,51 @@ degraded, and at the temperature repeats are drawn at the answers already vary
 between runs. Neither touches a prompt, a token budget, or a stop condition.
 
 **What is *not* free**, and is therefore not done here: capping `max_tokens`
-below the context window. It is the largest single speedup available -- 93% of
-BoxingGym's answers and 21% of `abd`'s CoT answers run to the 32,000-token cap
-and are cut off -- but of the answers that *do* finish on their own, 9% exceed
+below the context window. It is the largest single speedup available -- 21% of
+`abd`'s CoT answers run to the 32,000-token cap and are cut off, and 93% of
+BoxingGym's did before it was removed -- but of the answers that *do* finish on
+their own, 9% exceed
 8,192 tokens and 16% exceed 2,048. A cap would truncate real answers, so it is a
 trade to make deliberately, with those numbers in view, not a free win.
+
+## The judge is a different model
+
+Datasets with no answer key are graded by an LLM judge, not by overlap with a
+reference. Two models are served on the one GPU:
+
+| | model | port | window | role |
+|---|---|---|---|---|
+| under test | `Qwen/Qwen3.5-2B` | 18001 | 65,536 | answers |
+| judge | `openai/gpt-oss-120b` | 18004 | 65,536 | grades |
+
+**Why two.** Grading a model's answers with that same model scores its own
+reasoning. The judge is therefore a 117B-parameter model and the model under
+test is a 2B one, and they are separate servers.
+
+**Why the judge is in `models:`.** The run needs a client to reach it. It is
+marked `judge_only: true` in `configs/models/gpt-oss-120b-local.yaml`, so
+`evaluated_models()` leaves it out of task planning -- otherwise it would double
+the run and report a column nobody asked for. `--models` also never filters it
+out: that flag narrows what is *measured*, and dropping the judge with it would
+silently switch off the judged metric of every dataset that has no answer key.
+
+**Sharing one 95.6 GiB card.** gpt-oss-120b's weights are 60.8 GiB in MXFP4, so
+the split is deliberate and the start order matters -- restart Qwen first so it
+shrinks, then start the judge, which needs its whole budget free to pass vLLM's
+check:
+
+```
+qwen3.5-2b     GPU_MEMORY_UTILIZATION=0.20  ->  19 GiB  (~10 GiB KV = 1.04M tokens)
+gpt-oss-120b   GPU_MEMORY_UTILIZATION=0.78  ->  75 GiB  (~11 GiB KV =  158k tokens)
+```
+
+`MAX_NUM_BATCHED_TOKENS=8192` on the judge is load-bearing: without it vLLM
+profiles a forward pass at the full 65,536 tokens, and that activation peak
+consumed the entire budget -- startup died with *"No available memory for the
+cache blocks"* at 0.78 utilisation with 60.8 GiB of weights.
+
+Both `.env` files under `/workspace/vllm_serving/` carry these numbers and the
+reasoning; timestamped backups sit beside them.
 
 ## Models and batching
 
@@ -655,12 +804,13 @@ squeezed budget cannot look like a clean result.
 
 | metric | meaning |
 |---|---|
-| `coverage` | scored samples ÷ planned samples |
-| `n_planned`, `n_scored`, `n_error`, `n_skipped` | request counts behind the score |
+| `coverage` | scored **items** ÷ planned **items** |
+| `n_planned`, `n_scored`, `n_error`, `n_skipped` | evaluation items behind the score |
+| `n_requests` | model calls those items cost. Equal to `n_planned` except where a mode asks one item as several calls: a `BOV` task over six candidates plans 4 items and sends 24 requests, and a self-consistency vote over k samples sends k times its items |
 | `parse_failure_rate` | fraction whose response yielded no prediction |
 | `truncation_rate` | fraction that stopped at the token budget. **Not retried** — a truncated answer is a result, and the budget is already the whole remaining context window |
 | `empty_response_rate` | fraction that returned no content at all |
-| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the 32,000-token ceiling — i.e. where the prompt crowded out the answer |
+| `output_budget_clamped_rate` | fraction whose budget was limited by the context window rather than the dataset's output-token ceiling — i.e. where the prompt crowded out the answer. The ceiling is 32,000 by default and 64,000 for `abd` (`max_output_tokens` in its dataset file) |
 | `batch_latency_s_mean`, `completion_tokens_mean` | cost and length, per sample |
 | `<primary>_strict` | the primary metric with unscored samples counted as zero |
 
@@ -674,25 +824,92 @@ squeezed budget cannot look like a clean result.
 | `repeats` | how many times each record was asked (`modes.repeats`) |
 | `repeat_agreement` | fraction of records whose repeats all agreed |
 | `<primary>_repeat_std` | typical spread of the primary metric within one record |
+| `self_consistency_<metric>` | **verifiable datasets.** The metric recomputed on the plurality answer over the `repeats` samples of each record. Read off those samples — no extra calls. The winning answer's score *is* the score of any repeat that produced it, so nothing is re-scored |
+| `best_of_n_<metric>` | **unverifiable datasets.** The metric of the repeat the judge scored highest, averaged over records. Also read off the same samples. Every metric of the winning repeat travels with it, including the ones that were worse there — that is what makes it best-of-*n* rather than the best value of each metric separately |
+| `best_of_n_n`, `best_of_n_n_records` | how many repeats each record had, and how many records contributed |
+
+**Which of the two a dataset gets is not a setting.** A plurality needs answers
+that can coincide, and free-text hypotheses never repeat verbatim, so a vote
+there would be a plurality of one. Datasets whose answers are checkable
+(`objective_metrics = True`) report `self_consistency_`; datasets scored by the
+judge report `best_of_n_`. Both come out of the same `modes.repeats` calls.
+
+**What makes a dataset "unverifiable" is the size of the answer space, not the
+absence of a gold.** Two questions decide it:
+
+* Does the model *choose* from a pool the prompt puts in front of it — options,
+  a listed topology, a closed predicate vocabulary, the symbols of an axiom
+  system? Then the answer's surface form is fixed, a mechanical check asks a
+  question with a right answer, and the dataset is **verifiable**. `climate_fever`,
+  `copa`, `causelogics` and the selection halves of `art` and `e-CARE` are
+  selection; `aiops2025` names an entity from the topology it was shown;
+  `proof_writer` and `abductionrules` write a fact in the theory's own
+  vocabulary. All mechanical, no judge.
+* Or does it *write* the answer into an effectively unlimited space — a disease
+  name with no candidate list, a root cause in its own words, a missing premise
+  in free English? Then a correct answer can differ from the gold in wording,
+  and a string test measures phrasing rather than correctness. These are
+  **unverifiable and need a judge**, and a gold existing changes nothing about
+  that. `house_md`, `medups`, `medr_bench`, `medqdx`, `medcasereasoning`,
+  `med_inquire`, `neulr`, `enwn_entailmentbank`, `cloud_opsbench` and the
+  generation halves of `art` and `e-CARE` are all of this kind.
+
+A dataset can be both at once, and is then split rather than rounded: in
+`causalopsbench` the faulty component comes from a list in the prompt and is
+matched mechanically, while the fault *type* is free text and is judged.
+
+**Two datasets are verifiable by a decision procedure rather than a string
+test**, which is better than either a match or a judge:
+
+* `abd` ships the finite worlds its hypothesis is about, so equivalence is
+  decided by *evaluating* both formulas over them. Reordered conjuncts, renamed
+  bound variables and double negations all count as correct.
+* `synpat` answers are expressions set to zero, so SymPy compares where they
+  vanish. A sign flip, a scalar multiple and a rearrangement by a non-constant
+  factor all count as correct. The LLM judge grades only the residue SymPy
+  cannot parse; asked to confirm a proof, it could only weaken it.
+* `abd` is *solver-checkable by construction*, and is scored by *the release's
+  own Z3 evaluator*, imported from the same clone the data comes from. It asks
+  the benchmark's question — does this formula repair every prompt world, and
+  at what cost — instead of asking whether the answer resembles the planted
+  gold. That distinction is not academic: on the release's own first instance
+  the gold is valid at cost 18 against an optimum of 14, and an entirely
+  different formula is *also* valid at cost 34. `valid` is the primary metric,
+  `optimal` sits beside it, and `formula_match` survives only as a diagnostic.
+  There is no judge: a solver has already decided.
+
+`abd` also excludes **40 of the release's 600 records as invalid benchmark
+items**, named individually in `docs/datasets.md` — 2 whose gold its own parser
+rejects, and 38 whose gold uses a predicate the record itself forbids, so the
+release's evaluator scores its own answer key invalid. They are reported, not
+repaired.
 
 ### Answer-shape metrics
 
 The general shapes almost every dataset reduces to. A dataset's own metric names
 are these with a dataset-specific prefix (`diagnosis_match`, `root_cause_match`,
-`hypothesis_rouge_l`, `flip_token_f1`, ...), and mean the same thing about that
-dataset's answer.
+`root_cause_judged`, ...), and mean the same thing about that dataset's answer.
 
 | metric | meaning |
 |---|---|
 | `accuracy` | fraction of selection items where the chosen label was the gold label |
 | `exact_match` | normalized string equality with the gold answer |
 | `match` | equality *or* containment of an accepted gold form — the lenient view |
-| `token_f1` | bag-of-tokens F1 against the gold answer |
-| `rouge_l` | longest-common-subsequence F-measure against the gold answer |
+| `token_f1` | bag-of-tokens F1 against the gold answer. A **diagnostic**, never a primary metric, and not emitted at all by the datasets with no answer key |
 | `set_f1`, `set_precision`, `set_recall` | for answers that are a *set* (multi-selection, causal edge sets) |
 | `exact_set_match` | the whole set exactly right |
-| `symbolic_match` | SymPy proves the answer equivalent to the reference expression; `symbolic_match_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest |
-| `<metric>_judged` | the same judgement made by an LLM judge, only when `engine.judge.enabled` |
+| `equation_equivalent` | SymPy proves the answer vanishes where the reference expression does (`synpat`); `equation_equivalent_decidable` restricts to the items SymPy could compare, and `symbolic_undecidable` reports the rest, which are the only ones the judge sees |
+| `valid` | the answer is proved correct by the benchmark's own solver rather than compared with its answer key (`abd`): Z3 decides whether the formula repairs every prompt world, and `optimal`, `total_gap` and `avg_gap` report how parsimoniously |
+| `<metric>_judged` | the judgement made by an LLM judge. Wherever the model writes its answer into an unlimited space — with or without a gold to compare against — **this is the score**, not an extra view of it, and the run refuses to start without a configured judge. Where a decision procedure exists (`abd`, `synpat`), the judge instead grades only what that procedure could not parse |
+
+### Per-dataset metric documentation
+
+Every adapter documents its own metrics — what each measures, which is
+**primary**, and whether **higher or lower is better** — in its
+`documentation()`, and those descriptions are what the run writes into
+`Datasets` sheet and `docs/datasets.md`. They are generated from the adapters,
+so they cannot drift from the code. The shared metrics above are documented
+here and deliberately not repeated in each of the 46 adapters.
 
 ### Dataset-specific metrics
 
@@ -703,17 +920,17 @@ themselves; the ones worth knowing about here:
 
 | dataset | metric | why |
 |---|---|---|
-| `hypospace` | `distinct_valid_rate` | observations admit dozens of valid graphs; covering the space is the point |
 | `gear` | `undetermined_recall`, `overcaution_rate` | separates admitting underdetermined evidence from over-hedging |
-| `causalab` | `edge_f1` + precision/recall | listing every possible edge must not score well |
 | `true_detective` | `human_agreement_spearman`, `human_solve_rate` | do models find the same puzzles hard that people do |
 | `medr_bench` | `rare_disease_gap` | the benchmark's headline claim is about rare disease |
-| `commonwhy` | `popularity_gap` | head vs long-tail entities |
-| `medqdx` | `information_sensitivity` | accuracy at 100% vs 50% of the symptom picture |
-| `abd` | `predicate_compliance` | respecting the hypothesis space is its own competence |
+| `commonwhy` | `popularity_gap` | head vs long-tail entities (`explanation_judged_head` − `explanation_judged_longtail`) |
+| `medqdx` | `information_sensitivity` | score at 100% vs 50% of the symptom picture |
+| `synpat` | `structure_match` | the answer's terms ignoring numeric coefficients — the gap to the primary metric is the cost of withholding the generated data |
+| `causalopsbench` | `fault_type_judged`, `full_diagnosis_judged` | the component comes from a listed pool and is matched; the fault type is free text and is judged |
+| `abd` | `valid`, `optimal`, `total_gap`, `avg_gap` | scored by the release's own Z3 evaluator: many formulas repair the worlds, and only one of them is the planted gold |
 | `house_md` | `diagnosis_in_differential` | separates recall of the disease from committing to it |
 | `medcasereasoning` | `reasoning_recall`, `reasoning_overlap` | how much of the clinician's reasoning the answer recovers |
-| `open_problems_2024` | `direction_accuracy`, `brier_score`, `leakage_rate`, `direction_answer_stability` | a calibrated verdict, and whether the model had simply read the answer |
+| `vivabench` | `accuracy` | selection over the release's candidate list — note the gold option is no longer sorted first, which it was until this was fixed |
 
 ## Adding a dataset
 
@@ -732,7 +949,7 @@ python -m pytest -q            # 73 tests: config, prompts, batching, metrics,
                                # server over real HTTP
 abench run configs/runs/smoke_local.yaml    # engine smoke test, ~30 s
 abench run configs/runs/pilot_smoke.yaml \
-  -d ecare,gear,hypospace,aer,abductionrules,medcasereasoning   # live, real adapters
+  -d ecare,gear,aer,abductionrules,medcasereasoning   # live, real adapters
 python tools/preview.py configs/runs/pilot.yaml <dataset_id>    # inspect one adapter
 python tools/dataset_catalogue.py                               # regenerate docs/datasets.md
 ```
@@ -743,20 +960,46 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **49 datasets configured,
-42 evaluable, 6 declared unavailable with a reason, 1 (`researchbench`) waiting
-on a Hugging Face gate** — the 48 from the original table plus
-`open_problems_2024`, built here.
+decisions cannot drift from the code. Current state: **44 datasets configured, all 44
+evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
+accepted its gate.
 
-Nine of the interactive benchmarks run their real environment; see
+Five of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
-Interactivity is no longer a reason to skip anything. What is still skipped is
-skipped for reasons that have nothing to do with it: **CausalGame**'s
-environment is not distributed (its harness plays against the authors' server),
-**NIKA** records no telemetry to replay and needs privileged networking to
-generate any, **BioVerge** ships its items only inside an 11.9 GB corpus
-archive, and **DiReCT**, **DiscoveryBench** and **RLF-KG** are blocked on
-credentialed access, withheld gold, and an unreachable download respectively.
+Interactivity is no longer a reason to skip anything.
+
+**Twelve datasets have been removed from the suite entirely** rather than carried
+as permanent skips.
+
+*Unobtainable* — these four added a row to every report without ever adding a
+number: **BioVerge** (items ship only inside an 11.9 GB corpus archive),
+**DiReCT** (notes need credentialed MIMIC-IV access), **DiscoveryBench** (gold
+hypotheses withheld on every scorable split), **RLF-KG** (sampled query data is
+not downloadable).
+
+*Unrunnable here*: **NIKA** — its emulator needs a container runtime and
+`CAP_NET_ADMIN`, and this container's capability bounding set excludes both, so
+no runtime can even be installed.
+
+*Removed by request, after their integrations were working*: **CausaLab**,
+**PhysGym**, **BoxingGym**, **CausalGame**, **SciLab** and
+**`open_problems_2024`** (the latter built in this repository rather than taken
+from the table).
+
+*Removed as not abductive*: **HypoSpace** — its item hands the model *many*
+perturbation instances and asks it to infer the graph they were all generated
+by, which is generalisation from examples, i.e. induction. Abduction reasons
+from one observation to the explanation of it. This is the same ground on which
+UniADILR's and NeuLR's inductive sibling files are left unread.
+
+NIKA's adapter was written and its scoring verified against release 0.2.0's 85
+incidents before it was removed, so `git log -- src/abductionbench/adapters/nika.py`
+recovers a working implementation -- along with `docs/nika-remote-lab.md`, which
+describes running its emulator on a separate Docker host via the release's own
+remote lab-host mode. The mechanism that reported these datasets --
+`UnavailableAdapter`, which turns a dataset into a documented skip rather than a
+silent absence -- stays: it is how a *newly* unobtainable dataset gets
+reported.
 
 Policies applied uniformly, and recorded per dataset:
 
@@ -809,66 +1052,10 @@ abench run configs/runs/full.yaml -d researchbench
 Until then the adapter reports itself skipped with that URL and the account name
 in the reason, rather than failing obscurely. Nothing else needs changing.
 
-### `open_problems_2024` — the one dataset built here
-
-Not from the original table: a scientific-discovery set built in this repository
-from two independent surveys of research problems that were **open at a 2023
-model cutoff and resolved in 2024 or later** (both surveys are committed under
-`assets/open_problems_2024/sources/`, and
-`tools/build_open_problems_dataset.py` rebuilds `problems.json` from them, so
-every field is traceable to a source line). 16 problems, 15 evaluable, 1 held
-out.
-
-It is deliberately split into modes, because only some of them are abduction:
-
-| mode | task | abductive? |
-|---|---|---|
-| `direction` | judge which way an open conjecture resolved, with a confidence | **yes** — Stage 2, single-hypothesis evaluation |
-| `strategy` | say what a solution would have to use, before seeing one | **yes** — Stage 1, knowledge completion |
-| `resolution` | actually resolve the problem | no — deduction; excluded from `abduction_score` |
-| `leakage_probe` | ask what the model knows about the problem's status | not scored as reasoning; it is the contamination control |
-
-The scores are only meaningful if the model has not read the answer, so the
-probe is part of the dataset rather than an afterthought: it reports
-`leakage_rate` per item, and a high value invalidates that item's reasoning
-score. Measured on gemma-4-E4B (15 items, `subtask=leakage_probe`):
-`leakage_rate = 0.00` — not one item where the model both asserts the problem is
-resolved and names the solver or the year.
-
-**Read `direction_answer_stability` before reading any score.** 15 items is
-small enough that server-side nondeterminism dominates the number. What is
-actually going on, measured rather than assumed:
-
-* Under *identical* batching the model is bit-reproducible — two consecutive
-  runs of this dataset alone agreed on **45/45** direction predictions and gave
-  the same `abduction_score` to four decimals.
-* Change the batching and verdicts flip. Within one run, 2 of 15 questions got
-  different answers from their own three repeats. Between a solo run and one
-  sharing the endpoint with three other datasets, **5 of 15** flipped, moving
-  accuracy from 0.33 to 0.60.
-
-The cause is vLLM's batched inference not being numerically batch-invariant: a
-prompt's logits depend on what else is in its batch, so the noise is *worst* in
-a full-suite run, where 39 other datasets share the endpoint. That is not
-fixable from here, so it is measured instead. `options.repeats` (3 by default)
-asks each question k times as k distinct samples; the score is the mean over all
-observations, `direction_answer_stability` is the fraction of questions whose
-repeats all agreed, and `strategy_score_spread` is the mean within-question
-range of `key_ingredient_recall` — a strategy answer is never byte-identical
-twice (1/39 were), so its stability is the spread of its score, not of its text.
-
-gemma-4-E4B, alone, 3 repeats: direction accuracy **0.378** over 45
-observations at stability **0.867**, `key_ingredient_recall` 0.289 at spread
-0.109, Brier 0.278, `overconfident_wrong_rate` 0.179. Treat a difference between
-two runs as noise unless it exceeds that spread.
-
-```bash
-abench run configs/runs/pilot_smoke.yaml -d open_problems_2024                 # direction + strategy
-abench run configs/runs/pilot_smoke.yaml -d open_problems_2024 \
-  -s dataset_force.options.subtask=leakage_probe                               # contamination control
-abench run configs/runs/pilot_smoke.yaml -d open_problems_2024 \
-  -s dataset_force.options.model_cutoff=2025-06-01                             # only post-cutoff items
-```
+**Verified working** once an account has accepted: the gate check passes, the
+release's 20 files are readable, and all four tasks plan (io/cot x
+generation/selection, 600 items each). Keep the token in the environment — it is
+a credential and does not belong in a config file in this repository.
 
 ### Metrics beyond accuracy
 

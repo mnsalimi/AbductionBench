@@ -320,8 +320,14 @@ def test_self_consistency_votes_are_reduced_to_one_score(
     result, _ = _run(config_path)
     task = result.tasks[0]
     # Four items asked three times each: twelve requests, four scored answers.
-    assert task.n_planned == 12
+    # The two are counted separately, and coverage is over *items* -- counting
+    # requests there made a fully scored vote read as one third covered, and
+    # `<primary>_strict`, which is the score times coverage, divided by three.
+    assert task.n_planned == 4
+    assert task.n_requests == 12
     assert task.n_scored == 4
+    assert task.metrics["coverage"] == 1.0
+    assert task.metrics["accuracy_strict"] == task.metrics["accuracy"]
     assert task.metrics["self_consistency_agreement"] == 1.0
 
 
@@ -732,6 +738,57 @@ def test_self_consistency_is_computed_from_the_repeats_not_bought_again(
     assert task.metrics["accuracy_repeat_std"] > 0.0
 
 
+def test_self_consistency_survives_a_resume(fake_server, write_run_config, fake_dataset):
+    """Resuming a fully-checkpointed run must not silently drop the vote.
+
+    self_consistency_/best_of_n_ were computed only from THIS session's
+    freshly-scored samples, never from records reused off a prior session's
+    checkpoint -- even though the primary metric correctly folds
+    reused_records in. A second run against an already-completed directory
+    (every repeat reused, none fresh) is the starkest case: not a smaller
+    vote, but no vote at all, while every other metric looks unchanged.
+    """
+    import collections
+    import re as _re
+
+    seen: collections.Counter = collections.Counter()
+
+    def responder(conversation, max_tokens):
+        body = conversation[-1]["content"]
+        match = _re.search(r"observation number (\d+)", body)
+        key = match.group(1) if match else body[:40]
+        seen[key] += 1
+        if seen[key] <= 3:
+            return f"Answer: echo:{body[:80]}"
+        return "Answer: echo: nothing useful here"
+
+    fake_server.state.responder = responder
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        modes={"repeats": 5},
+    )
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+    assert task.metrics["self_consistency_n_records"] == 4.0
+    assert task.metrics["self_consistency_accuracy"] == 1.0
+
+    # Resume against the same run_id/run_dir: nothing left to call, every
+    # repeat of every record is already checkpointed from the first run.
+    config = load_run_config(config_path)
+    engine2 = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    result2 = asyncio.run(engine2.run())
+    task2 = result2.tasks[0]
+    assert task2.n_reused == 20
+    assert task2.n_scored == 20
+
+    # Same vote as the first run -- reused records must count.
+    assert task2.metrics["self_consistency_n_records"] == 4.0
+    assert task2.metrics["self_consistency_accuracy"] == 1.0
+    assert task2.metrics["repeat_agreement"] == 0.0
+
+
 def test_a_vote_no_repeat_could_parse_stays_a_failure(
     fake_server, write_run_config, fake_dataset
 ):
@@ -803,6 +860,7 @@ class OverlapScoredAdapter(FakeAdapter):
             }
         ],
         modes={"repeats": 4},
+        engine={"judge": {"enabled": True, "model": "fake-model"}},
     )
     result, _ = _run(config_path)
     task = result.tasks[0]
@@ -812,6 +870,69 @@ class OverlapScoredAdapter(FakeAdapter):
     assert "rouge_l_repeat_std" in task.metrics        # the spread is reported
     # ... but nothing was voted on.
     assert not any(k.startswith("self_consistency_") for k in task.metrics)
+    # It gets Best-of-N instead: the best of the same k samples.
+    assert task.metrics["best_of_n_n"] == 4.0
+    assert task.metrics["best_of_n_rouge_l"] >= task.metrics["rouge_l"]
+
+
+def test_an_unverifiable_dataset_without_a_judge_is_refused(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    """No silent runs: the judge IS the score for these datasets.
+
+    Without the stage the primary metric is simply absent and the report falls
+    back to another number, so the run would finish, look complete, and answer
+    a different question than the one asked.
+    """
+    from abductionbench.core.errors import ConfigError
+
+    adapter_src = tmp_path / "unjudged_adapter.py"
+    adapter_src.write_text(
+        """
+from fake_adapter import FakeAdapter
+
+
+class UnjudgedAdapter(FakeAdapter):
+    objective_metrics = False
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {
+                "id": "unjudged",
+                "impl": "unjudged_adapter:UnjudgedAdapter",
+                "sample_size": 2,
+                "options": {"n": 2},
+            }
+        ],
+        engine={"judge": {"enabled": False}},
+    )
+    with pytest.raises(ConfigError) as caught:
+        _run(config_path)
+    assert "judge" in str(caught.value)
+    assert "unjudged" in str(caught.value)
+
+    # And enabling the stage without a reachable model is refused too, rather
+    # than failing per-task hours into the run.
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {
+                "id": "unjudged",
+                "impl": "unjudged_adapter:UnjudgedAdapter",
+                "sample_size": 2,
+                "options": {"n": 2},
+            }
+        ],
+        engine={"judge": {"enabled": True, "model": "not-in-this-run"}},
+    )
+    with pytest.raises(ConfigError) as caught:
+        _run(config_path)
+    assert "not one of the run's models" in str(caught.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -1044,3 +1165,161 @@ def test_a_crashing_task_still_lands_in_the_result(
     assert "RuntimeError: deliberate" in (by_dataset["alpha"].failure or "")
     assert by_dataset["beta"].failure is None
     assert by_dataset["beta"].n_scored == 4
+
+
+def test_aer_gold_letters_map_onto_numbered_labels():
+    """AER's gold names options by key letter; the prompt labels them by position.
+
+    The release writes `golden_answer: "A,C"` against keys `option_A..option_D`
+    while the prompt shows a numbered list, so the two have to be translated.
+    Getting this wrong is silent: every item fails its own validity check and
+    the dataset builds nothing, which is exactly what happened.
+    """
+    from abductionbench.adapters.aer import AERAdapter
+    from abductionbench.core.adapter import AdapterContext
+    from abductionbench.core.modes import TaskModes
+
+    adapter = AERAdapter.__new__(AERAdapter)
+    adapter.context = AdapterContext(
+        dataset_id="aer", data_dir=Path("."), seed=0, modes=TaskModes()
+    )
+    adapter._context_for = lambda _topic: ""  # noqa: SLF001
+
+    sample = adapter.make_sample(
+        {
+            "id": "x1",
+            "target_event": "A bridge collapsed.",
+            "option_A": "Heavy flooding weakened the piers.",
+            "option_B": "A lorry exceeded the weight limit.",
+            "option_C": "The bridge was repainted.",
+            "option_D": "An earthquake struck.",
+            "golden_answer": "A,D",
+        },
+        0,
+    )
+    assert sample is not None, "a well-formed AER row must not be rejected"
+    assert sample.fields["option_labels"] == ["1", "2", "3", "4"]
+    # A -> 1 and D -> 4, by position in OPTION_KEYS.
+    assert sample.reference["gold_labels"] == ["1", "4"]
+
+
+def test_aer_skips_a_row_whose_gold_names_a_missing_option():
+    from abductionbench.adapters.aer import AERAdapter
+    from abductionbench.core.adapter import AdapterContext
+    from abductionbench.core.modes import TaskModes
+
+    adapter = AERAdapter.__new__(AERAdapter)
+    adapter.context = AdapterContext(
+        dataset_id="aer", data_dir=Path("."), seed=0, modes=TaskModes()
+    )
+    adapter._context_for = lambda _topic: ""  # noqa: SLF001
+
+    # option_C is absent, so a gold of "C" cannot be scored against anything.
+    assert adapter.make_sample(
+        {
+            "id": "x2",
+            "target_event": "A bridge collapsed.",
+            "option_A": "Flooding.",
+            "option_B": "Overloading.",
+            "option_D": "An earthquake.",
+            "golden_answer": "C",
+        },
+        0,
+    ) is None
+
+
+def test_a_dataset_that_builds_nothing_is_reported_not_dropped(
+    fake_server, write_run_config, fake_dataset, monkeypatch
+):
+    """An empty dataset must be a reported skip, not a silent absence."""
+    from abductionbench.core import engine as engine_mod
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("alpha", n=4, sample_size=4), fake_dataset("beta", n=4, sample_size=4)],
+    )
+    real = engine_mod.EvaluationEngine._instantiate_adapter
+
+    def empty_for_alpha(self, dataset_cfg, modes):
+        adapter = real(self, dataset_cfg, modes)
+        if dataset_cfg.id == "alpha":
+            adapter.build_samples = lambda: []
+        return adapter
+
+    monkeypatch.setattr(engine_mod.EvaluationEngine, "_instantiate_adapter", empty_for_alpha)
+    result, _ = _run(config_path)
+
+    reasons = {row["dataset_id"]: row["reason"] for row in result.skipped_datasets}
+    assert "alpha" in reasons, f"empty dataset vanished instead of being skipped: {reasons}"
+    assert "produced no samples" in reasons["alpha"]
+    assert [task.identity.dataset_id for task in result.tasks] == ["beta"]
+
+
+def test_an_unreachable_judge_fails_the_task_instead_of_scoring_zero(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    """The failure mode this guards against produced *plausible* numbers.
+
+    A judged dataset seeds its primary metric at 0.0 and lets the verdict
+    overwrite it. When the judge endpoint was unreachable, JudgeStage logged a
+    warning and returned normally, so every sample kept its 0.0 and the run
+    reported a complete set of zeros -- indistinguishable from a model that
+    answered everything wrong.
+    """
+    adapter_src = tmp_path / "seeded_judge_adapter.py"
+    adapter_src.write_text(
+        '''
+from fake_adapter import FakeAdapter
+
+
+class SeededJudgeAdapter(FakeAdapter):
+    """Scored only by the judge, the way an unverifiable dataset is."""
+
+    primary_metric = "hypothesis_judged"
+    objective_metrics = False
+
+    def score(self, sample, response, *, output_contract=None):
+        from abductionbench.core.types import SampleScore
+        return SampleScore(metrics={"hypothesis_judged": 0.0}, prediction=response.text)
+
+    def judge_request(self, sample, response, score):
+        return {"candidate": response.text or "x", "gold": "y"}
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[
+            {
+                "id": "judged",
+                "impl": "seeded_judge_adapter:SeededJudgeAdapter",
+                "sample_size": 3,
+                "options": {"n": 3},
+            }
+        ],
+        # A judge that is configured and reachable at config time, but whose
+        # endpoint refuses the judging call itself.
+        engine={
+            "judge": {"enabled": True, "model": "fake-model", "group_size": 3},
+        },
+    )
+
+    # Only the judge's calls fail -- patching the client itself would break the
+    # model under test too, and then nothing would be scored and the judge
+    # stage would never run.
+    from abductionbench.core import judge as judge_mod
+    from abductionbench.core.errors import EndpointError
+
+    async def refuse(*args, **kwargs):
+        raise EndpointError("judge is down")
+
+    monkeypatch.setattr(judge_mod, "with_retry", refuse)
+
+    result, _ = _run(config_path)
+    task = result.tasks[0]
+
+    assert task.failure, "an unreachable judge was reported as a scored task"
+    assert "judge" in task.failure.lower()
+    assert "no verifiable answer" in task.failure

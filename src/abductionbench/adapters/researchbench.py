@@ -42,7 +42,7 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, selection_score, text_match_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, selection_score, text_match_score
 
 REPO_ID = "ankilok/ResearchBench"
 ACCEPT_URL = f"https://huggingface.co/datasets/{REPO_ID}"
@@ -55,8 +55,23 @@ QUESTION_KEYS = ("research_question", "question", "problem", "query", "task")
 HYPOTHESIS_KEYS = ("hypothesis", "gold_hypothesis", "ground_truth_hypothesis", "answer",
                    "reference_hypothesis")
 CANDIDATE_KEYS = ("candidates", "hypotheses", "options", "candidate_hypotheses", "ranking")
+#: ``ranking.jsonl`` ships no candidate list. It ships the gold hypothesis and
+#: two sets of negatives, and the candidate set is built from them:
+#:
+#: * ``fake_negative_hypotheses`` -- 5 curated negatives per item, used by
+#:   default, giving a 6-way choice;
+#: * ``model_negative_hypotheses`` -- 10 model-written negatives, added when
+#:   ``options.include_model_negatives`` is true, giving a 16-way choice.
+#:
+#: Both are the release's own; nothing is synthesised here.
+NEGATIVE_KEYS = ("fake_negative_hypotheses",)
+MODEL_NEGATIVE_KEYS = ("model_negative_hypotheses",)
 GOLD_INDEX_KEYS = ("gold_index", "label", "answer_index", "correct_index")
-PAPER_ID_KEYS = ("paper_id", "paper", "doi", "id", "arxiv_id")
+#: The release's own ``sample_id`` first, and that ordering is load-bearing:
+#: ``doi`` is NOT unique (992 distinct across 1,367 generation rows, because a
+#: paper contributes several items), so keying on it collided and 375 items were
+#: dropped as duplicates before ever being evaluated.
+PAPER_ID_KEYS = ("sample_id", "paper_id", "paper", "doi", "id", "arxiv_id")
 
 
 def _first_present(row: dict[str, Any], keys: Sequence[str]) -> Any:
@@ -81,10 +96,25 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         "a call for further study."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one testable hypothesis"
+    answer_constraints = (
+        "state one hypothesis, not several",
+        "make it specific enough to be tested",
+        "do not describe the method or the expected result",
+        "do not use introductory phrases or commentary",
+    )
+    options_heading = "Candidate hypotheses:"
     # Generation is scored by overlap with one reference hypothesis, which is a
     # proxy rather than a decision procedure, so the reasoning prompt modes are
     # not offered; the selection task is exact and could support them, but the
     # flag is per adapter and the stricter reading is the safe one.
+    #: False at class level because the *generation* task has no checkable
+    #: answer, which is what gates the judge requirement for the dataset. The
+    #: SELECTION task does have one, so the running instance corrects this in
+    #: prepare(): it is the instance value the engine reads when deciding
+    #: whether repeats are reduced by a vote (self-consistency) or by the judge
+    #: (Best-of-N), and a vote is exactly right over a label.
     objective_metrics = False
     selection_cardinality = "single"
     hypothesis_modes = ("generation", "selection")
@@ -94,12 +124,12 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     }
     table_hypothesis_mode = "Generation / Selection (separate tasks)"
 
-    primary_metric = "hypothesis_rouge_l"
+    primary_metric = "hypothesis_judged"
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "hypothesis_rouge_l",
+        "generation": "hypothesis_judged",
         "selection": "accuracy",
     }
 
@@ -146,6 +176,11 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 index[str(key)] = row
         return index
 
+    def prepare(self) -> None:
+        # Selection is scored against an answer key; generation is judged.
+        self.objective_metrics = self.subtask == "selection"
+        super().prepare()
+
     def load_items(self) -> list[dict[str, Any]]:
         root = self._root()
         if self.subtask == "selection":
@@ -184,16 +219,57 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 f"is present. Keys in the file: {sorted(probe)[:20]}. Add the right name to "
                 "HYPOTHESIS_KEYS in adapters/researchbench.py rather than guessing a column."
             )
-        if self.subtask == "selection" and _first_present(probe, CANDIDATE_KEYS) is None:
+        if self.subtask == "selection" and not self._candidates_for(probe):
             raise SkippedDataset(
-                f"cannot find candidate hypotheses in {path.name}: none of {list(CANDIDATE_KEYS)} "
-                f"is present. Keys in the file: {sorted(probe)[:20]}."
+                f"cannot build a candidate set from {path.name}: it has neither a candidate "
+                f"list ({list(CANDIDATE_KEYS)}) nor the release's negatives "
+                f"({list(NEGATIVE_KEYS + MODEL_NEGATIVE_KEYS)}). Keys in the file: "
+                f"{sorted(probe)[:20]}."
             )
         return rows
 
     # ------------------------------------------------------------------ #
     # samples
     # ------------------------------------------------------------------ #
+
+    def _candidates_for(self, item: dict[str, Any]) -> list[str]:
+        """The option list for one ranking item, in a fixed order.
+
+        A pre-built candidate column is used when a release has one.  This one
+        does not: it ships the gold hypothesis plus its own negatives, so the
+        options are gold + negatives, sorted so that the gold's position is not
+        a function of it being the gold.
+        """
+        listed = _first_present(item, CANDIDATE_KEYS)
+        if isinstance(listed, list) and listed:
+            return [C.normalize_whitespace(str(c)) for c in listed if str(c).strip()]
+
+        gold = C.normalize_whitespace(str(_first_present(item, HYPOTHESIS_KEYS) or ""))
+        if not gold:
+            return []
+        negatives: list[str] = []
+        keys = list(NEGATIVE_KEYS)
+        if self.context.option("include_model_negatives", False):
+            keys += list(MODEL_NEGATIVE_KEYS)
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, list):
+                negatives += [
+                    C.normalize_whitespace(str(v)) for v in value if str(v).strip()
+                ]
+        pool = {gold, *negatives}
+        pool.discard("")
+        if len(pool) < 2:
+            return []
+        # A seeded shuffle, not sorted: the negatives are written against the
+        # gold and share its opening words, so alphabetical order put the gold
+        # first 40% of the time. Keyed on the item so a resumed run, a
+        # different sample size and a different mode all see the same order.
+        return C.shuffled_options(
+            sorted(pool),
+            key=str(_first_present(item, PAPER_ID_KEYS) or gold[:80]),
+            seed=self.context.seed,
+        )
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         background = C.clip_words(str(_first_present(item, BACKGROUND_KEYS) or ""), 900)
@@ -204,8 +280,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         sample_id = C.stable_id("rbench", _first_present(item, PAPER_ID_KEYS) or index, self.subtask)
 
         if self.subtask == "selection":
-            raw = _first_present(item, CANDIDATE_KEYS) or []
-            candidates = [C.normalize_whitespace(str(c)) for c in raw if str(c).strip()]
+            candidates = self._candidates_for(item)
             if len(candidates) < 2:
                 return None
             gold_index = _first_present(item, GOLD_INDEX_KEYS)
@@ -219,7 +294,7 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
             gold_index = int(gold_index)
             if not 0 <= gold_index < len(candidates):
                 return None
-            labels = [chr(ord("A") + i) for i in range(len(candidates))]
+            labels = C.choice_labels(len(candidates))
             return SampleSpec(
                 sample_id=sample_id,
                 fields={
@@ -260,28 +335,40 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> SampleScore:
-        reference = sample.reference or {}
+        """Two tasks, two kinds of answer -- and only one of them needs a judge.
+
+        SELECTION has a hard gold: the option list is the release's own
+        gold_hypothesis plus its own written negatives, so `gold_label` names
+        the right one and a label match settles it. Scoring it with a judge
+        would be both wasteful and less reliable than the answer key.
+
+        GENERATION has no checkable answer -- the reference is one acceptable
+        phrasing of the paper's hypothesis among many -- so the judge decides
+        and no overlap metric is emitted.
+        """
         if sample.task_kind == "selection":
             return selection_score(
                 response,
-                labels=list(sample.fields.get("option_labels") or []),
-                gold_label=str(reference.get("gold_label", "")),
+                labels=sample.fields["option_labels"],
+                gold_label=sample.reference["gold_label"],
                 output_contract=output_contract,
+                metric_name="accuracy",
             )
-        gold = str(reference.get("gold", ""))
-        score = text_match_score(
+        return judged_only_score(
             response,
-            gold=gold,
+            metric="hypothesis_judged",
             output_contract=output_contract,
-            primary="hypothesis_match",
+            details={},
         )
-        # The primary metric is the overlap view, named for this dataset.
-        score.metrics["hypothesis_rouge_l"] = score.metrics.pop("rouge_l", 0.0)
-        score.metrics["hypothesis_token_f1"] = score.metrics.pop("token_f1", 0.0)
-        return score
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         return aggregate_mean_metrics([score.metrics for score in scores])
+
+    def apply_judge(
+        self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
+    ) -> SampleScore:
+        """The verdict is the score -- and the score of every stratum of it."""
+        return apply_judged_metric(score, verdict, "hypothesis_judged")
 
     def judge_request(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore
@@ -319,12 +406,25 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
-                "hypothesis_rouge_l": "generation: longest-common-subsequence overlap with the "
-                "paper's own hypothesis (primary)",
-                "hypothesis_token_f1": "generation: token-level F1 against the same reference",
-                "accuracy": "selection: whether the released published hypothesis was chosen",
-                "hypothesis_judged": "LLM-judge verdict on same-hypothesis "
-                "(only when engine.judge.enabled)",
+                "best_of_n_<metric>":
+                "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
+                "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
+                "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
+                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis is "
+                "the same as the paper's. 1.0 when the judge affirms, 0.0 when it does not or "
+                "when the response could not be parsed. The dataset score is the mean over "
+                "repeats x records.",
+                "best_of_n_hypothesis_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "highest, then averaged over records. Read off the same modes.repeats samples -- "
+                "no extra calls. This is what replaces self-consistency here: a plurality needs "
+                "answers that can coincide, and free-text hypotheses do not.",
+                "hypothesis_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "across repeats -- how much the same question's answers varied.",
+                "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
+                "Near 0 is expected for free-text generation.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of responses no answer could be extracted from. "
+                "These score 0 on the primary metric and are counted here separately, so being "
+                "unparseable is distinguishable from being wrong.",
             },
             primary_metric=self.primary_metric,
             decisions=[
@@ -338,6 +438,10 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
                 "repository was gated.",
             ],
             caveats=[
+                "These overlap numbers are diagnostics, not the evaluation: "
+                "character/n-gram similarity punishes a correct paraphrase and "
+                "rewards a wrong sentence that reuses the reference's words, so "
+                "this dataset is scored by an LLM judge instead.",
                 "Access is gated: an HF account must accept the dataset's terms once at "
                 f"{ACCEPT_URL} before any file downloads. Metadata reads without it, which is "
                 "why a missing acceptance looks like a working token.",

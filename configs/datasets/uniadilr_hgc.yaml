@@ -1,0 +1,11 @@
+dataset:
+  id: uniadilr_hgc
+  impl: abductionbench.adapters.uniadilr_hgc:UniADILRHGcAdapter
+  options: {}
+  notes: >-
+    The abduction split of UniADILR-HGc only (data/UniADILR-HGc/abduction.jsonl),
+    in full. The deduction and induction files are the same construction over
+    other reasoning types and are not read. The model names the statements that
+    support the claim -- how many is part of the question, not something the
+    prompt gives away -- and they are compared as a set against the release's
+    own `proof` field. No judge.

@@ -44,6 +44,16 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
         "same subject-predicate form the rules use."
     )
     data_delivery_mode = "static"
+
+    answer_format = "one fact"
+    answer_constraints = (
+        "output exactly one fact",
+        "phrase it exactly like the facts in the theory",
+        "output only the fact",
+        "do not output a list",
+        "do not explain",
+        "do not use introductory phrases or commentary",
+    )
     objective_metrics = True
     selection_cardinality = None
     primary_metric = "exact_match"
@@ -96,8 +106,7 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
                 "observation": item["observation"],
                 "instructions": (
                     "Add the single missing fact that would make the observation derivable "
-                    "from the theory. Answer with that one fact, phrased exactly like the "
-                    "facts in the theory."
+                    "from the theory."
                 ),
             },
             reference={"gold": item["label"]},
@@ -146,7 +155,11 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
             sampling_procedure=self.sampling_note()
             + "; instances are first flattened into one item per (theory, observation) pair",
             metrics_description={
-                "exact_match": "normalized string equality with the gold missing fact (the "
+                "self_consistency_<metric>":
+                "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
+                "modes.repeats samples of the same record, read off those samples rather than bought "
+                "again. Available because this dataset's answers are checkable and so can coincide.",
+                "exact_match": "(PRIMARY, higher is better) normalized string equality with the gold missing fact (the "
                 "dataset's own metric)",
                 "match": "gold fact equals or is contained in the answer (lenient variant)",
                 "token_f1": "bag-of-tokens F1 against the gold fact",

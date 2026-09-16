@@ -1,0 +1,90 @@
+# THE FULL RUN: 300 deterministically-sampled items from every dataset in the
+# suite, on every model listed below.
+#
+# Differences from pilot.yaml, which this extends:
+#   * the model is reached on its LOCAL address rather than through the
+#     Cloudflare tunnel. The engine runs on the GPU host here, and a quick
+#     tunnel cuts every request off at ~100 s (HTTP 524) -- fine for short
+#     answers, but a full sweep includes long generations. Swap in
+#     ../models/gemma-4-e4b.yaml (gateway) or ../models/gemma-4-e4b-direct.yaml
+#     (the model's own tunnel) if the engine is not on the GPU host.
+#   * concurrency is raised to match what the servers actually allow. In-flight
+#     sequences per model are max_parallel_batches x group_size: 4 x 16 = 64 for
+#     the model under test, against its --max-num-seqs 64, and 2 x 32 = 64 for
+#     the judge against the same. This costs no GPU memory -- vLLM preallocates
+#     its KV cache at startup, so these fill slots that already exist.
+#   * truncated answers are re-asked with a larger budget. A cut-off equation or
+#     label list is unscorable rather than merely shorter, and this run is long
+#     enough that measuring verbosity instead of reasoning would be a waste.
+#
+# Adding a second model is one line under `models:` -- each keeps its own batch
+# group size, sampling and limits, and every model sees the identical samples
+# per dataset (the prompt set is built once, before any model is called).
+extends:
+  - pilot.yaml
+
+name: full
+description: >-
+  The whole abductive-reasoning suite at dataset_defaults.sample_size records
+  per dataset (50), for the per-dataset difficulty table. The number lives in
+  pilot.yaml so it is set in one place rather than restated here.
+
+engine:
+  concurrency:
+    # Raised 2026-09-14. The old note here said these were "bounded by the
+    # server's MAX_NUM_SEQS=8"; that had long since become 64, so the ceiling
+    # was stale and the client was driving the GPU at a quarter of capacity.
+    #
+    # The global ceiling has to cover what the per-model limits ask for --
+    # qwen 4 + judge 2 = 6 -- or it silently becomes the real limit.
+    max_parallel_tasks: 3
+    max_parallel_batches_global: 8
+  sync:
+    # Mirror results and logs to Google Drive every minute while the run
+    # proceeds -- this box's /workspace is not a persistent volume, so a
+    # recycle would otherwise lose hours of work. Set up the remote once with
+    #   bash tools/setup_drive_remote.sh '<token-json>'
+    # (see the script's header, or docs "Backing up a run" in the README).
+    enabled: true
+    remote_path: gdrive:AbductionBench
+    per_run_subdir: true
+    interval_s: 60
+    # Uncomment if the uplink is slow: every record, metric, checkpoint and log
+    # is still backed up, only the raw per-batch payloads are skipped.
+    # exclude: ["raw/**"]
+
+  checkpoint:
+    # Every sample is appended as it lands and resume is fingerprint-exact, so
+    # the run can be interrupted and continued with --resume.
+    enabled: true
+    resume_policy: strict
+
+models:
+  # Whatever this box is serving right now. The gemma configs are kept for when
+  # that model comes back; a run lists the models it can actually reach.
+  - file: ../models/qwen3-5-2b-local.yaml
+
+  # The judge. Listed here because the run needs a client to reach it, and
+  # marked `judge_only: true` in its own file so it is not evaluated: it is
+  # grading, not being graded. Grading a model's answers with that same model
+  # would score its own reasoning, which is why the judge is a gpt-oss and the
+  # model under test is Qwen3.5-2B.
+  #
+  # gpt-oss-20b rather than the 120b: the 120b's 60.8 GiB of weights left the
+  # card with ~269 MiB free, and cuBLAS could not allocate a GEMM workspace --
+  # the engine died mid-service with CUBLAS_STATUS_INTERNAL_ERROR. The 20b is
+  # 13 GiB and leaves ~50 GiB free.
+  - file: ../models/gpt-oss-20b-local.yaml
+
+  # Add every model you want compared in the same run. Each keeps its own batch
+  # group size, sampling and limits, and all of them see the identical 300
+  # samples per dataset (prompt sets are built once, before any model is
+  # called), so the columns of the result grid are directly comparable.
+  #
+  # - file: ../models/gpt-oss-120b-local.yaml      # when that service is back up
+  # - file: ../models/qwen3.5-2b-local.yaml        # copy a gemma config and edit
+  #                                               # id / model_name / port
+  #
+  # A model only needs its own file because ports, batch routes, context windows
+  # and token floors differ per model -- see configs/models/gemma-4-e4b.yaml for
+  # what each field means.

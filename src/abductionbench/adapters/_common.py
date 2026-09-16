@@ -220,8 +220,44 @@ def extract_archive(archive: Path, dest: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
+def http_json(
+    method: str,
+    url: str,
+    *,
+    json_body: Any = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 120.0,
+) -> Any:
+    """One JSON request against a locally served benchmark environment.
+
+    Some benchmarks ship their environment as a service rather than as an item
+    file (a simulator behind an HTTP API, an MCP server behind a bridge).
+    Talking to it is part of running the benchmark, so it lives here next to
+    the download helpers rather than in each adapter.
+
+    Raises on a non-2xx, because a refused action is something the adapter has
+    to see and tell the model about.
+    """
+    import requests
+
+    response = requests.request(
+        method, url, json=json_body, headers=headers or None, timeout=timeout
+    )
+    response.raise_for_status()
+    if not response.content:
+        return {}
+    return response.json()
+
+
 def read_text(path: Path) -> str:
     return Path(path).read_text(encoding="utf-8", errors="replace")
+
+
+def read_yaml(path: Path) -> Any:
+    """Parse a YAML file -- some releases ship their case lists and manifests as YAML."""
+    import yaml
+
+    return yaml.safe_load(read_text(path))
 
 
 def read_json(path: Path) -> Any:
@@ -354,8 +390,46 @@ def as_list(value: Any) -> list[Any]:
 
 
 def letter_labels(count: int, start: str = "A") -> list[str]:
+    """``["A", "B", ...]``.
+
+    Kept for datasets whose *source data* keys its options by letter, where the
+    gold answer refers to that key: changing the label shown there would desync
+    it from the gold.  Everything else uses :func:`choice_labels`.
+    """
     first = ord(start)
     return [chr(first + index) for index in range(count)]
+
+
+def shuffled_options(options: Sequence[str], *, key: str, seed: int = 0) -> list[str]:
+    """Deterministic, content-independent option order.
+
+    Alphabetical order looks neutral and is not: a gold hypothesis usually
+    shares its opening words with the negatives written against it, so sorting
+    put the gold first far more often than chance (40% of ResearchBench's
+    ranking items landed on option 1 against a uniform 16.7%). A model
+    answering "1" every time would have scored 40%.
+
+    Seeding on the item's own id rather than a global counter means the order
+    depends on nothing but the item: the same item shuffles the same way on a
+    resumed run, in a different sample size, or in a different mode.
+    """
+    import hashlib
+    import random
+
+    digest = hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()
+    ordered = list(options)
+    random.Random(int(digest[:16], 16)).shuffle(ordered)
+    return ordered
+
+
+def choice_labels(count: int) -> list[str]:
+    """``["1", "2", ...]`` -- the house label for a list of candidate hypotheses.
+
+    Numbers, not letters, and one helper rather than a constant per adapter,
+    so that a dataset's *displayed* labels and its *gold* label cannot drift
+    apart: both come from here.
+    """
+    return [str(index + 1) for index in range(count)]
 
 
 def stable_id(*parts: Any) -> str:

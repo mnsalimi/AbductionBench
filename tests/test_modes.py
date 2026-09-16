@@ -124,13 +124,29 @@ def test_slug_is_filesystem_safe_and_distinct_per_combination():
 # --------------------------------------------------------------------------- #
 
 
-def test_reasoning_modes_are_only_for_objectively_scored_datasets():
+def test_cot_is_offered_to_every_dataset_but_the_vote_is_not():
+    """Eliciting and grading are independent.
+
+    Asking a judged generation task to reason before answering is as meaningful
+    as asking a labelled one to, so CoT is offered everywhere.  A *plurality*
+    is different: it needs answers that can coincide, which free-text
+    hypotheses do not, so self-consistency stays restricted -- those datasets
+    report Best-of-N over the same repeats instead.
+    """
+
     class Subjective(_Selection):
         objective_metrics = False
 
     assert Subjective.supports_modes(TaskModes(prompt_mode="io")) is None
-    problem = Subjective.supports_modes(TaskModes(prompt_mode="cot"))
-    assert problem and "objectively verifiable" in problem
+    assert Subjective.supports_modes(TaskModes(prompt_mode="cot")) is None
+    problem = Subjective.supports_modes(TaskModes(prompt_mode="self-consistency"))
+    assert problem and "Best-of-N" in problem
+
+    class Objective(_Selection):
+        objective_metrics = True
+
+    for mode in ("io", "cot", "self-consistency"):
+        assert Objective.supports_modes(TaskModes(prompt_mode=mode)) is None
 
 
 def test_a_multi_answer_benchmark_is_never_offered_single_choice():
@@ -143,12 +159,20 @@ def test_a_multi_answer_benchmark_is_never_offered_single_choice():
     assert MultiOnly.supports_modes(TaskModes(selection_mode="MCS")) is None
 
 
-def test_a_single_answer_benchmark_is_never_offered_multi_choice():
+def test_a_single_answer_benchmark_is_offered_all_three_modes():
+    """The rule is deliberately asymmetric, and this is the half that widens.
+
+    Widening a single-answer pool to "select as many as apply" leaves the item
+    answerable -- the answer is still that one candidate -- so SCS, MCS and BOV
+    all measure the same thing and their scores are comparable. Narrowing a
+    multi-answer pool to one choice does not, which is the sibling test above.
+    """
     class SingleOnly(_Selection):
         selection_cardinality = "single"
 
-    assert SingleOnly.selection_modes_offered() == ["SCS", "BOV"]
-    assert SingleOnly.supports_modes(TaskModes(selection_mode="MCS"))
+    assert SingleOnly.selection_modes_offered() == ["SCS", "MCS", "BOV"]
+    for mode in ("SCS", "MCS", "BOV"):
+        assert SingleOnly.supports_modes(TaskModes(selection_mode=mode)) is None
 
 
 def test_a_flexible_benchmark_offers_all_three():
@@ -554,3 +578,342 @@ def test_the_record_behind_a_request_survives_every_expansion():
     adapter = _adapter(TaskModes(repeats=2, selection_mode="BOV"))
     for sample in adapter.expand_for_modes(adapter.build_samples()):
         assert evaluation_item_id(sample) == "s1"
+
+
+# --------------------------------------------------------------------------- #
+# Best-of-N: what a judged dataset gets instead of a vote
+# --------------------------------------------------------------------------- #
+
+
+def _member(prediction: str, **metrics):
+    from abductionbench.core.types import SampleScore, SampleSpec
+
+    return (
+        SampleSpec(sample_id=f"s-{prediction}", fields={}, reference={}),
+        SampleScore(metrics=metrics, prediction=prediction, parse_ok=True),
+    )
+
+
+def test_best_of_n_reports_the_repeat_the_judge_scored_highest():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [
+        _member("weak", hypothesis_judged=0.0, token_f1=0.9),
+        _member("best", hypothesis_judged=1.0, token_f1=0.2),
+        _member("mid", hypothesis_judged=0.0, token_f1=0.5),
+    ]
+    out = EvaluationEngine._best_of_n_metrics([record], "hypothesis_judged", True)
+
+    assert out["best_of_n_hypothesis_judged"] == 1.0
+    # Every metric of the winning repeat travels with it -- including the ones
+    # that were *worse* there, which is the point of reporting best-of-n rather
+    # than the best value of each metric separately.
+    assert out["best_of_n_token_f1"] == 0.2
+    assert out["best_of_n_n_records"] == 1.0
+    assert out["best_of_n_n"] == 3.0
+
+
+def test_best_of_n_minimises_a_metric_that_is_an_error():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [_member("a", err=0.8), _member("b", err=0.1), _member("c", err=0.5)]
+    assert EvaluationEngine._best_of_n_metrics([record], "err", False)["best_of_n_err"] == 0.1
+    assert EvaluationEngine._best_of_n_metrics([record], "err", True)["best_of_n_err"] == 0.8
+
+
+def test_best_of_n_is_silent_when_the_metric_is_missing():
+    from abductionbench.core.engine import EvaluationEngine
+
+    record = [_member("a", other=1.0), _member("b", other=0.0)]
+    assert EvaluationEngine._best_of_n_metrics([record], "hypothesis_judged", True) == {}
+
+
+# --------------------------------------------------------------------------- #
+# requirement 3: each dataset runs only the mode its benchmark defines
+# --------------------------------------------------------------------------- #
+
+
+def test_the_five_corrected_datasets_offer_one_mode_each():
+    """These were each running a mode the benchmark does not pose.
+
+    Every extra mode is a task invented here rather than evaluated: an
+    open-ended DiagnosisArena, a candidate-free DDXPlus, a multiple-choice
+    MedUPS. They are declared, not merely unconfigured, so `abench run` cannot
+    schedule them by widening `modes.hypothesis_modes`.
+    """
+    from abductionbench.core.registry import resolve_adapter
+
+    expected = {
+        "abductionbench.adapters.ddxplus:DDXPlusAdapter": ("selection", "interactive"),
+        "abductionbench.adapters.diagnosisarena:DiagnosisArenaAdapter": ("selection", "static"),
+        "abductionbench.adapters.med_inquire:MedInquireAdapter": ("generation", "interactive"),
+        "abductionbench.adapters.medups:MedUPSAdapter": ("generation", "sequential"),
+        # VivaBench is a multi-turn viva in its release and is run as one:
+        # ASSISTANT_BASE_PROMPT, the action vocabulary, the reviewed-patient
+        # gate and the limits all come from the published code. It was for a
+        # while declared static selection over the case's own differentials,
+        # which is a task the release does not pose.
+        "abductionbench.adapters.vivabench:VivaBenchAdapter": ("generation", "interactive"),
+    }
+    for impl, (mode, delivery) in expected.items():
+        adapter = resolve_adapter(impl)
+        assert adapter.hypothesis_modes == (mode,), f"{impl} offers {adapter.hypothesis_modes}"
+        assert adapter.data_delivery_mode == delivery, impl
+        # and the one mode it offers is the one its options select by default
+        assert list(adapter.hypothesis_mode_options) == [mode], impl
+
+
+def test_medups_reads_the_mid_stream_release():
+    from abductionbench.adapters import medups
+
+    assert medups.REPO_ID == "oriel9p/MedUPS_mid_stream"
+    # No multiple-choice adaptation survives: no distractor keys, no cardinality.
+    assert not hasattr(medups, "DISTRACTOR_KEYS")
+    assert medups.MedUPSAdapter.selection_cardinality is None
+
+
+def test_vivabench_offers_no_option_list_at_all():
+    """The gold-first ordering bug is gone because the options are.
+
+    This used to guard the ordering of a candidate list built from each case's
+    own `differentials`. VivaBench does not pose that task: its examinee is
+    never shown candidates. The adapter now runs the release's interactive
+    protocol and commits to a free-text diagnosis, so there is no option list
+    left to order, and no position for the gold to occupy.
+    """
+    import inspect
+
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+
+    assert VivaBenchAdapter.selection_cardinality is None
+    assert VivaBenchAdapter.hypothesis_modes == ("generation",)
+    source = inspect.getsource(VivaBenchAdapter.make_sample)
+    assert "option_labels" not in source
+    assert '"options"' not in source          # no options field is ever built
+    assert '"gold_label"' not in source       # and so nothing indexes into one
+
+
+def test_option_order_does_not_depend_on_which_option_is_gold():
+    """Alphabetical order looked neutral and was not.
+
+    A gold hypothesis shares its opening words with the negatives written
+    against it, so sorting put the gold first far more often than chance --
+    40% of ResearchBench's ranking items landed on option 1 against a uniform
+    16.7%, and answering "1" every time would have scored 40%.
+    """
+    import collections
+
+    from abductionbench.adapters._common import shuffled_options
+
+    # Negatives that all begin like the gold: exactly the case sorting breaks.
+    positions = collections.Counter()
+    for item in range(600):
+        gold = "Peanut leaf extract inhibits corrosion of mild steel"
+        options = sorted([
+            gold,
+            "Peanut leaf extract accelerates corrosion of mild steel",
+            "Peanut leaf extract has no effect on mild steel",
+            "Peanut leaf extract dissolves mild steel",
+        ])
+        assert options.index(gold) == 3  # sorting is deterministic, and biased
+        ordered = shuffled_options(options, key=f"item-{item}", seed=0)
+        positions[ordered.index(gold)] += 1
+
+    assert set(positions) == {0, 1, 2, 3}, "the gold never reached some positions"
+    # No position should carry anything close to the 100% that sorting gave it.
+    assert max(positions.values()) / 600 < 0.35, positions
+
+
+def test_the_same_item_always_shuffles_the_same_way():
+    """Resume, a different sample size and a different mode must agree."""
+    from abductionbench.adapters._common import shuffled_options
+
+    options = [f"hypothesis {index}" for index in range(6)]
+    first = shuffled_options(options, key="paper-42", seed=7)
+    assert first == shuffled_options(options, key="paper-42", seed=7)
+    # A different item, or a different run seed, orders differently.
+    assert first != shuffled_options(options, key="paper-43", seed=7)
+    assert first != shuffled_options(options, key="paper-42", seed=8)
+    assert sorted(first) == sorted(options)
+
+
+def test_option_order_does_not_depend_on_which_option_is_gold():
+    """Alphabetical order looked neutral and was not.
+
+    A gold hypothesis shares its opening words with the negatives written
+    against it, so sorting put the gold first far more often than chance --
+    40% of ResearchBench's ranking items landed on option 1 against a uniform
+    16.7%, and answering "1" every time would have scored 40%.
+    """
+    import collections
+
+    from abductionbench.adapters._common import shuffled_options
+
+    # Negatives that all begin like the gold: exactly the case sorting breaks.
+    positions = collections.Counter()
+    for item in range(600):
+        gold = "Peanut leaf extract inhibits corrosion of mild steel"
+        options = sorted([
+            gold,
+            "Peanut leaf extract accelerates corrosion of mild steel",
+            "Peanut leaf extract has no effect on mild steel",
+            "Peanut leaf extract dissolves mild steel",
+        ])
+        assert options.index(gold) == 3  # sorting is deterministic, and biased
+        ordered = shuffled_options(options, key=f"item-{item}", seed=0)
+        positions[ordered.index(gold)] += 1
+
+    assert set(positions) == {0, 1, 2, 3}, "the gold never reached some positions"
+    # No position should carry anything close to the 100% that sorting gave it.
+    assert max(positions.values()) / 600 < 0.35, positions
+
+
+def test_the_same_item_always_shuffles_the_same_way():
+    """Resume, a different sample size and a different mode must agree."""
+    from abductionbench.adapters._common import shuffled_options
+
+    options = [f"hypothesis {index}" for index in range(6)]
+    first = shuffled_options(options, key="paper-42", seed=7)
+    assert first == shuffled_options(options, key="paper-42", seed=7)
+    # A different item, or a different run seed, orders differently.
+    assert first != shuffled_options(options, key="paper-43", seed=7)
+    assert first != shuffled_options(options, key="paper-42", seed=8)
+    assert sorted(first) == sorted(options)
+
+# --------------------------------------------------------------------------- #
+# the selection-mode rule, and the switch that gates BOV
+# --------------------------------------------------------------------------- #
+
+
+def _plan(tmp_path, *, cardinality, selection_modes=(), bov=False, prompt_modes=("io",)):
+    """The selection modes the engine would actually plan for one dataset."""
+    from abductionbench.core.config import DatasetConfig, ModesConfig
+    from abductionbench.core.engine import EvaluationEngine
+
+    class _Probe(_Selection):
+        selection_cardinality = cardinality
+
+    engine = EvaluationEngine.__new__(EvaluationEngine)
+    engine._skipped_modes = []
+    engine._introduced_modes = []
+    engine.config = type("_Cfg", (), {})()
+    engine.config.modes = ModesConfig(
+        prompt_modes=list(prompt_modes),
+        selection_modes=list(selection_modes),
+        bov=bov,
+        repeats=1,
+    )
+    dataset = DatasetConfig(id="probe", impl="tests.test_modes:_Selection")
+
+    import abductionbench.core.engine as engine_module
+
+    original = engine_module.resolve_adapter
+    engine_module.resolve_adapter = lambda _impl: _Probe
+    try:
+        planned = EvaluationEngine._modes_for(engine, dataset)
+    finally:
+        engine_module.resolve_adapter = original
+    return [m.selection_mode for m in planned], engine._skipped_modes
+
+
+def test_every_single_answer_dataset_is_planned_for_scs_and_mcs(tmp_path):
+    """Being SCS is not a reason to run only SCS: MCS asks the same pool harder."""
+    planned, _ = _plan(tmp_path, cardinality="single")
+    assert planned == ["SCS", "MCS"]
+
+
+def test_a_multi_answer_dataset_is_never_planned_for_scs(tmp_path):
+    planned, _ = _plan(tmp_path, cardinality="multi")
+    assert "SCS" not in planned
+    assert planned == ["MCS"]
+
+    # Not even when the run asks for it by name: it is recorded as skipped.
+    planned, skipped = _plan(tmp_path, cardinality="multi", selection_modes=["SCS", "MCS"])
+    assert planned == ["MCS"]
+    assert any("SCS is not offered" in entry["reason"] for entry in skipped)
+
+
+def test_bov_is_off_by_default_and_the_flag_turns_it_on(tmp_path):
+    off, skipped = _plan(tmp_path, cardinality="single")
+    assert "BOV" not in off
+    # Off, but not silently: the report can say the mode existed and was not run.
+    assert any("modes.bov" in entry["reason"] for entry in skipped)
+
+    on, _ = _plan(tmp_path, cardinality="single", bov=True)
+    assert on == ["SCS", "MCS", "BOV"]
+
+
+def test_asking_for_bov_without_the_flag_is_a_config_error():
+    """Planning nothing while the config names BOV would be the silent failure."""
+    from abductionbench.core.config import ModesConfig
+
+    with pytest.raises(ConfigError, match="modes.bov"):
+        ModesConfig(selection_modes=["BOV"])
+    assert ModesConfig(selection_modes=["BOV"], bov=True).selection_modes == ["BOV"]
+
+
+# --------------------------------------------------------------------------- #
+# scoring a selection answered as a set (MCS, and BOV's rebuilt set)
+# --------------------------------------------------------------------------- #
+
+
+def _score_selection(text, *, style, gold="B"):
+    from abductionbench.adapters._base import selection_score
+
+    response = ModelResponse(
+        sample_id="s1", model_id="m", status=ResponseStatus.OK, content=text
+    )
+    return selection_score(
+        response,
+        labels=["A", "B", "C"],
+        gold_label=gold,
+        output_contract={"answer_prefix": "Answer:", "style": style},
+    )
+
+
+def test_mcs_does_not_credit_a_model_for_hedging():
+    """The bug this guards: reading only the first label off a multi-select answer.
+
+    ``extract_choice_label`` stops at the first match, so "Answer: B, C" used to
+    score exactly like "Answer: B" -- a model could select every option and be
+    marked correct on every item.
+    """
+    exact = _score_selection("Answer: B", style="multi_label")
+    assert exact.metrics["accuracy"] == 1.0
+    assert exact.metrics["n_selected"] == 1.0
+
+    hedged = _score_selection("Answer: B, C", style="multi_label")
+    assert hedged.metrics["accuracy"] == 0.0, "selecting extra options is not correct"
+    assert hedged.metrics["set_f1"] == pytest.approx(2 / 3)
+    assert hedged.metrics["n_selected"] == 2.0
+
+    everything = _score_selection("Answer: A, B, C", style="multi_label")
+    assert everything.metrics["accuracy"] == 0.0
+    assert everything.metrics["set_recall"] == 1.0, "recall alone is not the score"
+    assert everything.metrics["set_precision"] == pytest.approx(1 / 3)
+
+
+def test_scs_still_reads_a_single_label():
+    assert _score_selection("Answer: B", style="single_label").metrics["accuracy"] == 1.0
+    assert _score_selection("Answer: A", style="single_label").metrics["accuracy"] == 0.0
+
+
+def test_a_multi_select_set_is_read_from_the_answer_line_only():
+    """Labels mentioned while reasoning are not selections."""
+    text = (
+        "Let me think. Option A is tempting and option C nearly works.\n"
+        "Answer: B"
+    )
+    score = _score_selection(text, style="multi_label")
+    assert score.prediction == "B"
+    assert score.metrics["accuracy"] == 1.0
+
+
+def test_an_empty_selection_parses_but_an_unreadable_one_does_not():
+    empty = _score_selection("Answer: none", style="multi_label")
+    assert empty.parse_ok is True
+    assert empty.metrics["accuracy"] == 0.0
+    assert empty.prediction == "none"
+
+    unreadable = _score_selection("I could not decide.", style="multi_label")
+    assert unreadable.parse_ok is False

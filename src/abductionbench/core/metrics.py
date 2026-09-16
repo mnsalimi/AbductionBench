@@ -38,6 +38,7 @@ __all__ = [
     "kendall_tau",
     "numeric_match",
     "extract_choice_label",
+    "extract_choice_labels",
     "extract_answer_span",
     "extract_first_number",
     "mean",
@@ -405,6 +406,60 @@ def extract_choice_label(
     if standalone:
         return _canonical_label(standalone[-1], label_list)
     return None
+
+
+#: What a model writes when a multi-select question has no applicable option.
+#: Also what :meth:`DatasetAdapter._reduce_bov` writes when every per-hypothesis
+#: question was answered no, so an all-no BOV item is an empty *answer* rather
+#: than an unparseable one.
+EMPTY_SELECTION = {"none", "nothing", "no option", "no options", "n/a", "-"}
+
+
+def extract_choice_labels(
+    text: str | None,
+    labels: Sequence[str],
+    contract: dict[str, Any] | None = None,
+) -> list[str] | None:
+    """Every label a multi-select response chose, in the order it named them.
+
+    The single-choice sibling, :func:`extract_choice_label`, falls back to
+    scanning the whole response for a label token.  That fallback is wrong here:
+    a chain-of-thought answer mentions half the options while thinking, so
+    harvesting labels from the reasoning would credit the model for choices it
+    talked itself out of.  A *set* is therefore read only from the answer line
+    (the contract's span, or the last non-empty line when there is none).
+
+    Returns ``[]`` for an explicit empty selection ("none"), and ``None`` when
+    nothing could be read at all -- which the caller records as a parse failure
+    rather than as "the model selected nothing".
+    """
+    if not text:
+        return None
+    label_list = [str(label) for label in labels]
+    if not label_list:
+        return None
+    escaped = "|".join(re.escape(label) for label in sorted(label_list, key=len, reverse=True))
+
+    span = extract_answer_span(text, contract)
+    if not span:
+        lines = [line for line in text.splitlines() if line.strip()]
+        span = lines[-1] if lines else ""
+    span = span.strip()
+    if not span:
+        return None
+
+    found = re.findall(
+        rf"(?<![A-Za-z0-9])\(?({escaped})\)?(?![A-Za-z0-9])", span, flags=re.IGNORECASE
+    )
+    out: list[str] = []
+    for raw in found:
+        canonical = _canonical_label(raw, label_list)
+        if canonical and canonical not in out:
+            out.append(canonical)
+    if out:
+        return out
+    stripped = re.sub(r"[^\w\s/-]", " ", span).strip().lower()
+    return [] if stripped in EMPTY_SELECTION else None
 
 
 def _canonical_label(found: str, labels: Sequence[str]) -> str | None:
