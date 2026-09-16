@@ -18,8 +18,8 @@ import pytest
 SIDECAR = Path(__file__).resolve().parents[1] / "tools" / "sync_run.sh"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("rclone") is None or shutil.which("rsync") is None,
-    reason="rclone/rsync not installed",
+    any(shutil.which(binary) is None for binary in ("rclone", "rsync", "flock")),
+    reason="rclone/rsync/flock not installed",
 )
 
 

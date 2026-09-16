@@ -46,7 +46,9 @@ engine:
     #   bash tools/setup_drive_remote.sh '<token-json>'
     # (see the script's header, or docs "Backing up a run" in the README).
     enabled: true
-    remote_path: gdrive:AbductionBench
+    # setup_drive_remote.sh pins gdrive: to the shared folder already.
+    # Adding AbductionBench here would create a second nested folder.
+    remote_path: "gdrive:"
     per_run_subdir: true
     interval_s: 60
     # Uncomment if the uplink is slow: every record, metric, checkpoint and log

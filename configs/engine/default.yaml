@@ -148,7 +148,7 @@ engine:
     bandwidth_limit: ""       # e.g. "8M" to leave headroom for other traffic
     # Patterns to leave out. raw/** is the bulky part of a run (every batch's
     # request/response); excluding it still backs up every record, metric and log.
-    exclude: []
+    exclude: ["raw/"]         # [] includes bulky per-batch debug payloads too
     extra_args: []
 
   reporting:

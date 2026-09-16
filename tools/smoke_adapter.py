@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from abductionbench.adapters._prompting import PromptParts, build_messages
 from abductionbench.core.adapter import DatasetAdapter
 from abductionbench.core.metrics import (
     aggregate_mean_metrics,
@@ -122,8 +123,26 @@ LABELS = ["A", "B", "C", "D"]
 class SmokeAdapter(DatasetAdapter):
     """Six generation items and four selection items, no I/O required."""
 
-    adapter_version = "smoke-1.0"
+    adapter_version = "smoke-2.0"
     primary_metric = "abduction_score"
+    objective_metrics = True
+    selection_cardinality = "single"
+    hypothesis_modes = ("generation", "selection")
+    table_hypothesis_mode = "Generation / Selection (separate tasks)"
+    system_prompt = "Infer the most plausible explanation of the supplied everyday evidence."
+
+    def build_messages(self, sample):
+        return build_messages(
+            PromptParts(
+                system=self.system_prompt,
+                observation=sample.fields["observation"],
+                question="What best explains this observation?",
+                answer_format="a concise explanation",
+                options=sample.fields.get("options", []),
+                option_labels=sample.fields.get("option_labels", []),
+            ),
+            self.context.modes,
+        )
 
     def build_samples(self) -> list[SampleSpec]:
         samples: list[SampleSpec] = []
@@ -155,7 +174,8 @@ class SmokeAdapter(DatasetAdapter):
                     metadata={"kind": "selection"},
                 )
             )
-        return samples[: self.context.sample_size]
+        kind = self.context.modes.hypothesis_mode or "generation"
+        return [sample for sample in samples if sample.task_kind == kind][: self.context.sample_size]
 
     def score(
         self,
@@ -204,7 +224,7 @@ class SmokeAdapter(DatasetAdapter):
             name="Engine smoke test",
             domain="Diagnostic (not a benchmark dataset)",
             source_url="hand-written in tools/smoke_adapter.py",
-            processing_mode="Generation & Selection",
+            processing_mode="Generation / Selection (separate tasks)",
             split_used="n/a (10 hand-written items)",
             abductive_subset="all items are single-step everyday abduction",
             sampling_procedure="fixed order, no sampling",

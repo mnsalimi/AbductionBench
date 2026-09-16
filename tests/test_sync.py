@@ -8,6 +8,7 @@ files -- without needing any credentials.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -149,6 +150,37 @@ def test_disabled_sync_is_a_no_op(tmp_path: Path):
     syncer.stop()
     assert not remote.exists()
     assert syncer.stats.ticks == 0
+
+
+def test_a_failed_remote_check_cannot_be_reported_as_verified(tmp_path, monkeypatch):
+    events = []
+    syncer = ArtifactSync(
+        _config(tmp_path / "remote"), _run_dir(tmp_path), "run-1",
+        on_event=lambda event, **fields: events.append(event),
+    )
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="authentication failed"
+        ),
+    )
+    syncer.verify_and_repair()
+    assert "sync_verified" not in events
+    assert "sync_verification_failed" in events
+    assert syncer.stats.failures == 1
+    assert "authentication failed" in syncer.stats.last_error
+
+
+def test_remote_check_exception_is_not_a_success(tmp_path, monkeypatch):
+    syncer = ArtifactSync(_config(tmp_path / "remote"), _run_dir(tmp_path), "run-1")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    assert syncer._missing_files() is None  # noqa: SLF001
+    assert syncer.stats.failures == 1
+    assert "network unavailable" in syncer.stats.last_error
 
 
 def test_overlapping_ticks_do_not_pile_up(tmp_path: Path):

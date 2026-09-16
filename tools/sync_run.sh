@@ -32,7 +32,7 @@
 # complete Excel report next to empty task directories.
 #
 # Environment:
-#   SYNC_REMOTE    rclone destination        (default: gdrive:AbductionBench)
+#   SYNC_REMOTE    rclone destination        (default: gdrive:, pinned by setup)
 #   SYNC_INTERVAL  seconds between passes    (default: 60)
 #   SYNC_EXCLUDE   comma-separated globs     (default: "raw/"; set to "" for all)
 #   SYNC_TPSLIMIT  API calls per second      (default: 8; Drive's shared client is strict)
@@ -42,7 +42,7 @@
 set -uo pipefail   # deliberately not -e: a failed pass must not end the loop
 
 RUN_DIR="${1:-}"
-REMOTE="${SYNC_REMOTE:-gdrive:AbductionBench}"
+REMOTE="${SYNC_REMOTE:-gdrive:}"
 INTERVAL="${SYNC_INTERVAL:-60}"
 BWLIMIT="${SYNC_BWLIMIT:-}"
 TPSLIMIT="${SYNC_TPSLIMIT:-8}"
@@ -55,6 +55,7 @@ if [[ -z "$RUN_DIR" || ! -d "$RUN_DIR" ]]; then
 fi
 command -v rclone >/dev/null || { echo "rclone is not installed" >&2; exit 1; }
 command -v rsync  >/dev/null || { echo "rsync is not installed" >&2; exit 1; }
+command -v flock  >/dev/null || { echo "flock is required for this Linux sidecar; use the engine's built-in sync on macOS." >&2; exit 1; }
 
 RUN_ID="$(basename "$(cd "$RUN_DIR" && pwd)")"
 DEST="${REMOTE%/}/$RUN_ID"

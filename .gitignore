@@ -15,6 +15,11 @@ __pycache__/
 !/runs/.gitkeep
 !/data/.gitkeep
 .env
+.env.*
+!.env.example
+!.env.coworker.example
+rclone.conf*
+*drive-token*.json
 full_run.log
 
 # Render output from game-world environments (DiscoveryWorld drew one PNG per

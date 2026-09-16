@@ -356,6 +356,10 @@ class ArtifactSync:
         if not self.config.enabled or self._degraded:
             return self.stats
         self._tick(reason="flush")
+        # The CLI flushes after writing the final workbook/report. Verify that
+        # final snapshot too, not just the earlier engine-stop snapshot.
+        if self.config.verify_after_final:
+            self.verify_and_repair()
         return self.stats
 
     # ------------------------------------------------------------------ #
@@ -442,6 +446,11 @@ class ArtifactSync:
         missing: list[str] = []
         for attempt in range(1, self.config.verify_attempts + 1):
             missing = self._missing_files()
+            if missing is None:
+                # A failed listing/check is not evidence that nothing is
+                # missing. Keep its failure visible instead of announcing a
+                # complete backup on an expired token or unreachable remote.
+                return []
             if not missing:
                 if attempt > 1:
                     logger.info("artifact sync: remote complete after %d repair pass(es)", attempt - 1)
@@ -457,6 +466,8 @@ class ArtifactSync:
             self.stats.repaired += len(missing)
             self._repair(missing)
         remaining = self._missing_files()
+        if remaining is None:
+            return []
         if remaining:
             self.stats.last_error = f"{len(remaining)} file(s) never uploaded"
             logger.error(
@@ -472,7 +483,7 @@ class ArtifactSync:
                        missing=len(remaining), examples=remaining[:5])
         return remaining
 
-    def _missing_files(self) -> list[str]:
+    def _missing_files(self) -> list[str] | None:
         """Paths present locally but not on the remote, via ``rclone check``."""
         source = self.stage_dir if self.stage_dir.exists() else self.run_dir
         command = [
@@ -499,10 +510,26 @@ class ArtifactSync:
             )
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("artifact sync: cannot verify the remote: %s", exc)
-            return []
+            self._verification_failed(str(exc))
+            return None
         # rclone writes the missing paths to the file named by --missing-on-dst,
         # which is stdout here; its own progress goes to stderr.
-        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        missing = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if completed.returncode != 0 and not missing:
+            # rclone also returns nonzero for authentication/listing errors or
+            # hash mismatches. None of those may be labelled 'verified'. A
+            # nonempty missing-file list can be repaired and then checked again.
+            self._verification_failed(
+                (completed.stderr or "rclone check failed without a missing-file list").strip()[-500:]
+            )
+            return None
+        return missing
+
+    def _verification_failed(self, error: str) -> None:
+        self.stats.failures += 1
+        self.stats.last_error = f"backup verification failed: {error}"
+        logger.error("artifact sync: %s", self.stats.last_error)
+        self._emit("sync_verification_failed", destination=self.destination, error=error)
 
     def _repair(self, missing: list[str]) -> None:
         """Re-upload exactly the named files."""

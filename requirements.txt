@@ -7,6 +7,7 @@ Jinja2>=3.1
 rich>=13.7
 typer>=0.12
 pandas>=2.2
+tabulate>=0.9
 XlsxWriter>=3.2
 openpyxl>=3.1
 orjson>=3.10

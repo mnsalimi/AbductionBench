@@ -1,0 +1,12 @@
+# Current full suite plus the COT-only reasoning judge. No secrets in this file.
+extends: [full.yaml]
+name: coworker
+engine:
+  reasoning_judge:
+    enabled: true
+    model: ${env:ABENCH_JUDGE_MODEL|gpt-oss-20b-local}
+    # The judge thinks before emitting JSON; 512 can truncate its final verdict.
+    max_tokens: 2048
+    temperature: 0.0
+    group_size: 8
+    cache: true

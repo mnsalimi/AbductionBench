@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -129,6 +130,9 @@ def _judge_responder(counts: Counter):
         if "count uncertainty marking" in text:
             counts["uncertainty"] += 1
             return '{"uncertainty_steps": 2}'
+        if "You measure differential elimination" in text:
+            counts["differential"] += 1
+            return '{"differential_elimination": 2}'
 
         match = re.search(r"observation number (\d+)", text)
         index = match.group(1) if match else "0"
@@ -256,3 +260,48 @@ def test_io_outputs_never_call_the_reasoning_judge(
         not any(name.startswith("reasoning_") for name in record["metrics"])
         for record in records
     )
+
+
+def test_coworker_smoke_runs_and_backs_up_cot_metrics(fake_server, monkeypatch, tmp_path):
+    """Exercise the shipped startup config through inference, judging and backup."""
+    counts: Counter = Counter()
+    fake_server.state.responder = _judge_responder(counts)
+    for key in ("ABENCH_API_KEY", "ABENCH_ADMIN_KEY"):
+        monkeypatch.setenv(key, "test-key")
+    monkeypatch.setenv("ABENCH_LOCAL_URL", fake_server.base_url)
+    monkeypatch.setenv("ABENCH_JUDGE_URL", fake_server.base_url)
+    monkeypatch.setenv("ABENCH_JUDGE_MODEL", "gpt-oss-20b-local")
+    root = Path(__file__).resolve().parents[1]
+    config = load_run_config(
+        root / "configs/runs/coworker_smoke.yaml",
+        overrides=[
+            f"engine.output_root={tmp_path}/runs", f"engine.data_root={tmp_path}/data",
+            f"engine.sync.remote_path={tmp_path}/backup", "engine.sync.interval_s=3600",
+            "engine.tokenizer.backend=heuristic", "engine.retry.recovery.enabled=false",
+        ],
+    )
+    result = asyncio.run(EvaluationEngine(config, offline=True).run())
+    assert len(result.tasks) == 4
+    records = [
+        record
+        for task in result.tasks
+        for record in dedupe_records(load_records(task.output_dir / "records.jsonl"))
+    ]
+    assert len(records) == 8
+    cot = [record for record in records if record["prompt_mode"] == "cot"]
+    io = [record for record in records if record["prompt_mode"] == "io"]
+    assert len(cot) == len(io) == 4
+    assert all(record["details"]["reasoning_metrics_status"] == "ok" for record in cot)
+    assert all("reasoning_density_normalized" in record["metrics"] for record in cot)
+    assert all(
+        not any(key.startswith("reasoning_") for key in record["metrics"])
+        for record in io
+    )
+    assert counts["inventory"] == 4
+    assert counts["differential"] == 2
+    assert result.sync_stats["successes"] >= 1
+    assert result.sync_stats["failures"] == 0
+    backup = tmp_path / "backup" / result.run_id
+    assert (backup / "reasoning_judge_cache/verdicts.json").exists()
+    backed_up_records = list(backup.rglob("records.jsonl"))
+    assert len(backed_up_records) == 4

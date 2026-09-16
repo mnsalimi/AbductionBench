@@ -41,6 +41,9 @@ answer is never confused with an unparseable one.
 
 ## Install
 
+For a fresh clone, existing Drive token, model keys, endpoint setup, and a small
+preflight run, follow [the coworker setup guide](docs/coworker_setup.md).
+
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[adapters,dev]"
@@ -111,7 +114,7 @@ copy locally. `engine.sync` mirrors the run directory to any rclone destination
 engine:
   sync:
     enabled: true
-    remote_path: gdrive:AbductionBench   # or s3:bucket/prefix, or a local path
+    remote_path: "gdrive:"   # setup pins this remote to the shared folder
     per_run_subdir: true                 # -> <remote_path>/<run-id>/
     interval_s: 60
     exclude: []                          # e.g. ["raw/**"] on a slow uplink

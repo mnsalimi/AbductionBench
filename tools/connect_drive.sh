@@ -80,7 +80,7 @@ echo "  read  OK"
 probe="_abench_write_probe_$$"
 if echo ok | rclone rcat "$REMOTE:$probe" 2>/dev/null; then
   echo "  write OK"
-  rclone delete "$REMOTE:$probe" 2>/dev/null || true
+  rclone deletefile "$REMOTE:$probe" 2>/dev/null || true
 else
   echo "  write FAILED -- the account needs Editor access to that folder" >&2
   exit 1
@@ -97,7 +97,7 @@ if [[ -n "$LATEST_RUN" ]] && pgrep -f "[a]bench run" >/dev/null; then
   else
     echo
     echo "attaching incremental backup to the run in progress ($RUN_ID)"
-    nohup bash "$REPO_DIR/tools/sync_run.sh" "$LATEST_RUN" \
+    SYNC_REMOTE="$REMOTE:" nohup bash "$REPO_DIR/tools/sync_run.sh" "$LATEST_RUN" \
       > /tmp/abench_sync.log 2>&1 &
     sleep 6
     tail -3 /tmp/abench_sync.log

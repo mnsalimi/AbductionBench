@@ -1,0 +1,36 @@
+# No dataset downloads. Two generation and two selection examples, each IO/COT.
+# Uses the same model credentials, judge, and Drive destination as the full run.
+extends: [coworker.yaml]
+name: coworker-smoke
+datasets_glob: []
+datasets:
+  - id: smoke
+    impl: tools.smoke_adapter:SmokeAdapter
+    sample_size: 2
+modes:
+  prompt_modes: [io, cot]
+  selection_modes: [SCS]
+  hypothesis_modes: []
+  bov: false
+  repeats: 1
+  repeats_by_delivery:
+    interactive: 1
+    sequential: 1
+engine:
+  concurrency:
+    max_parallel_tasks: 1
+    max_parallel_batches_global: 2
+  sync:
+    interval_s: 10
+models:
+  - file: ../models/qwen3-5-2b-local.yaml
+    sampling:
+      max_tokens_default: 1024
+      max_tokens_cap: 1024
+      max_tokens_floor: 128
+    endpoint:
+      batch:
+        group_size: 2
+    limits:
+      max_parallel_batches: 1
+  - file: ../models/gpt-oss-20b-local.yaml

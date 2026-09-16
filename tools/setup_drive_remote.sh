@@ -13,10 +13,9 @@
 #      rclone prints a JSON token between two "---" markers, e.g.
 #          {"access_token":"ya29...","token_type":"Bearer","refresh_token":"1//...","expiry":"..."}
 #
-#   2. Back here, paste it as the single argument to this script (in single
-#      quotes so the shell leaves the JSON alone):
-#
-#          bash tools/setup_drive_remote.sh '{"access_token":"...","refresh_token":"...","expiry":"..."}'
+#   2. Back here, import it through --token-stdin (hidden Bash read) or
+#      --token-file. See docs/coworker_setup.md for copy/paste commands which
+#      avoid putting the credential in shell history.
 #
 # The refresh_token keeps working, so this is a one-time step; rclone renews the
 # access token by itself for the life of the machine.
@@ -36,10 +35,26 @@
 # for a personal-Drive folder, or a Shared Drive for the service account.
 
 set -euo pipefail
+umask 077
 
-TOKEN="${1:-}"
-CLIENT_ID="${2:-}"
-CLIENT_SECRET="${3:-}"
+case "${1:-}" in
+  --token-stdin)
+    TOKEN="$(</dev/stdin)"
+    shift
+    ;;
+  --token-file)
+    [[ -n "${2:-}" && -r "$2" ]] || { echo "--token-file needs a readable JSON file" >&2; exit 2; }
+    TOKEN="$(<"$2")"
+    shift 2
+    ;;
+  *)
+    TOKEN="${1:-}"
+    [[ -z "$TOKEN" ]] || echo "Prefer --token-stdin or --token-file: a literal token argument may enter shell history." >&2
+    [[ $# -eq 0 ]] || shift
+    ;;
+esac
+CLIENT_ID="${1:-}"
+CLIENT_SECRET="${2:-}"
 
 # The target folder: https://drive.google.com/drive/folders/1BKmNHYIUIBZsnjeDNfpCbGdJYFl5R9i4
 # root_folder_id makes "gdrive:" resolve to exactly that folder, so nothing can
@@ -49,7 +64,8 @@ REMOTE="${DRIVE_REMOTE_NAME:-gdrive}"
 CONFIG="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
 
 if [[ -z "$TOKEN" ]]; then
-  echo "usage: bash tools/setup_drive_remote.sh '<token-json>' [client_id] [client_secret]" >&2
+  echo "usage: bash tools/setup_drive_remote.sh --token-stdin [client_id] [client_secret]" >&2
+  echo "   or: bash tools/setup_drive_remote.sh --token-file /path/to/token.json" >&2
   echo >&2
   echo "Get <token-json> on a machine with a browser:" >&2
   echo "    rclone authorize \"drive\" '{\"scope\":\"drive\"}'" >&2
@@ -61,14 +77,16 @@ if ! command -v rclone >/dev/null; then
   exit 1
 fi
 
-if ! printf '%s' "$TOKEN" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
-  echo "the token argument is not valid JSON -- paste the whole {...} block, in single quotes" >&2
+if ! printf '%s' "$TOKEN" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d,dict) and d.get("access_token") and d.get("refresh_token") else 1)' 2>/dev/null; then
+  echo "Need the complete rclone JSON token, including access_token AND refresh_token; a bare access token cannot maintain a long run." >&2
+  echo "If the refresh token is missing, authorize again with: bash tools/connect_drive.sh" >&2
   exit 2
 fi
 
 mkdir -p "$(dirname "$CONFIG")"
 if [[ -f "$CONFIG" ]] && grep -q "^\[$REMOTE\]" "$CONFIG"; then
-  cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
+  BACKUP="$(mktemp "${CONFIG}.bak.XXXXXX")"
+  cp "$CONFIG" "$BACKUP"
   echo "note: an existing [$REMOTE] section was found; the old config was backed up" >&2
   python3 - "$CONFIG" "$REMOTE" <<'PY'
 import re, sys
@@ -95,18 +113,23 @@ chmod 600 "$CONFIG"
 echo "wrote $REMOTE: -> Drive folder $FOLDER_ID  ($CONFIG)"
 echo
 echo "verifying..."
-rclone lsd "$REMOTE:" >/dev/null && echo "  read  OK"
+if ! rclone lsd "$REMOTE:" >/dev/null; then
+  echo "  read FAILED -- check the Google account, folder access, and token expiry" >&2
+  exit 1
+fi
+echo "  read  OK"
 probe="_abench_write_probe_$$"
 if echo ok | rclone rcat "$REMOTE:$probe" 2>/dev/null; then
   echo "  write OK"
-  rclone delete "$REMOTE:$probe" 2>/dev/null || true
+  rclone deletefile "$REMOTE:$probe" 2>/dev/null || true
 else
   echo "  write FAILED -- the account may lack Editor access to that folder" >&2
   exit 1
 fi
 echo
-echo "Ready. The full run backs up automatically (engine.sync in configs/runs/full.yaml):"
-echo "    abench run configs/runs/full.yaml"
+echo "Ready. First follow docs/coworker_setup.md and run the small smoke test:"
+echo "    abench run configs/runs/coworker_smoke.yaml"
+echo "The new configs use gdrive: (already pinned to the folder), not gdrive:AbductionBench."
 echo
 echo "For a run already in progress, attach the sidecar instead:"
 echo "    bash tools/sync_run.sh runs/<run-id>"

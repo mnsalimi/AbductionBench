@@ -1,9 +1,82 @@
 # Temporary implementation handoff: COT reasoning-chain metrics
 
 Date: 2026-09-16
-Branch: `main`
+Published branch for the current handoff: `codex/coworker-ready`
 Purpose: temporary handoff for the next maintainer; this file may be deleted
 after review.
+
+## Coworker startup follow-up
+
+The original metrics branch was based on an older project snapshot. The current
+handoff was built in an isolated worktree from `origin/main` at `ff10bb4`, with
+the reasoning-metrics commit integrated as `d0fa4ee`. Current run configs,
+adapters, judge-only models, and prompt changes were preserved. The original
+dirty user workspace was not switched or overwritten.
+
+New startup artifacts:
+
+- `docs/coworker_setup.md`: complete fresh-clone guide, including Linux/macOS,
+  Python dependencies, correct branch, model URLs/SSH forwards, private keys,
+  existing rclone JSON import, doctor/smoke/full run, verification, and resume.
+- `.env.coworker.example`: placeholders only; correct model and judge localhost
+  ports (18001 and 18003) and correctly named key variables.
+- `configs/runs/coworker.yaml`: current full suite with COT reasoning analysis
+  enabled using the independently served `gpt-oss-20b-local` judge.
+- `configs/runs/coworker_smoke.yaml`: two generation and two selection examples,
+  IO and COT, one repeat, no dataset downloads, and a bounded model output budget.
+
+Startup/sync corrections:
+
+- Existing Drive JSON can be imported via `--token-stdin` or `--token-file`,
+  avoiding literal secrets in shell history. A durable token must include a
+  refresh token. The script uses private file permissions, preserves unrelated
+  remotes, makes unique backups, and fails rather than claiming ready if read
+  access fails.
+- New full runs and the sidecar use `gdrive:` because the setup already pins the
+  remote to the shared folder. The previous `gdrive:AbductionBench` base created
+  an extra nested directory. Existing nested backups are left unchanged; the
+  guide documents explicitly selecting their old base when restoring.
+- `raw/` debug payloads are excluded by default, consistently with the documented
+  Drive quota behavior; records, responses, metrics, logs, and reports are included.
+- Failed remote checks cannot emit `sync_verified`. Authentication/listing errors
+  and unexplained check failures increment failure stats and emit
+  `sync_verification_failed`. The final post-report flush is verified too.
+- The diagnostic smoke adapter now implements the current abstract prompt API
+  and separates generation/selection tasks. Previously it could not instantiate.
+- Added the missing `tabulate` report dependency to both manifests.
+- `.env` variants and rclone configuration/backups are ignored. **No live model
+  key, OAuth token, or rclone credential file is committed.**
+
+Added private-import/config planning tests and a shipped-config end-to-end test
+using fake model calls plus a temporary local rclone destination. Full validation
+results are also summarized in `run_report.md`.
+
+Drive OAuth and a tiny upload/read-back were verified on the owner's Mac, but
+authentication must still be imported on the coworker's execution machine. Eight
+existing run folders were found under the old nested directory, through
+`20260915-004605_full`. No live model calibration was possible: configured public
+tunnels did not resolve and this Mac had no local vLLM listeners. The coworker
+must supply current endpoints or run/forward the GPU host's ports.
+
+rclone warned that its shared Google OAuth client is being retired during 2026.
+The guide links the personal-client setup and notes that tokens must match the
+OAuth client used to generate them.
+
+### Final coworker-ready validation
+
+- Full Python suite against this worktree: **225 passed, 7 skipped in 42.24s**.
+  Tests use fake model endpoints and temporary local sync destinations, without
+  live credentials. Skips reflect unavailable external dataset/shell prerequisites.
+- `bash -n` passed for `setup_drive_remote.sh`, `connect_drive.sh`, and
+  `sync_run.sh`.
+- Ruff passed for all changed Python modules and tests. A whole-repository lint
+  run found 24 existing upstream findings in unrelated adapters/tests, which
+  were left unchanged.
+- The shipped smoke configuration was exercised end-to-end: eight model outputs,
+  COT-only metric values, observation-cache reuse, workbook generation, and
+  local rclone backup. Failed verification regression tests also passed.
+- `git diff --check` passed. The published setup files contain placeholders,
+  never the owner's live keys or OAuth configuration.
 
 ## Requested change
 
@@ -149,7 +222,7 @@ Added `tests/test_reasoning_judge.py`, covering:
 - the hard guarantee that IO outputs never call this judge and never receive
   reasoning metric keys.
 
-Validation results:
+Original feature validation results (before the coworker-ready integration):
 
 - `.venv/bin/ruff check src tests tools` — passed.
 - Focused judge/config/prompt suite — **28 passed**.
