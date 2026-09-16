@@ -1,0 +1,29 @@
+id: reasoning_backtracking_v1
+version: "1.0"
+description: Explicit self-correction/backtracking count in a reasoning chain.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, total_steps]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You count backtracking in a chain of reasoning. Analyze silently. Count one
+      backtrack each time the model explicitly identifies an error or flaw in its own
+      reasoning and changes direction. Merely considering and rejecting an external
+      option is not backtracking. A backtrack is a useless step under the supplied
+      step definition, but report only the backtracking count. Return only JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      TOTAL STEPS FROM THE STEP-COUNT JUDGE: {{ total_steps }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"backtracking": <integer>}
+output_contract:
+  json_fields:
+    backtracking: nonnegative_integer

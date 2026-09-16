@@ -105,6 +105,29 @@ engine:
     group_size: 8
     cache: true
 
+  # Structural metrics over chains of reasoning. This stage is independent of
+  # semantic answer judging above and runs only for cot/self-consistency
+  # outputs, never for io outputs. The observation inventory is cached by the
+  # exact question so its total is shared across models and repeats.
+  reasoning_judge:
+    enabled: false
+    model: null               # must be one of the run's models
+    max_tokens: 512
+    temperature: 0.0
+    group_size: 8
+    cache: true
+    templates:
+      observation_inventory: reasoning_observation_inventory_v1
+      observation_coverage: reasoning_observation_coverage_v1
+      branchiness_diversity: reasoning_branchiness_diversity_v1
+      density: reasoning_density_v1
+      redundancy_completeness: reasoning_redundancy_completeness_v1
+      directionality: reasoning_directionality_v1
+      backtracking: reasoning_backtracking_v1
+      differential_elimination: reasoning_differential_elimination_v1
+      prior_knowledge: reasoning_prior_knowledge_v1
+      uncertainty: reasoning_uncertainty_v1
+
   # Incremental off-box backup of the run directory. Runs in a background
   # thread that shells out to rclone, so it cannot slow inference down: all the
   # network I/O happens in a separate process. Failures are logged and retried

@@ -1,0 +1,31 @@
+id: reasoning_branchiness_diversity_v1
+version: "1.0"
+description: Generation/pipeline branchiness and explanation diversity.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You analyze a generative abductive reasoning chain. Analyze silently.
+      Branchiness is the number of distinct hypotheses, explanations, causes, or
+      answers the model considers in its chain, whether it proves or disproves each
+      one. Do not count the same explanation twice when merely rephrased.
+      Diversity is 1 only when the explanations considered are sufficiently distinct
+      in causal mechanism or substantive answer, rather than superficial variants;
+      otherwise it is 0. A chain considering fewer than two explanations is not
+      diverse. Return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"branchiness": <integer>, "diversity": <0-or-1>}
+output_contract:
+  json_fields:
+    branchiness: nonnegative_integer
+    diversity: binary_integer
