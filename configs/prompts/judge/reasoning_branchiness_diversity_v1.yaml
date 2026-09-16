@@ -1,0 +1,39 @@
+id: reasoning_branchiness_diversity_v1
+version: "1.0"
+description: >-
+  Metric 3 (generation only): how many distinct explanations a chain considers,
+  and whether they are meaningfully different from one another.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You analyse how widely a generative abductive chain searched.
+
+      BRANCHINESS: the number of distinct hypotheses, explanations, causes or
+      candidate answers the model considers in its chain, counting one whether it
+      proves it or disproves it. The same explanation restated in different words
+      is one, not two.
+
+      DIVERSITY: 1 when the explanations the chain considered are sufficiently
+      diverse from each other -- different causal mechanisms or substantively
+      different answers rather than variants of one idea -- and 0 when they are
+      not. A chain that considers fewer than two explanations is not diverse.
+
+      Work it out step by step for yourself, then reply with the JSON object and
+      nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"branchiness": <integer>, "diversity": <0 or 1>}
+output_contract:
+  json_fields:
+    branchiness: nonnegative_integer
+    diversity: binary_integer

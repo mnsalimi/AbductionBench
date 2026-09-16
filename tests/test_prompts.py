@@ -25,9 +25,14 @@ def _registry(prompt_dir: Path) -> PromptRegistry:
 
 def test_shipped_templates_load(prompt_dir: Path):
     registry = _registry(prompt_dir)
-    ids = registry.ids()
+    ids = set(registry.ids())
     # Only judge templates ship now; a dataset's prompts live with its adapter.
-    assert set(ids) == {"judge_binary_v1", "judge_graded_v1"}
+    # Two grade the answer, nine measure the structure of a chain of reasoning.
+    assert {"judge_binary_v1", "judge_graded_v1"} <= ids
+    assert {template for template in ids if not template.startswith("reasoning_")} == {
+        "judge_binary_v1",
+        "judge_graded_v1",
+    }
     template = registry.get("judge_binary_v1")
     assert set(template.required_fields) == {"candidate", "gold"}
     assert template.output_contract["labels"] == ["yes", "no"]

@@ -66,8 +66,9 @@ from .errors import (
 )
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
-from .modes import BOV, TaskModes
+from .modes import BOV, COT, SELF_CONSISTENCY, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
+from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
 from .sync import ArtifactSync
@@ -250,6 +251,16 @@ class EvaluationEngine:
         #: Hypothesis modes run beyond what the dataset table lists, with the
         #: benchmark formulation that justifies each (specification item 15).
         self._introduced_modes: list[dict[str, str]] = []
+        #: Built once and shared by every task, so a question's observation
+        #: inventory is bought once and reused across models and repeats.
+        self._reasoning_judge: ReasoningJudgeStage | None = None
+        #: One budget of in-flight calls for the judge *model*, not for a stage
+        #: or a task. Both judge stages talk to the same server, and JudgeStage
+        #: is built per task, so a per-stage semaphore would let three tasks
+        #: each open its own -- which pushes vLLM into KV-cache preemption and
+        #: ends up slower than issuing the batches one at a time. Created in
+        #: run(), once the config is known.
+        self._judge_calls: asyncio.Semaphore | None = None
 
     def _dump_resolved_config(self) -> None:
         """Write what this pass is running, without erasing what earlier ones ran.
@@ -341,6 +352,27 @@ class EvaluationEngine:
                 )
                 self._clients[model.id] = client
                 self._model_sems[model.id] = asyncio.Semaphore(model.limits.max_parallel_batches)
+
+            self._judge_calls = asyncio.Semaphore(
+                max(
+                    self.engine_cfg.judge.max_parallel_calls,
+                    self.engine_cfg.reasoning_judge.max_parallel_calls,
+                )
+            )
+            if self.engine_cfg.reasoning_judge.enabled:
+                self._reasoning_judge = ReasoningJudgeStage(
+                    config=self.engine_cfg.reasoning_judge,
+                    registry=self.registry,
+                    renderer=self.renderer,
+                    clients=self._clients,
+                    retry_policy=self.retry_policy,
+                    cache_dir=self.run_dir / "reasoning_judge_cache",
+                    batch_disabled=self._batch_disabled,
+                    calls=self._judge_calls,
+                    # Inside the run directory, so engine.sync mirrors it
+                    # off-box along with the records and the workbook.
+                    log_path=self.run_dir / "reasoning_metrics.jsonl",
+                )
 
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
@@ -1430,7 +1462,12 @@ class EvaluationEngine:
                     renderer=self.renderer,
                     clients=self._clients,
                     retry_policy=self.retry_policy,
-                    cache_dir=output_dir / "judge_cache",
+                    # Run-level, not task-level: the same (template, fields)
+                    # verdict would otherwise be re-bought once per task, and
+                    # the reasoning judge already caches this way.
+                    cache_dir=self.run_dir / "judge_cache",
+                    batch_disabled=self._batch_disabled,
+                    calls=self._judge_calls,
                 )
                 before = {
                     sample.sample_id: score for sample, _r, score in scores
@@ -1481,16 +1518,104 @@ class EvaluationEngine:
                         "produced; the task is marked failed", identity.slug,
                     )
 
+        # Rebuild checkpointed outputs into the same triplets a fresh sample
+        # produces, so the reasoning judge can see them too. A scoring-code
+        # change does not alter a request fingerprint, so a resumed COT run can
+        # hold perfectly reusable answers that predate these metrics; they must
+        # be judged rather than silently left blank.
+        prompt_by_id = {prompt.sample_id: prompt for prompt in rendered}
+        reused_triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
+        reused_fingerprints: dict[str, str] = {}
+        for record in reused_records:
+            prompt = prompt_by_id.get(str(record.get("sample_id", "")))
+            if prompt is None:
+                continue
+            if record.get("prompt_fingerprint"):
+                reused_fingerprints[prompt.sample_id] = str(record["prompt_fingerprint"])
+            payload = record.get("response") or {}
+            try:
+                status = ResponseStatus(record.get("status", ResponseStatus.ERROR.value))
+            except ValueError:
+                status = ResponseStatus.ERROR
+            reused_triplets.append(
+                (
+                    prompt.sample,
+                    ModelResponse(
+                        sample_id=prompt.sample_id,
+                        model_id=identity.model_id,
+                        status=status,
+                        content=payload.get("content"),
+                        reasoning=payload.get("reasoning"),
+                        finish_reason=payload.get("finish_reason"),
+                        error=payload.get("error"),
+                        error_class=payload.get("error_class"),
+                        attempts=int(payload.get("attempts") or 1),
+                        latency_s=float(payload.get("latency_s") or 0.0),
+                        batch_id=payload.get("batch_id"),
+                        batch_size=payload.get("batch_size"),
+                        batch_index=payload.get("batch_index"),
+                        usage=payload.get("usage") or {},
+                        usage_is_batch_aggregate=bool(payload.get("usage_is_batch_aggregate")),
+                        completion_tokens_est=payload.get("completion_tokens_est"),
+                    ),
+                    SampleScore(
+                        metrics={
+                            key: float(value)
+                            for key, value in (record.get("metrics") or {}).items()
+                        },
+                        prediction=record.get("prediction"),
+                        parse_ok=bool(record.get("parse_ok", True)),
+                        details=record.get("details") or {},
+                    ),
+                )
+            )
+
+        # Structural reasoning metrics. The stage itself refuses anything that
+        # is not cot/self-consistency, so an io output can never enter it; it is
+        # shared across tasks so an observation inventory is bought once.
+        reasoning_mode = identity.prompt_mode in (COT, SELF_CONSISTENCY)
+        if self._reasoning_judge is not None and (scores or reused_triplets) and not fatal:
+            try:
+                fresh_count = len(scores)
+                judged = await self._reasoning_judge.apply(
+                    adapter, identity, rendered, [*scores, *reused_triplets]
+                )
+                scores = judged[:fresh_count]
+                reused_triplets = judged[fresh_count:]
+            except Exception as exc:  # noqa: BLE001 - these metrics are best-effort
+                logger.exception(
+                    "task %s: reasoning judge stage failed: %s", identity.slug, exc
+                )
+                checkpoint.notes["reasoning_judge_error"] = str(exc)
+
+        # Records are written per batch, before judging, for crash safety.
+        # Append their post-judge replacements now: record de-duplication keeps
+        # the newest per (sample_id, prompt_fingerprint), which is what puts
+        # every judged metric into the per-sample sheet.
+        to_refresh = [*scores, *(reused_triplets if reasoning_mode else [])]
+        if to_refresh and (
+            self.engine_cfg.judge.enabled
+            or (self._reasoning_judge is not None and reasoning_mode)
+        ):
+            refreshed = [
+                self._make_record(
+                    identity,
+                    prompt_by_id[sample.sample_id],
+                    response,
+                    score,
+                    fingerprint=reused_fingerprints.get(sample.sample_id),
+                )
+                for sample, response, score in to_refresh
+                if sample.sample_id in prompt_by_id
+            ]
+            if refreshed:
+                store.append_many(refreshed)
+
         # Fold in reused records so metrics cover the whole planned set.
         reused_scores = [
-            SampleScore(
-                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
-                prediction=rec.get("prediction"),
-                parse_ok=bool(rec.get("parse_ok", True)),
-                details=rec.get("details") or {},
-            )
-            for rec in reused_records
-            if rec.get("status") != ResponseStatus.SKIPPED.value
+            score
+            for _sample, response, score in reused_triplets
+            if response.status is not ResponseStatus.SKIPPED
         ]
         reused_errors = sum(
             1 for rec in reused_records if rec.get("status") == ResponseStatus.ERROR.value
@@ -2411,13 +2536,17 @@ class EvaluationEngine:
         prompt: RenderedPrompt,
         response: ModelResponse,
         score: SampleScore,
+        fingerprint: str | None = None,
     ) -> EvalRecord:
         clip_chars = self.engine_cfg.reporting.response_clip_chars
         return EvalRecord(
             task=identity,
             sample_id=prompt.sample_id,
             status=response.status,
-            prompt_fingerprint=prompt.fingerprint(identity.model_id),
+            # A reused record is re-written under the fingerprint it was stored
+            # with, so de-duplication replaces it rather than leaving two rows
+            # for the same answer -- one judged and one not.
+            prompt_fingerprint=fingerprint or prompt.fingerprint(identity.model_id),
             task_kind=prompt.sample.task_kind,
             input_tokens_est=prompt.input_tokens_est,
             sampling=prompt.sampling.to_payload(),

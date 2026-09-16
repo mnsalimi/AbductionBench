@@ -1,0 +1,37 @@
+id: reasoning_uncertainty_v1
+version: "1.0"
+description: >-
+  Metric 7: how many steps of a chain explicitly mark uncertainty.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, total_steps]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You count uncertainty marking in a chain of reasoning.
+
+      The chain has already been segmented into discrete inferential steps and
+      the number of them is given to you; use that same notion of a step.
+
+      Count the steps where the model explicitly expresses uncertainty -- hedging
+      language such as "probably", "it might be", "I am not sure", or another
+      recognizable marker of doubt. Count a step once however many markers it
+      contains, so your count can never exceed the number of steps.
+
+      Work it out step by step for yourself, then reply with the JSON object and
+      nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      STEPS IN THE CHAIN: {{ total_steps }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"uncertainty_steps": <integer>}
+output_contract:
+  json_fields:
+    uncertainty_steps: nonnegative_integer

@@ -1,0 +1,43 @@
+id: reasoning_observation_coverage_v1
+version: "1.0"
+description: >-
+  Metric 1: how many of the observations a question supplies are actually used
+  in one model's chain of reasoning.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, total_observations]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You measure how much of a question's evidence a chain of reasoning
+      actually uses.
+
+      An observation is a distinct fact, finding, event, measurement, symptom,
+      rule or other piece of evidence supplied by the question. The inventory of
+      how many the question supplies has already been taken and is given to you;
+      use that number as the set of observations you are counting against, and
+      report it back unchanged.
+
+      An observation counts as used only when the chain explicitly contains,
+      cites, paraphrases or relies on it. Evidence that appears only in the
+      question, or only in the final answer, is not used by the chain. Count each
+      observation at most once however often the chain returns to it.
+
+      Work it out step by step for yourself, then reply with the JSON object and
+      nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      OBSERVATIONS THE QUESTION SUPPLIES: {{ total_observations }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"total_observations": {{ total_observations }}, "observations_used": <integer>}
+output_contract:
+  json_fields:
+    total_observations: nonnegative_integer
+    observations_used: nonnegative_integer

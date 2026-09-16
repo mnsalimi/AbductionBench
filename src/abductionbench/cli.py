@@ -367,6 +367,71 @@ def report(
     _print_summary(result)
 
 
+@app.command("judge-reasoning")
+def judge_reasoning(
+    run_dir: Path = typer.Argument(..., help="An existing run directory."),
+    config: Path | None = typer.Option(
+        None, "--config", help="Run config to use instead of the run's resolved one."
+    ),
+    datasets: str | None = typer.Option(
+        None, "-d", "--datasets", help="Comma-separated dataset ids to limit the pass to."
+    ),
+    limit: int | None = typer.Option(
+        None, "--limit", help="At most this many records per task (for a quick probe)."
+    ),
+    report_after: bool = typer.Option(
+        True, "--report/--no-report", help="Rebuild the workbook when judging finishes."
+    ),
+) -> None:
+    """Measure reasoning-chain structure over a finished run's stored COT outputs.
+
+    Asks the model under test nothing: the answers are already on disk, so this
+    only spends judge tokens. IO outputs are never judged -- there is no chain
+    in one to measure.
+    """
+    setup_logging(level="INFO")
+    from .core.rejudge import rejudge_reasoning
+
+    summary = rejudge_reasoning(
+        run_dir,
+        config_path=config,
+        dataset_filter=[d.strip() for d in datasets.split(",")] if datasets else None,
+        limit=limit,
+    )
+    console.print(
+        f"[green]judged[/green] {summary['judged']} record(s) across "
+        f"{len(summary['tasks'])} task(s) in {summary['elapsed_s']}s "
+        f"({summary['judge_calls']} judge call(s), {summary['cache_hits']} cache hit(s), "
+        f"{summary['failed_requests']} failed request(s))"
+    )
+    for status, count in sorted(summary["statuses"].items()):
+        console.print(f"  {status}: {count}")
+    if summary["skipped_interactive"]:
+        console.print(
+            "[yellow]skipped (interactive: the episode transcript is not stored, so it "
+            f"cannot be re-rendered offline)[/yellow]: "
+            f"{', '.join(sorted(set(summary['skipped_interactive'])))}"
+        )
+    if summary["unmatched_records"]:
+        console.print(
+            f"[yellow]{summary['unmatched_records']} record(s) had no matching prompt "
+            "and were left alone[/yellow]"
+        )
+    console.print(f"  metrics log: {summary.get('metrics_log', '-')}")
+    sync = summary.get("sync") or {}
+    if sync.get("enabled"):
+        if sync.get("error"):
+            console.print(f"[yellow]backup skipped:[/yellow] {sync['error']}")
+        else:
+            console.print(f"[green]backed up to:[/green] {sync.get('destination', '-')}")
+    if report_after and summary["judged"]:
+        from .core.rebuild import rebuild_run_result
+        from .core.reporting import write_reports
+
+        written = write_reports(rebuild_run_result(run_dir))
+        console.print(f"[green]workbook rebuilt:[/green] {written.get('excel', '-')}")
+
+
 def _print_summary(result: RunResult) -> None:
     from .core.reporting import build_summary_frame
 

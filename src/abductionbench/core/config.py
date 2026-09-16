@@ -487,8 +487,72 @@ class JudgeConfig(_Base):
     max_tokens: int = Field(512, ge=1)
     temperature: float = Field(0.0, ge=0)
     group_size: int = Field(8, ge=1)
+    #: How many judge calls may be in flight at once.  In-flight sequences are
+    #: ``group_size x max_parallel_calls``, so these two size the judge server
+    #: together: 8 x 8 = 64 fills this suite's judge exactly.  Without it the
+    #: stage issued its batches strictly one after another, and 29 of the 44
+    #: datasets are scored by it.
+    max_parallel_calls: int = Field(8, ge=1)
     #: Cache judge verdicts on disk so re-scoring does not re-spend tokens.
     cache: bool = True
+
+
+def _reasoning_judge_templates() -> dict[str, str]:
+    """The audited prompt behind each reasoning-structure measurement.
+
+    One entry per metric family, and one judge call per family per output --
+    the grouping is the measurement's, not an optimisation: metric 2's four
+    counts have to come from a single segmentation of the chain, so they are
+    one prompt and not four.
+    """
+    return {
+        "observation_inventory": "reasoning_observation_inventory_v1",
+        "observation_coverage": "reasoning_observation_coverage_v1",
+        "steps": "reasoning_steps_v1",
+        "branchiness_diversity": "reasoning_branchiness_diversity_v1",
+        "redundancy_completeness": "reasoning_redundancy_completeness_v1",
+        "directionality": "reasoning_directionality_v1",
+        "differential_elimination": "reasoning_differential_elimination_v1",
+        "uncertainty": "reasoning_uncertainty_v1",
+        "prior_knowledge": "reasoning_prior_knowledge_v1",
+    }
+
+
+class ReasoningJudgeConfig(_Base):
+    """COT-only LLM judge for the structure of a chain of reasoning.
+
+    Separate from :class:`JudgeConfig` on purpose: grading whether an answer is
+    right and measuring how the model got there are independent questions, and
+    may want different models, budgets and caches.  This stage never sees an
+    ``io`` output -- there is no chain in one to measure.
+    """
+
+    enabled: bool = False
+    #: Model id from the run's model list.
+    model: str | None = None
+    #: Budget for one judge reply.  It has to cover a reasoning judge's own
+    #: hidden chain as well as the JSON: a judge whose chain eats the whole
+    #: budget returns empty content, and every metric in that call is lost.  A
+    #: ceiling, not an allocation -- the reply still ends at the JSON.
+    max_tokens: int = Field(8192, ge=1)
+    temperature: float = Field(0.0, ge=0)
+    #: Conversations per batch call.  In-flight sequences are
+    #: ``group_size x max_parallel_calls``; together they should fill the judge
+    #: server's ``--max-num-seqs`` and not exceed it, since the surplus only
+    #: queues inside vLLM.
+    #:
+    #: The speed comes from ``max_parallel_calls``, not from here: vLLM at
+    #: temperature 0 is not bit-stable across batch sizes, so changing this
+    #: changes verdicts and breaks comparability with earlier runs.
+    group_size: int = Field(8, ge=1)
+    #: How many judge calls may be in flight at once, across every metric
+    #: family and every task being judged.  This is the stage's only throttle:
+    #: the families go out together rather than one after another.
+    max_parallel_calls: int = Field(8, ge=1)
+    cache: bool = True
+    #: Metric family -> versioned prompt template id, so every number in the
+    #: sheet is reproducible from the resolved run configuration.
+    templates: dict[str, str] = Field(default_factory=_reasoning_judge_templates)
 
 
 class SyncConfig(_Base):
@@ -602,6 +666,7 @@ class EngineConfig(_Base):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    reasoning_judge: ReasoningJudgeConfig = Field(default_factory=ReasoningJudgeConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
@@ -930,6 +995,10 @@ class RunConfig(_Base):
             raise ConfigError(f"duplicate dataset ids in run config: {ds_ids}")
         if self.engine.judge.enabled and not self.engine.judge.model:
             raise ConfigError("engine.judge.enabled requires engine.judge.model")
+        if self.engine.reasoning_judge.enabled and not self.engine.reasoning_judge.model:
+            raise ConfigError(
+                "engine.reasoning_judge.enabled requires engine.reasoning_judge.model"
+            )
         return self
 
     def enabled_datasets(self) -> list[DatasetConfig]:

@@ -1,0 +1,40 @@
+id: reasoning_differential_elimination_v1
+version: "1.0"
+description: >-
+  Metric 6 (selection, and pipeline via its selection stage): how many distinct
+  combinations of the offered options the chain weighs against each other.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, options, option_count]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You measure differential elimination in a selection chain.
+
+      Count the number of distinct combinations of the given answer options that
+      the model compares against each other in the chain. A comparison may be
+      between two options or between more than two at once. Order does not
+      matter, so comparing A with B and later B with A is one combination, not
+      two, and a combination the model returns to counts once.
+
+      Discussing an option on its own, without weighing it against another, is
+      not a comparison.
+
+      Work it out step by step for yourself, then reply with the JSON object and
+      nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      AVAILABLE OPTIONS ({{ option_count }} in total):
+      {{ options }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"differential_elimination": <integer>}
+output_contract:
+  json_fields:
+    differential_elimination: nonnegative_integer

@@ -96,7 +96,9 @@ class JudgedAdapter(DatasetAdapter):
 
     task = result.tasks[0]
     assert task.metrics["judged_accuracy"] == 1.0
-    cache = task.output_dir / "judge_cache" / "verdicts.json"
+    # Run-level, not task-level: the same (template, fields) verdict is
+    # otherwise re-bought once per task.
+    cache = task.output_dir.parents[3] / "judge_cache" / "verdicts.json"
     assert cache.exists()
 
 

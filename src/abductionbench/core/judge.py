@@ -18,6 +18,7 @@ Adapters opt in by overriding
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -71,12 +72,23 @@ class JudgeStage:
         clients: dict[str, ModelClient],
         retry_policy: RetryPolicy,
         cache_dir: Path,
+        batch_disabled: set[str] | None = None,
+        calls: asyncio.Semaphore | None = None,
     ):
         self.config = config
         self.registry = registry
         self.renderer = renderer
         self.retry_policy = retry_policy
         self.cache_dir = Path(cache_dir)
+        #: Live view of the models whose batch route the engine found unusable.
+        #: Held by reference, because the engine discovers this after the stage
+        #: is built.
+        self._batch_disabled = batch_disabled if batch_disabled is not None else set()
+        #: Shared with the reasoning judge and with every other task, because
+        #: they all queue on the same judge server. Without it this stage issued
+        #: its batches strictly one after another while 29 of the 44 datasets
+        #: waited on it.
+        self._calls = calls or asyncio.Semaphore(config.max_parallel_calls)
         if config.model not in clients:
             raise ConfigError(
                 f"engine.judge.model={config.model!r} is not one of the run's models "
@@ -159,7 +171,13 @@ class JudgeStage:
             self.config.model,
         )
 
-        for chunk in iter_chunks(to_call, self.config.group_size):
+        # One conversation per call when the batch route is unusable:
+        # chat_single answers only the first conversation, so a group sent
+        # without batching would lose every other item in it.
+        can_batch = self.client.supports_batch and self.config.model not in self._batch_disabled
+        chunk_size = self.config.group_size if can_batch else 1
+
+        async def run_chunk(chunk: list[tuple[int, dict[str, Any], str]]) -> None:
             conversations = []
             for _index, fields, _key in chunk:
                 spec = SampleSpec(
@@ -170,28 +188,37 @@ class JudgeStage:
             sampling = SamplingParams(
                 max_tokens=self.config.max_tokens, temperature=self.config.temperature
             )
-            try:
-                result, _ = await with_retry(
-                    lambda convs=conversations, s=sampling: (
-                        self.client.chat_batch(convs, s)
-                        if self.client.supports_batch and len(convs) > 1
-                        else self.client.chat_single(convs[0], s)
-                    ),
-                    policy=self.retry_policy,
-                    description=f"judge batch ({len(conversations)} item(s))",
-                )
-            except EndpointError as exc:
-                # Counted, not just logged. Swallowing this is what let an
-                # unreachable judge produce a full set of plausible-looking
-                # zeros: every sample kept its seeded 0.0 and the run reported
-                # it as if the model had answered and been wrong.
+            async with self._calls:
+                try:
+                    result, _ = await with_retry(
+                        lambda convs=conversations, s=sampling: (
+                            self.client.chat_batch(convs, s)
+                            if can_batch and len(convs) > 1
+                            else self.client.chat_single(convs[0], s)
+                        ),
+                        policy=self.retry_policy,
+                        description=f"judge batch ({len(conversations)} item(s))",
+                    )
+                except EndpointError as exc:
+                    # Counted, not just logged. Swallowing this is what let an
+                    # unreachable judge produce a full set of plausible-looking
+                    # zeros: every sample kept its seeded 0.0 and the run
+                    # reported it as if the model had answered and been wrong.
+                    self.unavailable += len(chunk)
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "judge batch failed permanently, %d verdict(s) unavailable: %s",
+                        len(chunk), exc,
+                    )
+                    return
+            if len(result.choices) != len(chunk):
+                # Misalignment would file one sample's verdict against another.
                 self.unavailable += len(chunk)
-                self.last_error = f"{type(exc).__name__}: {exc}"
-                logger.warning(
-                    "judge batch failed permanently, %d verdict(s) unavailable: %s",
-                    len(chunk), exc,
+                self.last_error = (
+                    f"{len(result.choices)} verdict(s) for {len(chunk)} request(s)"
                 )
-                continue
+                logger.warning("judge batch: %s; dropping the group", self.last_error)
+                return
             for (_index, _fields, key), choice in zip(chunk, result.choices, strict=True):
                 verdict = self._parse(choice.content or "")
                 self._cache[key] = {
@@ -200,6 +227,11 @@ class JudgeStage:
                     "raw": verdict.raw[:2000],
                     "parsed": verdict.parsed,
                 }
+
+        # The batches go out together, throttled only by the shared semaphore.
+        await asyncio.gather(
+            *(run_chunk(chunk) for chunk in iter_chunks(to_call, chunk_size))
+        )
 
         if self.config.cache:
             self.cache_dir.mkdir(parents=True, exist_ok=True)

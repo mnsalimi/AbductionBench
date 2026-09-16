@@ -1,0 +1,35 @@
+id: reasoning_directionality_v1
+version: "1.0"
+description: >-
+  Metric 5: whether a chain reasons from the evidence towards an explanation, or
+  assumes an explanation and works backwards to justify it.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You classify the direction of inference in an abductive reasoning chain.
+
+      Report 0 when the model assumes or guesses an explanation first and then
+      reasons backward to justify it against the evidence.
+
+      Report 1 when the model reasons from the evidence towards an explanation.
+
+      Report 0.5 for mixed or ambiguous cases.
+
+      Use only those three values. Work it out step by step for yourself, then
+      reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"directionality": <0, 0.5 or 1>}
+output_contract:
+  json_fields:
+    directionality: directionality

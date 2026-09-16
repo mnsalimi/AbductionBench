@@ -1,0 +1,32 @@
+id: reasoning_observation_inventory_v1
+version: "1.0"
+description: >-
+  Metric 1, part one: a one-time inventory of the observations a question
+  supplies. Bought once per sample, not once per model output, because it does
+  not depend on any model's answer.
+task_kinds: [judge]
+required_fields: [question]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You inventory the evidence in an abductive-reasoning question.
+
+      An observation is a distinct fact, finding, event, measurement, symptom,
+      rule or other piece of evidence that the question supplies and that could
+      be used in reaching an answer. Count separately supplied observations
+      separately. Do not count answer choices, task instructions, the requested
+      output format, or anything a model might add itself.
+
+      Work the inventory out step by step for yourself, then reply with the JSON
+      object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      Reply with exactly this object and nothing after it:
+      {"total_observations": <integer>}
+output_contract:
+  json_fields:
+    total_observations: nonnegative_integer

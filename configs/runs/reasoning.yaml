@@ -1,0 +1,43 @@
+# Structural metrics over chains of reasoning, on top of the full suite.
+#
+# Two ways to use it:
+#
+#   abench run configs/runs/reasoning.yaml
+#       a full run whose cot tasks also get the reasoning-metric columns, judged
+#       inline as each task finishes.
+#
+#   abench judge-reasoning runs/<run-id> --config configs/runs/reasoning.yaml
+#       the same metrics over a run that already happened. The answers are
+#       already on disk, so this asks the model under test nothing and spends
+#       judge tokens only.
+#
+# Either way io outputs are never judged: there is no chain in one to measure.
+extends:
+  - full.yaml
+
+name: reasoning
+description: >-
+  The full suite with the reasoning-chain metric judge enabled: observation
+  coverage, step structure and backtracking, branchiness and diversity,
+  redundancy and completeness, directionality, differential elimination,
+  uncertainty marking and prior knowledge, per cot sample output.
+
+engine:
+  reasoning_judge:
+    enabled: true
+    # gpt-oss-20b, the same judge that grades answers, and deliberately not the
+    # model under test: a model scoring the structure of its own reasoning is
+    # the same confound as grading its own answers.
+    model: ${env:ABENCH_JUDGE_MODEL|gpt-oss-20b-local}
+    # 8 x 8 = 64 judge sequences in flight, which is this server's
+    # --max-num-seqs. Raise max_parallel_calls, not group_size, if the judge
+    # server grows: vLLM at temperature 0 is not bit-stable across batch sizes,
+    # so the batch size is what keeps verdicts comparable between runs.
+    group_size: 8
+    max_parallel_calls: 8
+    # A ceiling that has to cover the judge's own hidden chain as well as the
+    # JSON: a judge whose reasoning spends the whole budget returns empty
+    # content and that call's metrics are lost.
+    max_tokens: 8192
+    temperature: 0.0
+    cache: true

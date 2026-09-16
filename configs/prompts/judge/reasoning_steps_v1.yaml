@@ -1,0 +1,57 @@
+id: reasoning_steps_v1
+version: "1.0"
+description: >-
+  Metric 2: step counts and backtracking for one chain of reasoning, in a single
+  call, so that every count comes from one segmentation of the same chain.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: [options]
+messages:
+  - role: system
+    content: |
+      You segment a chain of reasoning into discrete inferential steps and count
+      four things about it. Every count must come from the same segmentation.
+
+      TOTAL STEPS: the number of steps in the chain.
+
+      USEFUL STEPS: steps where the model explicitly proves or disproves at least
+      one explanation, option, cause or candidate answer. Only count a step as
+      proving or disproving something when the model explicitly states it in the
+      chain; an implication you can infer but the model never states does not
+      count.
+
+      USELESS STEPS: steps where the model does not explicitly prove or disprove
+      any explanation or option. Restating the question, setting up, and
+      backtracking steps are all useless steps.
+
+      Every step is either useful or useless, so the two must add up to the total.
+
+      BACKTRACKING STEPS: the number of times the model explicitly identifies an
+      error or flaw in its own reasoning and changes direction. Considering an
+      explanation and rejecting it on the evidence is not backtracking -- the
+      model must be correcting itself. A backtracking step is one of the useless
+      steps you have already counted, so it can never exceed the total.
+
+      Work the segmentation out step by step for yourself, then reply with the
+      JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+      {% if options %}
+
+      AVAILABLE ANSWER OPTIONS:
+      {{ options }}
+      {% endif %}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"total_steps": <integer>, "useless_steps": <integer>, "useful_steps": <integer>, "backtracking_steps": <integer>}
+output_contract:
+  json_fields:
+    total_steps: nonnegative_integer
+    useless_steps: nonnegative_integer
+    useful_steps: nonnegative_integer
+    backtracking_steps: nonnegative_integer

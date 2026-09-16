@@ -102,8 +102,54 @@ engine:
     template: judge_binary_v1
     max_tokens: 512
     temperature: 0.0
+    # In-flight sequences are group_size x max_parallel_calls; 8 x 8 = 64 is
+    # this judge server's --max-num-seqs. It costs no GPU memory: vLLM's KV
+    # cache is preallocated at startup, so this fills slots already paid for.
     group_size: 8
+    max_parallel_calls: 8
     cache: true
+
+  # Structural metrics over chains of reasoning -- observation coverage, step
+  # structure and backtracking, branchiness and diversity, redundancy and
+  # completeness, directionality, differential elimination, uncertainty marking
+  # and prior knowledge.
+  #
+  # Independent of the answer judge above: this one measures how the model got
+  # there, not whether it arrived. It runs for cot and self-consistency outputs
+  # only -- an io output has no chain in it to measure -- and the observation
+  # inventory is cached by the exact question, so its total is bought once and
+  # shared across every model, repeat and task that asks that question.
+  reasoning_judge:
+    enabled: false
+    model: null               # must be one of the run's models
+    # A ceiling, not an allocation. It has to cover the judge's own hidden
+    # reasoning as well as the JSON verdict: a judge whose chain spends the
+    # whole budget returns empty content, and every metric in that call is lost.
+    max_tokens: 8192
+    temperature: 0.0
+    # In-flight judge sequences are group_size x max_parallel_calls. Size them
+    # together to the judge server's --max-num-seqs (64 here): more only queues
+    # inside vLLM, less leaves scheduler slots idle.
+    #
+    # Raise max_parallel_calls for speed, not group_size: vLLM at temperature 0
+    # is not bit-stable across batch sizes, so changing the batch size changes
+    # verdicts and breaks comparability with earlier runs.
+    group_size: 8
+    max_parallel_calls: 8
+    cache: true
+    # One prompt per metric family. The grouping is the measurement's, not an
+    # optimisation: the four step counts have to come from one segmentation of
+    # one chain, so they are one prompt returning four numbers.
+    templates:
+      observation_inventory: reasoning_observation_inventory_v1
+      observation_coverage: reasoning_observation_coverage_v1
+      steps: reasoning_steps_v1
+      branchiness_diversity: reasoning_branchiness_diversity_v1
+      redundancy_completeness: reasoning_redundancy_completeness_v1
+      directionality: reasoning_directionality_v1
+      differential_elimination: reasoning_differential_elimination_v1
+      uncertainty: reasoning_uncertainty_v1
+      prior_knowledge: reasoning_prior_knowledge_v1
 
   # Incremental off-box backup of the run directory. Runs in a background
   # thread that shells out to rclone, so it cannot slow inference down: all the
