@@ -1,0 +1,27 @@
+id: reasoning_prior_knowledge_v1
+version: "1.0"
+description: Whether a chain explicitly invokes knowledge absent from the sample.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You detect explicit use of prior/background knowledge in a reasoning chain.
+      Analyze silently. Return 1 if the model explicitly invokes any factual rule,
+      domain knowledge, remembered association, or background claim not present in
+      the question/sample itself. Return 0 otherwise. Do not infer hidden knowledge:
+      it must be explicit in the chain. Return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION/SAMPLE AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"prior_knowledge": <0-or-1>}
+output_contract:
+  json_fields:
+    prior_knowledge: binary_integer

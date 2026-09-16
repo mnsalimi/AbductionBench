@@ -68,6 +68,7 @@ from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
 from .modes import BOV, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
+from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
 from .sync import ArtifactSync
@@ -250,6 +251,9 @@ class EvaluationEngine:
         #: Hypothesis modes run beyond what the dataset table lists, with the
         #: benchmark formulation that justifies each (specification item 15).
         self._introduced_modes: list[dict[str, str]] = []
+        #: Shared across tasks so a question's observation inventory is bought
+        #: once and reused across models/repeats.
+        self._reasoning_judge: ReasoningJudgeStage | None = None
 
     def _dump_resolved_config(self) -> None:
         """Write what this pass is running, without erasing what earlier ones ran.
@@ -341,6 +345,16 @@ class EvaluationEngine:
                 )
                 self._clients[model.id] = client
                 self._model_sems[model.id] = asyncio.Semaphore(model.limits.max_parallel_batches)
+
+            if self.engine_cfg.reasoning_judge.enabled:
+                self._reasoning_judge = ReasoningJudgeStage(
+                    config=self.engine_cfg.reasoning_judge,
+                    registry=self.registry,
+                    renderer=self.renderer,
+                    clients=self._clients,
+                    retry_policy=self.retry_policy,
+                    cache_dir=self.run_dir / "reasoning_judge_cache",
+                )
 
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
@@ -1481,16 +1495,100 @@ class EvaluationEngine:
                         "produced; the task is marked failed", identity.slug,
                     )
 
+        # Reconstruct checkpointed outputs for the reasoning judge. Scoring
+        # code changes do not alter a request fingerprint, so a resumed COT run
+        # may contain perfectly reusable model answers that predate these
+        # metrics; they must be judged rather than silently left blank.
+        prompt_by_id = {prompt.sample_id: prompt for prompt in rendered}
+        reused_triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
+        for record in reused_records:
+            prompt = prompt_by_id.get(str(record.get("sample_id", "")))
+            if prompt is None:
+                continue
+            response_payload = record.get("response") or {}
+            try:
+                status = ResponseStatus(record.get("status", ResponseStatus.ERROR.value))
+            except ValueError:
+                status = ResponseStatus.ERROR
+            reused_triplets.append(
+                (
+                    prompt.sample,
+                    ModelResponse(
+                        sample_id=prompt.sample_id,
+                        model_id=identity.model_id,
+                        status=status,
+                        content=response_payload.get("content"),
+                        reasoning=response_payload.get("reasoning"),
+                        finish_reason=response_payload.get("finish_reason"),
+                        error=response_payload.get("error"),
+                        error_class=response_payload.get("error_class"),
+                        attempts=int(response_payload.get("attempts") or 1),
+                        latency_s=float(response_payload.get("latency_s") or 0.0),
+                        batch_id=response_payload.get("batch_id"),
+                        batch_size=response_payload.get("batch_size"),
+                        batch_index=response_payload.get("batch_index"),
+                        usage=response_payload.get("usage") or {},
+                        usage_is_batch_aggregate=bool(
+                            response_payload.get("usage_is_batch_aggregate")
+                        ),
+                        completion_tokens_est=response_payload.get("completion_tokens_est"),
+                    ),
+                    SampleScore(
+                        metrics={
+                            key: float(value)
+                            for key, value in (record.get("metrics") or {}).items()
+                        },
+                        prediction=record.get("prediction"),
+                        parse_ok=bool(record.get("parse_ok", True)),
+                        details=record.get("details") or {},
+                    ),
+                )
+            )
+
+        # Structural reasoning metrics are a separate judge stage and are
+        # guarded by the prompt mode inside ReasoningJudgeStage: IO outputs can
+        # never enter it.  The stage is shared for the run so question-only
+        # observation totals are cached across models and repeats.
+        if self._reasoning_judge is not None and (scores or reused_triplets) and not fatal:
+            try:
+                fresh_count = len(scores)
+                reasoning_scored = await self._reasoning_judge.apply(
+                    adapter, identity, rendered, [*scores, *reused_triplets]
+                )
+                scores = reasoning_scored[:fresh_count]
+                reused_triplets = reasoning_scored[fresh_count:]
+            except Exception as exc:  # noqa: BLE001 - judging is best-effort
+                logger.exception(
+                    "task %s: reasoning judge stage failed: %s", identity.slug, exc
+                )
+                checkpoint.notes["reasoning_judge_error"] = str(exc)
+
+        # Initial records are written immediately after inference for crash
+        # safety. Append their post-judge replacements now; record de-duplication
+        # keeps the newest request fingerprint, which is what makes every judge
+        # metric appear as its own per-sample sheet column.
+        reasoning_mode = identity.prompt_mode in ("cot", "self-consistency")
+        records_to_refresh = [
+            *scores,
+            *(reused_triplets if reasoning_mode else []),
+        ]
+        if records_to_refresh and (
+            self.engine_cfg.judge.enabled
+            or (self._reasoning_judge is not None and reasoning_mode)
+        ):
+            judged_records = [
+                self._make_record(identity, prompt_by_id[sample.sample_id], response, score)
+                for sample, response, score in records_to_refresh
+                if sample.sample_id in prompt_by_id
+            ]
+            if judged_records:
+                store.append_many(judged_records)
+
         # Fold in reused records so metrics cover the whole planned set.
         reused_scores = [
-            SampleScore(
-                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
-                prediction=rec.get("prediction"),
-                parse_ok=bool(rec.get("parse_ok", True)),
-                details=rec.get("details") or {},
-            )
-            for rec in reused_records
-            if rec.get("status") != ResponseStatus.SKIPPED.value
+            score
+            for _sample, response, score in reused_triplets
+            if response.status is not ResponseStatus.SKIPPED
         ]
         reused_errors = sum(
             1 for rec in reused_records if rec.get("status") == ResponseStatus.ERROR.value

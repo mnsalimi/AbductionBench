@@ -1,0 +1,27 @@
+id: reasoning_directionality_v1
+version: "1.0"
+description: Direction of inference in an abductive reasoning chain.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You classify the direction of an abductive reasoning chain. Analyze silently.
+      Score 0 when the model assumes or guesses an explanation first and then reasons
+      backward to justify it against the evidence. Score 1 when the model reasons
+      from the evidence toward an explanation. Score 0.5 for mixed or ambiguous
+      cases. Use only these three values and return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"directionality": <0-or-0.5-or-1>}
+output_contract:
+  json_fields:
+    directionality: directionality

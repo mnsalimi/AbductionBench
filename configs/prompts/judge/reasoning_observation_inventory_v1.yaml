@@ -1,0 +1,25 @@
+id: reasoning_observation_inventory_v1
+version: "1.0"
+description: One-time inventory of the observations/evidence supplied by a question.
+task_kinds: [judge]
+required_fields: [question]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You inventory evidence in an abductive-reasoning question. Analyze silently.
+      An observation is a distinct fact, finding, event, measurement, rule, or other
+      piece of evidence supplied to the model and usable in reaching an answer.
+      Count separately supplied observations separately. Do not count answer choices,
+      task instructions, requested output format, or facts introduced only by the model.
+      Return only the JSON object requested, with a non-negative integer.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      Return exactly:
+      {"total_observations": <integer>}
+output_contract:
+  json_fields:
+    total_observations: nonnegative_integer

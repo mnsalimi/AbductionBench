@@ -1,0 +1,31 @@
+id: reasoning_observation_coverage_v1
+version: "1.0"
+description: Counts supplied observations and those used in a reasoning chain.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, total_observations]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You measure observation/evidence coverage in a chain of reasoning. Analyze
+      silently. An observation is a distinct fact, finding, event, measurement,
+      rule, or other piece of evidence supplied in the question. An observation is
+      used only when the chain explicitly contains, cites, paraphrases, or relies on
+      it. Do not credit evidence appearing only in the question or only in the final
+      answer. Copy the supplied total exactly. Return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      CACHED TOTAL OBSERVATIONS: {{ total_observations }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"total_observations": {{ total_observations }}, "observations_used": <integer>}
+output_contract:
+  json_fields:
+    total_observations: nonnegative_integer
+    observations_used: nonnegative_integer

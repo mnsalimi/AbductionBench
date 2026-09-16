@@ -25,9 +25,8 @@ Outputs written under a run directory:
 
 from __future__ import annotations
 
-import os
-
 import logging
+import os
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,6 +215,7 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
     for directory in task_dirs:
         for record in dedupe_records(load_records(directory / "records.jsonl")):
             response = record.get("response") or {}
+            details = record.get("details") or {}
             row: dict[str, Any] = {
                 "dataset_id": record.get("dataset_id"),
                 "model_id": record.get("model_id"),
@@ -248,6 +248,17 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
                 "batch_id": response.get("batch_id"),
                 "batch_size": response.get("batch_size"),
                 "latency_s": response.get("latency_s"),
+                # Why reasoning metrics are complete, partial, or absent.  The
+                # numeric outputs remain one metric column each below; these
+                # audit columns ensure a genuinely inapplicable metric is never
+                # silently indistinguishable from a failed judge call.
+                "reasoning_metrics_status": details.get("reasoning_metrics_status"),
+                "reasoning_metrics_inapplicable": _clip(
+                    details.get("reasoning_metrics_inapplicable"), clip
+                ),
+                "reasoning_judge_errors": _clip(
+                    details.get("reasoning_judge_errors"), clip
+                ),
             }
             for metric, value in (record.get("metrics") or {}).items():
                 row[f"metric.{metric}"] = _fmt(value)

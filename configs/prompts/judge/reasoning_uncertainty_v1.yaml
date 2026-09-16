@@ -1,0 +1,29 @@
+id: reasoning_uncertainty_v1
+version: "1.0"
+description: Number of reasoning steps that explicitly mark uncertainty.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, total_steps]
+optional_fields: []
+messages:
+  - role: system
+    content: |
+      You count uncertainty marking in a reasoning chain. Analyze silently using
+      the same discrete inferential-step notion as the supplied total. Count the
+      number of steps where the model explicitly expresses uncertainty, through
+      hedging language or another recognizable marker of doubt. Count a step at most
+      once even if it contains several markers. Return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      TOTAL STEPS FROM THE STEP-COUNT JUDGE: {{ total_steps }}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Return exactly:
+      {"uncertainty_steps": <integer>}
+output_contract:
+  json_fields:
+    uncertainty_steps: nonnegative_integer
