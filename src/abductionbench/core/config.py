@@ -498,7 +498,7 @@ def _reasoning_judge_templates() -> dict[str, str]:
         "observation_coverage": "reasoning_observation_coverage_v1",
         "branchiness_diversity": "reasoning_branchiness_diversity_v1",
         "density": "reasoning_density_v1",
-        "redundancy_completeness": "reasoning_redundancy_completeness_v1",
+        "redundancy_completeness": "reasoning_redundancy_completeness_v2",
         "directionality": "reasoning_directionality_v1",
         "backtracking": "reasoning_backtracking_v1",
         "differential_elimination": "reasoning_differential_elimination_v1",
@@ -522,7 +522,10 @@ class ReasoningJudgeConfig(_Base):
     #: chain as well as the JSON: a judge whose chain eats the whole budget
     #: returns empty content, and every metric in that call is then lost.  It
     #: is a ceiling, not an allocation -- the reply still ends at the JSON.
-    max_tokens: int = Field(2048, ge=1)
+    #: Measured against gpt-oss-20b on this suite's longest chain (defab, 18k
+    #: characters): the density verdict took 5,220 completion tokens, and at
+    #: 2,048 it came back cut off and empty.
+    max_tokens: int = Field(8192, ge=1)
     temperature: float = Field(0.0, ge=0)
     group_size: int = Field(8, ge=1)
     cache: bool = True

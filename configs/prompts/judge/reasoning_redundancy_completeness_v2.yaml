@@ -1,0 +1,47 @@
+id: reasoning_redundancy_completeness_v2
+version: "2.0"
+description: Redundant and necessary used evidence in a reasoning chain, bounded by the inventory.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain, model_answer]
+optional_fields: [reference_answer, total_observations]
+messages:
+  - role: system
+    content: |
+      You assess the evidence used in an abductive chain. Analyze silently.
+      Redundancy is the number of observations/evidence used in the chain that could
+      be removed while the correct answer could still be logically reached without
+      them. Completeness is the number of observations/evidence used in the chain
+      that are necessary: without them, the correct answer could not be logically
+      reached. Count evidence units, not mentions, and count only evidence actually
+      used in the chain.
+
+      Both counts are drawn from the same supplied inventory of observations, so
+      neither may exceed the supplied total, and the two together may not exceed it
+      either: one observation is redundant or necessary, never both. A restatement,
+      a sub-part or an implication of an observation already counted is not a second
+      observation. Return only the requested JSON.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+      {% if total_observations %}
+      TOTAL OBSERVATIONS SUPPLIED BY THE QUESTION: {{ total_observations }}
+      Neither count may exceed this number, and their sum may not exceed it.
+      {% endif %}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      MODEL ANSWER:
+      {{ model_answer }}
+      {% if reference_answer %}
+      REFERENCE/CORRECT ANSWER DATA:
+      {{ reference_answer }}
+      {% endif %}
+
+      Return exactly:
+      {"redundancy": <integer>, "completeness": <integer>}
+output_contract:
+  json_fields:
+    redundancy: nonnegative_integer
+    completeness: nonnegative_integer

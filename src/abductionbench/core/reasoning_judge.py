@@ -513,10 +513,18 @@ class ReasoningJudgeStage:
                 "branchiness_diversity", generation, ("question", "reasoning_chain")
             )
         await run_family("density", targets, ("question", "reasoning_chain", "options"))
+        # The inventory total goes in as well: both counts are drawn from it,
+        # and a judge that cannot see it returns counts the normalizer rejects.
         await run_family(
             "redundancy_completeness",
             targets,
-            ("question", "reasoning_chain", "model_answer", "reference_answer"),
+            (
+                "question",
+                "reasoning_chain",
+                "model_answer",
+                "reference_answer",
+                "total_observations",
+            ),
         )
         await run_family("directionality", targets, ("question", "reasoning_chain"))
         await run_family("prior_knowledge", targets, ("question", "reasoning_chain"))

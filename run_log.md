@@ -219,3 +219,34 @@ one greedy span from the first brace to the last, so a judge that reasons in
 the open, echoes the example object, or writes a stray brace is still read.
 
 Validation: `ruff check src tests` passed, full suite **201 passed**.
+
+
+## First live calibration (2026-09-16), and what it changed
+
+Two datasets, 6 records, 1 repeat, judged by gpt-oss-20b on this box. The stage
+worked: 53 of 54 verdicts parsed on the first CoT task, and the metrics were
+coherent. Two failures, both real, both now fixed.
+
+**The judge's budget was the binding constraint, measured not guessed.** Against
+defab's longest chain (18,239 characters) the density verdict took **5,220
+completion tokens**; at 2,048 the call came back `finish_reason=length` with
+empty content, which is the empty-reply warning seen eight times during the run.
+Redundancy/completeness landed at 1,974 -- inside 2,048 by 74 tokens, which is
+why it failed only sometimes. The default is now **8,192**. Worth recording:
+vLLM does not split this model's analysis into `reasoning_content`, so those
+thousands of tokens are counted against the budget and then discarded, and the
+JSON arrives inline -- which is what makes reading the *last* JSON object out of
+a reply load-bearing rather than defensive.
+
+**A judge counted more evidence than the question contains.** One eCARE sample
+came back `completeness: 3` against a 2-observation inventory; the validator
+caught it and dropped the value rather than recording it. The cause is that the
+prompt never showed the judge the inventory its counts are normalized against.
+`reasoning_redundancy_completeness_v2` supplies the total and states the bound
+(neither count exceeds it, and their sum does not either, because an observation
+is redundant or necessary and never both). The same sample now returns
+`completeness: 1`. v1 is left in place; a template that has produced a number is
+not edited underneath it.
+
+Validation: `ruff check src tests` clean for the files touched, full suite
+**229 passed, 1 skipped**.

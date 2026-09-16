@@ -35,6 +35,7 @@ def test_shipped_templates_load(prompt_dir: Path):
         "reasoning_branchiness_diversity_v1",
         "reasoning_density_v1",
         "reasoning_redundancy_completeness_v1",
+        "reasoning_redundancy_completeness_v2",
         "reasoning_directionality_v1",
         "reasoning_backtracking_v1",
         "reasoning_differential_elimination_v1",
