@@ -169,9 +169,26 @@ engine:
     checkers: 8
     timeout_s: 300
     bandwidth_limit: ""       # e.g. "8M" to leave headroom for other traffic
-    # Patterns to leave out. raw/** is the bulky part of a run (every batch's
-    # request/response); excluding it still backs up every record, metric and log.
-    exclude: []
+    # Patterns to leave out. raw/ is the bulky part of a run -- every batch's
+    # request/response payload, kept locally for auditing -- and in a full run it
+    # is 1,096 of 1,201 files and ~95% of the bytes. Uploading it exhausts Google
+    # Drive's per-minute request quota (which is per *project*, shared across
+    # every rclone user) and starves the files that matter. Everything else is
+    # still backed up: records, metrics, reasoning_metrics.jsonl, judge caches,
+    # checkpoints, logs and reports.
+    #
+    # Measured: 636 MB of run directory against 684 KB of metrics, 43 MB in ten
+    # minutes before the quota cut it off. Set to [] to back up raw payloads too,
+    # and expect the upload to take hours.
+    exclude: ["raw/"]
+    # No pass starts within this many seconds of the last one finishing, whoever
+    # asked. The interval spaces scheduled uploads; this spaces the requested
+    # ones, so several datasets finishing together produce one upload, not five.
+    min_gap_s: 60
+    # After a rate-limited pass, wait before trying again -- doubling per
+    # consecutive failure, capped here, reset by the first success. Uploads are
+    # incremental, so waiting costs freshness and nothing else.
+    rate_limit_backoff_max_s: 900
     extra_args: []
 
   reporting:

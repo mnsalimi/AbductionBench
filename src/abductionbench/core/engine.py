@@ -549,6 +549,12 @@ class EvaluationEngine:
             dataset_id=dataset_id,
             tasks_so_far=len(snapshot.tasks),
         )
+        # Push the workbook off-box now that this dataset's API calls are done,
+        # rather than leaving it to the next scheduled pass. Asking rather than
+        # uploading: the request returns immediately and the sync thread does
+        # the work, so this cannot stall the batches still in flight, and
+        # requests that arrive while a pass is running coalesce into one.
+        self.sync.request_upload(reason=f"dataset:{dataset_id}")
 
     def _require_judge_for_unverifiable(self) -> None:
         """Fail fast if an unverifiable dataset is scheduled with no judge.

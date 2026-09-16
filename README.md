@@ -583,6 +583,35 @@ their own, 9% exceed
 8,192 tokens and 16% exceed 2,048. A cap would truncate real answers, so it is a
 trade to make deliberately, with those numbers in view, not a free win.
 
+### Pacing the backup
+
+Google Drive's quota is per *project*, shared across every rclone user of the
+same OAuth client, so "upload more often" and "upload everything" are both ways
+of uploading less. Four things keep a run inside it:
+
+* **`raw/` is excluded by default.** In a full run it is 1,096 of 1,201 files
+  and ~95% of the bytes -- per-batch request/response payloads kept locally for
+  auditing. Everything that is a *result* still goes: records, metrics,
+  `reasoning_metrics.jsonl`, judge caches, checkpoints, logs and reports. Set
+  `engine.sync.exclude: []` to send raw too, and expect hours.
+* **Passes never overlap and never bunch up.** One at a time, and no pass starts
+  within `min_gap_s` of the last one finishing, so several datasets completing
+  together produce one upload rather than one each.
+* **Being rate-limited makes it wait, not retry.** A pass refused with
+  `rateLimitExceeded` doubles its wait each consecutive time, up to
+  `rate_limit_backoff_max_s`, and the first success resets it. Nothing is lost:
+  uploads are incremental, so the next pass sends everything that changed
+  meanwhile.
+* **`--tpslimit` and `--drive-pacer-min-sleep`** bound the API call rate within
+  a pass, and `--fast-list` makes it one listing per directory instead of one
+  per file.
+
+A dataset finishing its API calls asks for an upload immediately, so the
+interim workbook goes off-box a dataset at a time instead of waiting for the
+next scheduled pass. The ask is non-blocking -- the request returns at once and
+the background thread does the work -- because nothing in the backup may slow
+inference down.
+
 ## The judge is a different model
 
 Datasets with no answer key are graded by an LLM judge, not by overlap with a

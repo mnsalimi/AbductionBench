@@ -365,3 +365,192 @@ def test_a_run_can_be_continued_from_its_backup_after_the_directory_is_gone(
     assert continued.tasks[0].n_reused == 4
     assert continued.tasks[0].n_scored == 4
     assert fake_server.state.requests - calls_before <= 2   # only the endpoint probe
+
+
+# --------------------------------------------------------------------------- #
+# pacing: ask less often when told to, and never in a burst
+# --------------------------------------------------------------------------- #
+
+
+def test_a_rate_limited_pass_backs_off_instead_of_retrying_on_the_interval(tmp_path: Path):
+    """The only correct answer to "you are asking too often" is to ask less often.
+
+    Google Drive's quota is per *project* across every rclone user, so a run
+    that keeps retrying on its usual interval does not merely fail -- it starves
+    whatever else is uploading, including its own earlier passes.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, interval_s=60, min_gap_s=0), run, "run-1")
+
+    syncer._note_failure(
+        "Failed to copy: googleapi: Error 403: Rate Limit Exceeded, rateLimitExceeded"
+    )
+    assert syncer._rate_limited_in_a_row == 1
+    first = syncer._backoff_until
+    assert first > 0
+
+    # An interval pass stands down while backed off; `final` never does.
+    assert syncer._may_start("interval") is False
+    assert syncer._may_start("final") is True
+
+    # Consecutive refusals wait longer, up to the configured ceiling.
+    syncer._note_failure("Error 403: rateLimitExceeded")
+    assert syncer._backoff_until > first
+    syncer._rate_limited_in_a_row = 99
+    syncer._note_failure("Error 403: rateLimitExceeded")
+    assert syncer._backoff_until - time.monotonic() <= syncer.config.rate_limit_backoff_max_s + 1
+
+
+def test_an_ordinary_failure_does_not_back_off(tmp_path: Path):
+    """Backoff is for being throttled, not for every error there is."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._note_failure("directory not found")
+    assert syncer._rate_limited_in_a_row == 0
+    assert syncer._backoff_until == 0.0
+
+
+def test_the_first_success_clears_the_backoff(tmp_path: Path):
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, min_gap_s=0), run, "run-1")
+    syncer._note_failure("rateLimitExceeded")
+    assert syncer._backoff_until > 0
+    syncer._backoff_until = 0.0  # pretend the wait elapsed
+    syncer.flush()
+    assert syncer.stats.successes >= 1
+    assert syncer._rate_limited_in_a_row == 0
+    assert syncer._backoff_until == 0.0
+
+
+def test_requested_uploads_keep_a_minimum_distance_from_the_last_one(tmp_path: Path):
+    """Several datasets finishing together must produce one upload, not five."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, min_gap_s=600), run, "run-1")
+    syncer._last_pass_ended = time.monotonic()
+
+    assert syncer._may_start("dataset:art") is False
+    # An explicit flush is a caller that blocked on purpose, and the final pass
+    # is the one that must never be skipped.
+    assert syncer._may_start("flush") is True
+    assert syncer._may_start("final") is True
+
+
+def test_request_upload_returns_immediately_and_the_thread_does_the_work(tmp_path: Path):
+    """It is called from the engine's event loop, so it must never block."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, interval_s=30, min_gap_s=0), run, "run-1")
+    syncer.start()
+    try:
+        started = time.monotonic()
+        syncer.request_upload(reason="dataset:art")
+        assert time.monotonic() - started < 0.5, "request_upload blocked the caller"
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not (remote / "run-1" / "engine.log").exists():
+            time.sleep(0.1)
+        assert (remote / "run-1" / "engine.log").exists(), (
+            "the requested upload never happened"
+        )
+    finally:
+        syncer.stop(final=False)
+
+
+def test_requests_arriving_during_a_pass_coalesce(tmp_path: Path):
+    """Ten datasets finishing at once must not queue ten rclone runs."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, interval_s=30, min_gap_s=600), run, "run-1")
+    syncer.start()
+    try:
+        for index in range(10):
+            syncer.request_upload(reason=f"dataset:d{index}")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and syncer.stats.ticks < 1:
+            time.sleep(0.1)
+        time.sleep(1.0)
+        # min_gap_s holds the rest off; one upload covers them all, because a
+        # pass sends whatever has changed rather than one dataset's worth.
+        assert syncer.stats.successes == 1, syncer.stats
+    finally:
+        syncer.stop(final=False)
+
+
+def test_a_finished_dataset_asks_for_the_workbook_to_go_off_box(
+    fake_server, write_run_config, fake_dataset, tmp_path
+):
+    """A dataset finishing its API calls must ask for an upload there and then.
+
+    A full sweep is many hours, and the interim workbook exists precisely so the
+    first dataset's results are readable before the last one finishes. Leaving
+    it for the next scheduled pass is usually fine and occasionally not: a run
+    that dies in between leaves those results only on a filesystem this box does
+    not guarantee.
+
+    What is asserted is the *request*, not a file on the remote: the final pass
+    uploads everything anyway, so a file proves nothing about when it went. The
+    request is also where the timing guarantee lives -- it happens as the
+    dataset completes rather than up to an interval later. That the request
+    turns into an upload is
+    test_request_upload_returns_immediately_and_the_thread_does_the_work.
+    """
+    import asyncio
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.engine import EvaluationEngine
+
+    remote = tmp_path / "backup"
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        engine={"sync": {"enabled": True, "remote_path": str(remote), "interval_s": 600}},
+    )
+    config = load_run_config(config_path)
+    engine = EvaluationEngine(config)
+
+    asked: list[str] = []
+    original = engine.sync.request_upload
+    engine.sync.request_upload = lambda reason="requested": (  # type: ignore[method-assign]
+        asked.append(reason),
+        original(reason=reason),
+    )[0]
+
+    result = asyncio.run(engine.run())
+
+    assert "dataset:fake" in asked, f"the finished dataset asked for nothing: {asked}"
+    # The workbook is on the remote by the end either way, which is the backstop.
+    assert (remote / result.run_id / "reports" / "abductionbench_results.xlsx").exists()
+
+
+def test_repeated_rate_limiting_names_the_shared_oauth_client(tmp_path: Path, monkeypatch):
+    """When the quota is not ours to pace around, say so.
+
+    A Drive remote with no client_id of its own uses rclone's built-in OAuth
+    client, whose per-minute project quota is shared with every rclone user
+    alive. Backing off on this box cannot fix that, and a run that keeps logging
+    "waiting 240s" without saying why is how an afternoon goes into tuning the
+    wrong knob.
+    """
+    import subprocess as sp
+
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, remote_path="gdrive:Backups"), run, "run-1")
+
+    def fake_run(command, **kwargs):
+        assert command[1:] == ["config", "show", "gdrive"]
+        return sp.CompletedProcess(command, 0, stdout="[gdrive]\ntype = drive\ntoken = x\n", stderr="")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    syncer._rate_limited_in_a_row = 2
+    hint = syncer._shared_client_hint()
+    assert "client_id" in hint and "rclone config update gdrive" in hint
+
+    # A remote that already has one is not nagged about it.
+    def fake_run_configured(command, **kwargs):
+        return sp.CompletedProcess(
+            command, 0, stdout="[gdrive]\ntype = drive\nclient_id = mine\n", stderr=""
+        )
+
+    monkeypatch.setattr(sp, "run", fake_run_configured)
+    assert syncer._shared_client_hint() == ""
+
+    # Neither is a one-off blip, nor a destination that is not Drive at all.
+    syncer._rate_limited_in_a_row = 1
+    assert syncer._shared_client_hint() == ""

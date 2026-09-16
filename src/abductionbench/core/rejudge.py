@@ -436,11 +436,13 @@ def sync_run(run_dir: Path, config: RunConfig) -> dict[str, Any]:
     sync_config = config.engine.sync
     if not sync_config.exclude:
         # The raw per-batch payloads are the *inference* artifacts, and this
-        # pass did not produce any: it read them. On the suite they are ~600 MB
-        # against ~700 KB of metrics, so uploading them again to deliver the
-        # metrics costs hours and changes nothing on the far end. A run config
-        # that sets its own excludes is left alone.
-        sync_config = sync_config.model_copy(update={"exclude": ["raw/**"]})
+        # pass did not produce any: it read them, and the run that wrote them
+        # has already backed them up. On the suite they are ~600 MB against
+        # ~700 KB of metrics, so re-sending them to deliver the metrics costs
+        # hours and changes nothing on the far end. This overrides even an
+        # explicit `exclude: []`, because that setting is about what a *run*
+        # should back up and this pass produces none of it.
+        sync_config = sync_config.model_copy(update={"exclude": ["raw/"]})
     syncer = ArtifactSync(sync_config, run_dir, run_dir.name)
     problem = syncer.preflight()
     if problem:

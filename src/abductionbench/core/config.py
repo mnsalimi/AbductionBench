@@ -618,6 +618,17 @@ class SyncConfig(_Base):
     #: is rate-limited per project across all rclone users, and a run with a
     #: thousand small files trips HTTP 403 rateLimitExceeded without this.
     tps_limit: float = Field(8.0, ge=0)
+    #: Minimum seconds between the end of one upload and the start of the next,
+    #: whoever asked for it.  The interval already spaces scheduled passes; this
+    #: is what keeps requested ones -- one per dataset as it finishes -- from
+    #: arriving in a burst when several datasets complete together.  A ``final``
+    #: pass ignores it, because the last upload must not be skipped.
+    min_gap_s: float = Field(60.0, ge=0)
+    #: Ceiling on the wait after the destination rate-limits us.  The wait
+    #: doubles per consecutive rate-limited pass and resets on the first one
+    #: that succeeds.  Nothing is lost by waiting: uploads are incremental, so a
+    #: later pass sends everything that changed in the meantime.
+    rate_limit_backoff_max_s: float = Field(900.0, ge=0)
 
 
 class ReportingConfig(_Base):

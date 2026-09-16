@@ -149,6 +149,20 @@ class ArtifactSync:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._on_event = on_event
+        #: Set by request_upload() so a caller on the hot path can ask for an
+        #: upload without waiting for one. The loop picks it up on its next
+        #: turn, which is also what keeps requests from stacking: several
+        #: datasets finishing close together coalesce into one pass.
+        self._requested = threading.Event()
+        self._requested_reason = ""
+        #: Monotonic deadline before which no *interval* pass may start. Set
+        #: when the destination rate-limits us, so the response to "you are
+        #: asking too often" is to ask less often rather than to keep asking.
+        self._backoff_until = 0.0
+        self._rate_limited_in_a_row = 0
+        #: When the last pass finished, so a requested upload keeps a minimum
+        #: distance from the previous one however often it is requested.
+        self._last_pass_ended = 0.0
         #: Set when preflight rules the destination unusable.  Every later
         #: upload is then skipped: retrying a misconfigured remote for hours
         #: would only bury the original error under rclone noise.
@@ -316,7 +330,16 @@ class ArtifactSync:
         # Wait one interval first: the very first seconds of a run produce only
         # the resolved config, and there is no point racing the engine's startup.
         last_probe = time.monotonic()
-        while not self._stop.wait(self.config.interval_s):
+        while True:
+            # Wake either on the interval or as soon as something asks for an
+            # upload, whichever comes first.
+            requested = self._requested.wait(timeout=self.config.interval_s)
+            if self._stop.is_set():
+                return
+            reason = "interval"
+            if requested:
+                self._requested.clear()
+                reason = self._requested_reason or "requested"
             if self._degraded:
                 if not self.config.preflight_retry_s:
                     return
@@ -335,13 +358,16 @@ class ArtifactSync:
                     self.destination,
                 )
                 self._emit("sync_recovered", destination=self.destination)
-            self._tick(reason="interval")
+            self._tick(reason=reason)
 
     def stop(self, *, final: bool = True) -> SyncStats:
         """Stop the thread and (by default) run one last upload."""
         if not self.config.enabled or self._degraded:
             return self.stats
         self._stop.set()
+        # The loop waits on the request event, so signal it or stopping would
+        # block for up to a whole interval.
+        self._requested.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
         if final:
@@ -352,21 +378,156 @@ class ArtifactSync:
         return self.stats
 
     def flush(self) -> SyncStats:
-        """Upload now (used after the report files are written)."""
+        """Upload now, on this thread (used after the report files are written)."""
         if not self.config.enabled or self._degraded:
             return self.stats
         self._tick(reason="flush")
         return self.stats
 
+    def request_upload(self, reason: str = "requested") -> None:
+        """Ask the background thread to upload soon, and return immediately.
+
+        For callers on the hot path -- the engine asking for the workbook to go
+        up now that a dataset has finished its API calls. It must not block the
+        event loop, and it must not turn "one upload per dataset" into "one
+        rclone per dataset finishing at the same moment": the loop coalesces
+        requests that arrive while a pass is running, and enforces the same
+        minimum spacing between passes that the interval gives.
+        """
+        if not self.config.enabled or self._degraded or self._thread is None:
+            return
+        self._requested_reason = reason
+        self._requested.set()
+
     # ------------------------------------------------------------------ #
     # one upload
     # ------------------------------------------------------------------ #
+
+    #: Destination responses that mean "you are asking too often". Backing off
+    #: is the only correct answer to these: retrying on the usual interval turns
+    #: one rate-limited pass into an hour of them, and on Google Drive the quota
+    #: is per *project* across every rclone user, so a run that keeps hammering
+    #: also starves whatever else is uploading.
+    _RATE_LIMITED = (
+        "ratelimitexceeded",
+        "userratelimitexceeded",
+        "quotaexceeded",
+        "too many requests",
+        "429",
+        "403: rate",
+    )
+
+    def _may_start(self, reason: str) -> bool:
+        """Whether a pass may begin now. A pure predicate; the caller owns the lock.
+
+        Two separate guards, and both matter:
+
+        * **backoff** -- after the destination rate-limits us, interval passes
+          stand down for a growing interval instead of retrying every minute.
+        * **spacing** -- no pass starts within one interval of the last one
+          finishing, whoever asked. This is what keeps "upload after each
+          dataset" from becoming a burst when several datasets finish together.
+
+        A ``final`` pass overrides both: the run is ending, and the last upload
+        is the one that must not be skipped.  An explicit ``flush`` -- a caller
+        that deliberately blocked to wait for an upload -- overrides the
+        spacing but not the backoff, because forcing a request at a destination
+        that has just refused one only lengthens the refusal.
+        """
+        if reason == "final":
+            return True
+        now = time.monotonic()
+        if now < self._backoff_until:
+            logger.info(
+                "artifact sync: standing down for another %.0fs after the destination "
+                "rate-limited us (%s pass skipped; nothing is lost, the next pass sends "
+                "everything that changed)",
+                self._backoff_until - now,
+                reason,
+            )
+            return False
+        if reason == "flush":
+            return True
+        gap = now - self._last_pass_ended
+        if self._last_pass_ended and gap < self.config.min_gap_s:
+            logger.debug(
+                "artifact sync: only %.0fs since the last upload; %s pass deferred",
+                gap,
+                reason,
+            )
+            return False
+        return True
+
+    def _clear_backoff(self) -> None:
+        if self._rate_limited_in_a_row:
+            logger.info("artifact sync: destination accepted us again; normal interval resumed")
+        self._rate_limited_in_a_row = 0
+        self._backoff_until = 0.0
+
+    def _note_failure(self, message: str) -> None:
+        """Back off when the failure says we are going too fast."""
+        lowered = message.lower()
+        if not any(marker in lowered for marker in self._RATE_LIMITED):
+            return
+        self._rate_limited_in_a_row += 1
+        delay = min(
+            self.config.interval_s * (2**self._rate_limited_in_a_row),
+            self.config.rate_limit_backoff_max_s,
+        )
+        self._backoff_until = time.monotonic() + delay
+        logger.warning(
+            "artifact sync: the destination rate-limited us (%d in a row); waiting %.0fs "
+            "before the next attempt. Uploads are incremental, so the delay costs nothing "
+            "but freshness.%s",
+            self._rate_limited_in_a_row,
+            delay,
+            self._shared_client_hint(),
+        )
+        self._emit("sync_rate_limited", seconds=round(delay, 1))
+
+    def _shared_client_hint(self) -> str:
+        """Say so when the quota being hit is not really ours to pace around.
+
+        A Google Drive remote configured without its own ``client_id`` uses
+        rclone's built-in OAuth client, whose per-minute project quota is shared
+        by every rclone user in the world. When that is the limit being hit, no
+        amount of backing off on this box fixes it, and the fix is a one-off
+        configuration change -- so the log says which of the two situations this
+        is rather than leaving it to be guessed at from repeated warnings.
+        """
+        if self._rate_limited_in_a_row < 2:
+            return ""
+        remote = self.config.remote_path.split(":", 1)[0]
+        if not remote or "/" in remote:
+            return ""
+        try:
+            shown = subprocess.run(  # noqa: S603 - fixed binary, remote name from config
+                [self.config.rclone_binary, "config", "show", remote],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if "type = drive" not in shown or "client_id" in shown:
+            return ""
+        return (
+            f" NOTE: the {remote!r} remote has no client_id of its own, so it is using "
+            "rclone's built-in one, whose Drive quota is shared with every other rclone "
+            "user. That quota is very likely what is being hit, and pacing on this box "
+            "cannot fix it -- create a Google Cloud OAuth client and set it with "
+            f"`rclone config update {remote} client_id <id> client_secret <secret>`."
+        )
 
     def _tick(self, *, reason: str) -> None:
         # Serialize ticks: a slow upload must not overlap with the next one, or
         # rclone instances would fight over the same files.
         if not self._lock.acquire(blocking=False):
             logger.debug("artifact sync: previous upload still running; skipping this tick")
+            return
+        if not self._may_start(reason):
+            self._lock.release()
             return
         started = time.monotonic()
         try:
@@ -386,9 +547,11 @@ class ArtifactSync:
             )
             elapsed = time.monotonic() - started
             self.stats.total_seconds += elapsed
+            self._last_pass_ended = time.monotonic()
             if completed.returncode == 0:
                 self.stats.successes += 1
                 self.stats.last_success_ts = time.time()
+                self._clear_backoff()
                 logger.info(
                     "artifact sync ok (%s) in %.1fs -> %s", reason, elapsed, self.destination
                 )
@@ -397,6 +560,7 @@ class ArtifactSync:
                 self.stats.failures += 1
                 message = (completed.stderr or completed.stdout or "").strip()[-500:]
                 self.stats.last_error = message
+                self._note_failure(message)
                 logger.warning(
                     "artifact sync failed (%s, exit %d): %s -- the run continues; will retry "
                     "on the next tick",
