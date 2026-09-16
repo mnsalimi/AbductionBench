@@ -554,3 +554,32 @@ def test_repeated_rate_limiting_names_the_shared_oauth_client(tmp_path: Path, mo
     # Neither is a one-off blip, nor a destination that is not Drive at all.
     syncer._rate_limited_in_a_row = 1
     assert syncer._shared_client_hint() == ""
+
+
+def test_tightening_exclude_drops_what_the_stage_already_holds(tmp_path: Path):
+    """A pattern added later must take effect, not just apply to new files.
+
+    rsync's --delete leaves files the receiver already has when they are
+    excluded, so a stage built under `exclude: []` keeps every raw payload and
+    rclone re-uploads them on every pass afterwards -- the exact cost the
+    pattern was added to avoid.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    raw = run / "datasets" / "ds" / "model" / "tpl" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "batch-0.json").write_text('{"request": {}}', encoding="utf-8")
+
+    # First pass with nothing excluded: the payload is staged and uploaded.
+    syncer = ArtifactSync(_config(remote, exclude=[], min_gap_s=0), run, "run-1")
+    syncer.flush()
+    assert (remote / "run-1" / "datasets/ds/model/tpl/raw/batch-0.json").exists()
+    staged = syncer.stage_dir / "datasets/ds/model/tpl/raw/batch-0.json"
+    assert staged.exists()
+
+    # Now exclude it. The stage must stop offering it to rclone.
+    tightened = ArtifactSync(_config(remote, exclude=["raw/"], min_gap_s=0), run, "run-1")
+    tightened.flush()
+    assert not staged.exists(), "the stage still holds an excluded payload"
+    # copy never deletes from the remote, so what is already there stays -- the
+    # point is that it is not re-sent from here on.
+    assert (remote / "run-1" / "engine.log").exists()

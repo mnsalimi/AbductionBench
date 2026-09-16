@@ -204,7 +204,12 @@ class ArtifactSync:
             return self.run_dir
         stage = self.stage_dir
         stage.mkdir(parents=True, exist_ok=True)
-        command = ["rsync", "-a", "--delete"]
+        # --delete-excluded, not just --delete: plain --delete leaves files the
+        # receiver already has when they are *excluded*, so a stage built before
+        # a pattern was added keeps serving what that pattern is meant to skip,
+        # and rclone dutifully uploads it forever. Tightening `exclude` on a run
+        # that has already synced is exactly when this bites.
+        command = ["rsync", "-a", "--delete", "--delete-excluded"]
         for pattern in self.config.exclude:
             command.extend(["--exclude", pattern])
         command.extend([f"{self.run_dir}/", f"{stage}/"])
