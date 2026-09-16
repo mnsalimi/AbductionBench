@@ -546,3 +546,98 @@ class ReasonedAdapter(DatasetAdapter):
     assert lines and all(entry["prompt_mode"] == "cot" for entry in lines)
     assert lines[0]["raw"]["steps"]["backtracking_steps"] == 1
     assert lines[0]["metrics"]["reasoning_backtracking_rate"] == 0.25
+
+
+def test_one_question_is_bought_once_even_when_tasks_ask_it_together():
+    """Deduplication must not cost the concurrency it is there to protect.
+
+    Holding a lock across the whole inventory step buys each question once, but
+    it also queues every task's first wave behind every other task's. This
+    checks both halves: the same question is fetched once, and two tasks asking
+    *different* questions are in flight at the same time.
+    """
+    import tempfile
+
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    fetched: list[tuple[str, ...]] = []
+    in_flight = 0
+    peak = 0
+
+    class _Stage(ReasoningJudgeStage):
+        async def _judge_many(self, family, requests):
+            nonlocal in_flight, peak
+            fetched.append(tuple(sorted(requests)))
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.05)
+                return {key: {"total_observations": 1} for key in requests}
+            finally:
+                in_flight -= 1
+
+    async def run():
+        with tempfile.TemporaryDirectory() as directory:
+            stage = _Stage(
+                config=ReasoningJudgeConfig(enabled=True, model="m"),
+                registry=_FakeRegistry(),
+                renderer=None,
+                clients={"m": object()},
+                retry_policy=None,
+                cache_dir=Path(directory),
+            )
+            shared = {"q-shared": {"question": "same"}}
+            other = {"q-other": {"question": "different"}}
+            return await asyncio.gather(
+                stage._inventories(dict(shared)),
+                stage._inventories(dict(shared)),
+                stage._inventories(dict(other)),
+            )
+
+    first, second, third = asyncio.run(run())
+    assert first == second == {"q-shared": {"total_observations": 1}}
+    assert third == {"q-other": {"total_observations": 1}}
+    # One fetch for the shared question, one for the other -- not three.
+    assert sorted(fetched) == [("q-other",), ("q-shared",)]
+    # ...and they overlapped rather than queueing.
+    assert peak == 2
+
+
+def test_a_failed_inventory_never_leaves_another_task_waiting():
+    """A claimed question must be resolved even when its fetch blows up."""
+    import tempfile
+
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    class _Stage(ReasoningJudgeStage):
+        calls = 0
+
+        async def _judge_many(self, family, requests):
+            type(self).calls += 1
+            if type(self).calls == 1:
+                await asyncio.sleep(0.05)
+                raise RuntimeError("judge exploded")
+            return {key: {"total_observations": 3} for key in requests}
+
+    async def run():
+        with tempfile.TemporaryDirectory() as directory:
+            stage = _Stage(
+                config=ReasoningJudgeConfig(enabled=True, model="m"),
+                registry=_FakeRegistry(),
+                renderer=None,
+                clients={"m": object()},
+                retry_policy=None,
+                cache_dir=Path(directory),
+            )
+            request = {"q": {"question": "same"}}
+            owner = asyncio.create_task(stage._inventories(dict(request)))
+            await asyncio.sleep(0.01)  # let the owner claim the key
+            waiter = asyncio.create_task(stage._inventories(dict(request)))
+            results = await asyncio.gather(owner, waiter, return_exceptions=True)
+            return results, stage
+
+    results, stage = asyncio.run(asyncio.wait_for(run(), timeout=5))
+    assert isinstance(results[0], RuntimeError)
+    # The waiter is released with "no inventory" rather than hanging forever.
+    assert results[1] == {"q": None}
+    assert not stage._inventories_inflight

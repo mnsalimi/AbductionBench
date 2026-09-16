@@ -441,6 +441,14 @@ class ReasoningJudgeStage:
         self._cache_path = self.cache_dir / "verdicts.json"
         self._cache: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        #: Observation inventories currently being bought, by question key.
+        #: The inventory is the one purchase shared between tasks, and the
+        #: obvious way to stop two of them paying for the same question twice
+        #: -- hold a lock across the whole inventory step -- serializes every
+        #: task's first wave behind every other task's. This lets tasks asking
+        #: *different* questions proceed at once while a task asking one
+        #: already in flight waits on that same answer.
+        self._inventories_inflight: dict[str, asyncio.Future] = {}
         self._calls = calls or asyncio.Semaphore(config.max_parallel_calls)
         #: A standalone JSONL log of these metrics alone, one line per judged
         #: output, written next to the records.  The sheet is the report and
@@ -621,10 +629,8 @@ class ReasoningJudgeStage:
 
         # The inventory is the one shared purchase: it depends on the question
         # alone, so it is bought once per distinct question and reused for every
-        # model, repeat and task that asks it. Serialized across tasks only so
-        # two of them cannot both pay for the same question at once.
-        async with self._lock:
-            inventories = await self._judge_many("observation_inventory", inventory_requests)
+        # model, repeat and task that asks it.
+        inventories = await self._inventories(inventory_requests)
 
         common: dict[int, dict[str, Any]] = {}
         for target in targets:
@@ -719,6 +725,43 @@ class ReasoningJudgeStage:
                 (target.raw.get("steps") or {}).get("total_steps")
             )
         await run_family("uncertainty", targets, ("question", "reasoning_chain", "total_steps"))
+
+    async def _inventories(
+        self, requests: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any] | None]:
+        """Buy each question's inventory once, without serializing the tasks.
+
+        Deduplication is per question rather than per step: a task claims the
+        questions nobody else is buying, fetches exactly those, and awaits the
+        rest on the futures whoever claimed them will resolve.
+        """
+        loop = asyncio.get_running_loop()
+        mine: dict[str, dict[str, Any]] = {}
+        waiting: dict[str, asyncio.Future] = {}
+        async with self._lock:
+            for key, fields in requests.items():
+                pending = self._inventories_inflight.get(key)
+                if pending is not None:
+                    waiting[key] = pending
+                else:
+                    self._inventories_inflight[key] = loop.create_future()
+                    mine[key] = fields
+
+        out: dict[str, dict[str, Any] | None] = {}
+        if mine:
+            try:
+                out.update(await self._judge_many("observation_inventory", mine))
+            finally:
+                # Resolve every claimed key even on failure, or the tasks
+                # waiting on this question would hang for the whole run.
+                async with self._lock:
+                    for key in mine:
+                        future = self._inventories_inflight.pop(key, None)
+                        if future is not None and not future.done():
+                            future.set_result(out.get(key))
+        for key, future in waiting.items():
+            out[key] = await future
+        return out
 
     # -- one family's calls -------------------------------------------------- #
 
