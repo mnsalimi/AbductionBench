@@ -180,6 +180,13 @@ async def _judge_run(
             "engine.reasoning_judge.model must name one of the run's models; set it in "
             "the run config or with -s engine.reasoning_judge.model=<id>"
         )
+    # Only cot tasks are judged, so only cot bundles are worth building.
+    # _build_bundles *prepares* every dataset it touches -- materializing the
+    # split and drawing the sample -- so leaving io in the mode list makes this
+    # pass pay that cost twice over, for bundles it then skips.
+    config.modes.prompt_modes = [
+        mode for mode in config.modes.prompt_modes if mode in (COT, SELF_CONSISTENCY)
+    ] or [COT]
     engine = EvaluationEngine(config, dry_run=True)
 
     clients = {
