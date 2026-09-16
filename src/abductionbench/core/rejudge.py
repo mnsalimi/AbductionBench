@@ -187,7 +187,11 @@ async def _judge_run(
     config.modes.prompt_modes = [
         mode for mode in config.modes.prompt_modes if mode in (COT, SELF_CONSISTENCY)
     ] or [COT]
-    engine = EvaluationEngine(config, dry_run=True)
+    # Point the engine at the run being judged rather than letting it mint a
+    # new one. Constructing it creates run_dir and opens the engine log there,
+    # so without this every offline pass left an otherwise-empty run directory
+    # behind -- and its log, which belongs with the run whose records it judged.
+    engine = EvaluationEngine(config, dry_run=True, run_dir=run_dir, run_id=run_dir.name)
 
     clients = {
         model.id: ModelClient(
@@ -429,7 +433,15 @@ def sync_run(run_dir: Path, config: RunConfig) -> dict[str, Any]:
         return {"enabled": False}
     from .sync import ArtifactSync
 
-    syncer = ArtifactSync(config.engine.sync, run_dir, run_dir.name)
+    sync_config = config.engine.sync
+    if not sync_config.exclude:
+        # The raw per-batch payloads are the *inference* artifacts, and this
+        # pass did not produce any: it read them. On the suite they are ~600 MB
+        # against ~700 KB of metrics, so uploading them again to deliver the
+        # metrics costs hours and changes nothing on the far end. A run config
+        # that sets its own excludes is left alone.
+        sync_config = sync_config.model_copy(update={"exclude": ["raw/**"]})
+    syncer = ArtifactSync(sync_config, run_dir, run_dir.name)
     problem = syncer.preflight()
     if problem:
         logger.warning("backup destination unusable, nothing uploaded: %s", problem)

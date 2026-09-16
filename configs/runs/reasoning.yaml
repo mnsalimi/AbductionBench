@@ -38,6 +38,16 @@ engine:
     # A ceiling that has to cover the judge's own hidden chain as well as the
     # JSON: a judge whose reasoning spends the whole budget returns empty
     # content and that call's metrics are lost.
-    max_tokens: 8192
+    #
+    # 8192 -> 24000, measured rather than guessed. At 8192 a 216-record pass
+    # lost metric 2 on 23 of them (10.6%) and metric 7 on 34, and the failures
+    # were not spread evenly -- they piled up on true_detective, scir, musr and
+    # neulr, the datasets whose chains are longest. Segmenting a 20k-token
+    # chain into steps and counting four things about it is simply more
+    # thinking than the old budget allowed. It is a ceiling, not an allocation:
+    # a short chain still stops at the JSON and costs what it always did. The
+    # judge's window is 65,536, so this leaves room for the longest input the
+    # suite produces.
+    max_tokens: 24000
     temperature: 0.0
     cache: true
