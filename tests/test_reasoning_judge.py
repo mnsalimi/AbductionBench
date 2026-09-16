@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from abductionbench.core.checkpoint import dedupe_records, load_records
 from abductionbench.core.config import load_run_config
 from abductionbench.core.engine import EvaluationEngine
-from abductionbench.core.reasoning_judge import derive_reasoning_metrics
+from abductionbench.core.reasoning_judge import (
+    _GENERATION_KINDS,
+    _SELECTION_KINDS,
+    ReasoningJudgeStage,
+    derive_reasoning_metrics,
+)
 from abductionbench.core.reporting import _build_samples_frame
 
 
@@ -229,6 +236,88 @@ def test_cot_metrics_are_cached_and_persisted_per_sample(
         record["metrics"]["reasoning_observation_coverage"] == pytest.approx(0.75)
         for record in continued_records
     )
+
+
+def test_every_shipped_task_kind_has_a_reasoning_shape():
+    """A task kind no shape claims would drop metrics with no explanation."""
+    adapters = Path(__file__).resolve().parent.parent / "src" / "abductionbench" / "adapters"
+    kinds = {
+        match
+        for path in adapters.glob("*.py")
+        for match in re.findall(r'task_kind=["\']([a-z_]+)', path.read_text(encoding="utf-8"))
+    }
+    assert kinds - {"judge"} <= _GENERATION_KINDS | _SELECTION_KINDS
+
+
+def test_multi_selection_is_judged_as_a_selection():
+    metrics, errors, inapplicable = derive_reasoning_metrics(
+        _raw_metrics(), generation_like=False, selection_like=True, option_count=4
+    )
+    assert errors == []
+    assert inapplicable == ["branchiness_diversity:not_generation_or_pipeline"]
+    assert metrics["reasoning_density_normalized"] == pytest.approx(1 / 4)
+    assert "reasoning_differential_elimination" in metrics
+
+
+def test_a_shapeless_task_reports_why_density_has_no_normalizer():
+    _metrics, errors, _inapplicable = derive_reasoning_metrics(
+        _raw_metrics(), generation_like=False, selection_like=False, option_count=0
+    )
+    assert "density:no_applicable_normalizer_for_task_shape" in errors
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ('{"backtracking": 2}', 2),
+        ('```json\n{"backtracking": 2}\n```', 2),
+        ('Return exactly:\n{"backtracking": <integer>}\nAnswer: {"backtracking": 3}', 3),
+        ('The chain has a stray { brace, then {"backtracking": 4}', 4),
+    ],
+)
+def test_a_verdict_is_read_out_of_a_talkative_judge(reply, expected):
+    template = SimpleNamespace(output_contract={"json_fields": {"backtracking": "int"}})
+    assert ReasoningJudgeStage._parse_json(reply, template) == {"backtracking": expected}
+
+
+def test_a_judge_without_a_batch_route_still_scores_every_sample(
+    fake_server, write_run_config, fake_dataset
+):
+    """chat_single answers one conversation, so a group of 8 must not be sent."""
+    counts: Counter = Counter()
+    fake_server.state.responder = _judge_responder(counts)
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset(sample_size=4, n=4)],
+        models=[
+            {
+                "id": "fake-model",
+                "model_name": "test/model",
+                "endpoint": {
+                    "base_url": fake_server.base_url,
+                    "api_key": "test-key",
+                    "batch": {"enabled": False},
+                },
+                "sampling": {
+                    "max_tokens_default": 64,
+                    "max_tokens_cap": 512,
+                    "max_tokens_floor": 16,
+                },
+                "limits": {"max_parallel_batches": 2, "context_window": 4096},
+            }
+        ],
+        modes={"prompt_modes": ["cot"], "repeats": 1},
+        engine={
+            "reasoning_judge": {"enabled": True, "model": "fake-model", "group_size": 8}
+        },
+    )
+    result = asyncio.run(EvaluationEngine(load_run_config(config_path)).run())
+
+    records = dedupe_records(load_records(result.tasks[0].output_dir / "records.jsonl"))
+    assert len(records) == 4
+    for record in records:
+        assert record["details"]["reasoning_metrics_status"] == "ok"
+        assert record["metrics"]["reasoning_observation_coverage"] == pytest.approx(0.75)
 
 
 def test_io_outputs_never_call_the_reasoning_judge(

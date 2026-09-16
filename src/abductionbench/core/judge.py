@@ -71,6 +71,7 @@ class JudgeStage:
         clients: dict[str, ModelClient],
         retry_policy: RetryPolicy,
         cache_dir: Path,
+        batch_disabled: set[str] | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -83,6 +84,9 @@ class JudgeStage:
                 f"({sorted(clients)}); add it to the run's model list"
             )
         self.client = clients[config.model]
+        #: Held by reference: the engine fills it in when a batch endpoint
+        #: turns out to be unusable, which can happen after this is built.
+        self._batch_disabled = batch_disabled if batch_disabled is not None else set()
         self.template = registry.get(config.template)
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
@@ -124,7 +128,12 @@ class JudgeStage:
             self.config.model,
         )
 
-        for chunk in iter_chunks(to_call, self.config.group_size):
+        # Without a usable batch route chat_single answers only the first
+        # conversation of a group, so the group has to be one item wide.
+        can_batch = (
+            self.client.supports_batch and self.config.model not in self._batch_disabled
+        )
+        for chunk in iter_chunks(to_call, self.config.group_size if can_batch else 1):
             conversations = []
             for _index, fields, _key in chunk:
                 spec = SampleSpec(
@@ -139,7 +148,7 @@ class JudgeStage:
                 result, _ = await with_retry(
                     lambda convs=conversations, s=sampling: (
                         self.client.chat_batch(convs, s)
-                        if self.client.supports_batch and len(convs) > 1
+                        if can_batch and len(convs) > 1
                         else self.client.chat_single(convs[0], s)
                     ),
                     policy=self.retry_policy,
@@ -147,6 +156,13 @@ class JudgeStage:
                 )
             except EndpointError as exc:
                 logger.warning("judge batch failed permanently: %s", exc)
+                continue
+            if len(result.choices) != len(chunk):
+                logger.warning(
+                    "judge batch: %d answer(s) for %d request(s); dropping the group",
+                    len(result.choices),
+                    len(chunk),
+                )
                 continue
             for (_index, _fields, key), choice in zip(chunk, result.choices, strict=True):
                 verdict = self._parse(choice.content or "")

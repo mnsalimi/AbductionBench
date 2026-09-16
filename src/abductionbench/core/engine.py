@@ -58,7 +58,7 @@ from .config import DatasetConfig, ModelConfig, RunConfig, dump_resolved
 from .errors import AbenchError, AdapterError, AuthError, ErrorClass, TemplateError
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
-from .modes import TaskModes
+from .modes import COT, SELF_CONSISTENCY, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
@@ -341,6 +341,7 @@ class EvaluationEngine:
                     clients=self._clients,
                     retry_policy=self.retry_policy,
                     cache_dir=self.run_dir / "reasoning_judge_cache",
+                    batch_disabled=self._batch_disabled,
                 )
 
             if not self.dry_run:
@@ -1335,6 +1336,7 @@ class EvaluationEngine:
                     clients=self._clients,
                     retry_policy=self.retry_policy,
                     cache_dir=output_dir / "judge_cache",
+                    batch_disabled=self._batch_disabled,
                 )
                 scores = await judge.apply(adapter, scores)
             except Exception as exc:  # noqa: BLE001 - judging is best-effort
@@ -1347,10 +1349,13 @@ class EvaluationEngine:
         # metrics; they must be judged rather than silently left blank.
         prompt_by_id = {prompt.sample_id: prompt for prompt in rendered}
         reused_triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
+        reused_fingerprints: dict[str, str] = {}
         for record in reused_records:
             prompt = prompt_by_id.get(str(record.get("sample_id", "")))
             if prompt is None:
                 continue
+            if record.get("prompt_fingerprint"):
+                reused_fingerprints[prompt.sample_id] = str(record["prompt_fingerprint"])
             response_payload = record.get("response") or {}
             try:
                 status = ResponseStatus(record.get("status", ResponseStatus.ERROR.value))
@@ -1413,7 +1418,7 @@ class EvaluationEngine:
         # safety. Append their post-judge replacements now; record de-duplication
         # keeps the newest request fingerprint, which is what makes every judge
         # metric appear as its own per-sample sheet column.
-        reasoning_mode = identity.prompt_mode in ("cot", "self-consistency")
+        reasoning_mode = identity.prompt_mode in (COT, SELF_CONSISTENCY)
         records_to_refresh = [
             *scores,
             *(reused_triplets if reasoning_mode else []),
@@ -1423,7 +1428,13 @@ class EvaluationEngine:
             or (self._reasoning_judge is not None and reasoning_mode)
         ):
             judged_records = [
-                self._make_record(identity, prompt_by_id[sample.sample_id], response, score)
+                self._make_record(
+                    identity,
+                    prompt_by_id[sample.sample_id],
+                    response,
+                    score,
+                    fingerprint=reused_fingerprints.get(sample.sample_id),
+                )
                 for sample, response, score in records_to_refresh
                 if sample.sample_id in prompt_by_id
             ]
@@ -2229,13 +2240,18 @@ class EvaluationEngine:
         prompt: RenderedPrompt,
         response: ModelResponse,
         score: SampleScore,
+        fingerprint: str | None = None,
     ) -> EvalRecord:
         clip_chars = self.engine_cfg.reporting.response_clip_chars
         return EvalRecord(
             task=identity,
             sample_id=prompt.sample_id,
             status=response.status,
-            prompt_fingerprint=prompt.fingerprint(identity.model_id),
+            # Rewriting a checkpointed record keeps that record's fingerprint:
+            # records dedupe on (sample_id, fingerprint), so recomputing it
+            # under a resume policy that ignores prompt changes would leave the
+            # sample in the sheet twice instead of replacing it.
+            prompt_fingerprint=fingerprint or prompt.fingerprint(identity.model_id),
             task_kind=prompt.sample.task_kind,
             input_tokens_est=prompt.input_tokens_est,
             sampling=prompt.sampling.to_payload(),

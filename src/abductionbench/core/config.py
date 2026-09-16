@@ -518,7 +518,11 @@ class ReasoningJudgeConfig(_Base):
     enabled: bool = False
     #: Model id from the run's model list.
     model: str | None = None
-    max_tokens: int = Field(512, ge=1)
+    #: Budget for one judge reply.  It has to cover a reasoning model's hidden
+    #: chain as well as the JSON: a judge whose chain eats the whole budget
+    #: returns empty content, and every metric in that call is then lost.  It
+    #: is a ceiling, not an allocation -- the reply still ends at the JSON.
+    max_tokens: int = Field(2048, ge=1)
     temperature: float = Field(0.0, ge=0)
     group_size: int = Field(8, ge=1)
     cache: bool = True

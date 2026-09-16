@@ -112,7 +112,10 @@ engine:
   reasoning_judge:
     enabled: false
     model: null               # must be one of the run's models
-    max_tokens: 512
+    # A ceiling, not an allocation: it must also cover a reasoning judge's
+    # hidden chain, or the reply comes back with empty content and the metrics
+    # from that call are lost.
+    max_tokens: 2048
     temperature: 0.0
     group_size: 8
     cache: true

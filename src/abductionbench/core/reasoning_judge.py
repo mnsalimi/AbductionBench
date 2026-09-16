@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["ReasoningJudgeStage", "derive_reasoning_metrics"]
 
+#: Adapters label an item with their own task kind.  Everything that asks for a
+#: free-form answer is generation-shaped for these metrics, and everything that
+#: picks from supplied options is selection-shaped -- ``knowledge_completion``
+#: and ``multi_selection`` are not special cases, they are just other names for
+#: the same two shapes, and eight datasets use them.
+_GENERATION_KINDS = frozenset({"generation", "knowledge_completion"})
+_SELECTION_KINDS = frozenset({"selection", "multi_selection"})
+
 _REQUIRED_TEMPLATES = {
     "observation_inventory",
     "observation_coverage",
@@ -203,6 +211,8 @@ def derive_reasoning_metrics(
                 errors.append("density:generation_branchiness_is_zero_or_unavailable")
         elif bov:
             errors.append("density:bov_full_option_count_not_visible_in_each_chain")
+        else:
+            errors.append("density:no_applicable_normalizer_for_task_shape")
 
     redundancy = raw.get("redundancy_completeness") or {}
     redundant = _nonnegative_int(redundancy.get("redundancy"))
@@ -291,6 +301,7 @@ class ReasoningJudgeStage:
         clients: dict[str, ModelClient],
         retry_policy: RetryPolicy,
         cache_dir: Path,
+        batch_disabled: set[str] | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -308,6 +319,10 @@ class ReasoningJudgeStage:
                 "engine.reasoning_judge.templates is missing: " + ", ".join(sorted(missing))
             )
         self.client = clients[config.model]
+        #: Live view of the models whose batch endpoint the engine found
+        #: unusable.  It is filled in *after* this stage is built, so the set
+        #: is held by reference and read at call time, never copied.
+        self._batch_disabled = batch_disabled if batch_disabled is not None else set()
         self.templates: dict[str, PromptTemplate] = {
             name: registry.get(template_id) for name, template_id in config.templates.items()
         }
@@ -361,8 +376,16 @@ class ReasoningJudgeStage:
                 continue
             root = self._root_sample(sample)
             options = [str(value) for value in (root.fields.get("options") or [])]
-            selection_like = sample.task_kind == "selection"
-            generation_like = sample.task_kind == "generation"
+            selection_like = sample.task_kind in _SELECTION_KINDS
+            generation_like = sample.task_kind in _GENERATION_KINDS
+            if not (selection_like or generation_like or pipeline):
+                score.details = {
+                    **score.details,
+                    "reasoning_metrics_status": (
+                        f"not_applicable:unsupported_task_kind:{sample.task_kind}"
+                    ),
+                }
+                continue
             targets.append(
                 _Target(
                     index=index,
@@ -540,7 +563,14 @@ class ReasoningJudgeStage:
             else:
                 keyed.append((request_id, fields, key))
 
-        for chunk in iter_chunks(keyed, self.config.group_size):
+        # One conversation per call when the model has no usable batch route:
+        # chat_single answers only the first conversation, so grouping without
+        # batching would drop every other item in the group.
+        can_batch = (
+            self.client.supports_batch and self.config.model not in self._batch_disabled
+        )
+        chunk_size = self.config.group_size if can_batch else 1
+        for chunk in iter_chunks(keyed, chunk_size):
             conversations = []
             for _request_id, fields, key in chunk:
                 sample = SampleSpec(sample_id=f"reasoning-judge::{key}", fields=fields,
@@ -555,7 +585,7 @@ class ReasoningJudgeStage:
                 result, _outcome = await with_retry(
                     lambda convs=conversations, params=sampling: (
                         self.client.chat_batch(convs, params)
-                        if self.client.supports_batch and len(convs) > 1
+                        if can_batch and len(convs) > 1
                         else self.client.chat_single(convs[0], params)
                     ),
                     policy=self.retry_policy,
@@ -566,41 +596,107 @@ class ReasoningJudgeStage:
                 for request_id, _fields, _key in chunk:
                     out[request_id] = None
                 continue
+            if len(result.choices) != len(chunk):
+                # Losing the alignment between requests and answers would
+                # attach one chain's metrics to another chain, so the whole
+                # group is reported as unjudged instead.
+                logger.warning(
+                    "reasoning judge %s: %d answer(s) for %d request(s); dropping the group",
+                    family,
+                    len(result.choices),
+                    len(chunk),
+                )
+                for request_id, _fields, _key in chunk:
+                    out[request_id] = None
+                continue
             for (request_id, _fields, key), choice in zip(
                 chunk, result.choices, strict=True
             ):
                 raw = choice.content or ""
                 values = self._parse_json(raw, template)
-                self._cache[key] = {
-                    "template": template.ref,
-                    "values": values,
-                    "raw": raw[:2000],
-                    "parsed": values is not None,
-                }
+                if values is not None:
+                    self._cache[key] = {
+                        "template": template.ref,
+                        "values": values,
+                        "raw": raw[:2000],
+                        "parsed": True,
+                    }
+                else:
+                    # An unparseable reply is not cached: caching it would make
+                    # one bad sample permanent for every later continuation of
+                    # the run, which is the opposite of what the cache is for.
+                    logger.warning(
+                        "reasoning judge %s: unparseable reply %r", family, raw[:200]
+                    )
                 out[request_id] = values
         return out
 
     @staticmethod
-    def _parse_json(text: str, template: PromptTemplate) -> dict[str, Any] | None:
+    def _json_objects(raw: str) -> list[str]:
+        """Every balanced ``{...}`` span in the text, outermost and in order.
+
+        A judge that reasons in the open returns its analysis and then the
+        object, so a single greedy match from the first brace to the last one
+        spans both and parses as nothing.
+        """
+        spans: list[str] = []
+        depth = 0
+        start = -1
+        in_string = False
+        escaped = False
+        for position, char in enumerate(raw):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                if depth == 0:
+                    start = position
+                depth += 1
+            elif char == "}" and depth:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    spans.append(raw[start : position + 1])
+        return spans
+
+    @classmethod
+    def _parse_json(cls, text: str, template: PromptTemplate) -> dict[str, Any] | None:
         raw = (text or "").strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
-        try:
-            parsed = orjson.loads(raw)
-        except orjson.JSONDecodeError:
-            match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-            if not match:
-                return None
+        fields = (template.output_contract or {}).get("json_fields") or {}
+
+        def usable(candidate: str) -> dict[str, Any] | None:
             try:
-                parsed = orjson.loads(match.group(0))
+                parsed = orjson.loads(candidate)
             except orjson.JSONDecodeError:
                 return None
-        if not isinstance(parsed, dict):
-            return None
-        fields = (template.output_contract or {}).get("json_fields") or {}
-        if any(name not in parsed for name in fields):
-            return None
-        return parsed
+            if not isinstance(parsed, dict):
+                return None
+            return None if any(name not in parsed for name in fields) else parsed
+
+        answer = usable(raw)
+        if answer is not None:
+            return answer
+        # Last one wins: the verdict is what the judge settled on, not the
+        # example object it may have echoed from the instructions first.
+        for span in reversed(cls._json_objects(raw)):
+            answer = usable(span)
+            if answer is not None:
+                return answer
+        # A stray brace in the judge's prose unbalances the scan above, so fall
+        # back to flat brace pairs -- which is the shape every verdict has.
+        for span in reversed(re.findall(r"\{[^{}]*\}", raw, flags=re.DOTALL)):
+            answer = usable(span)
+            if answer is not None:
+                return answer
+        return None
 
     def _save_cache(self) -> None:
         if not self.config.cache:

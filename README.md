@@ -369,6 +369,12 @@ normalizers are computed once and reused. The question-only observation total
 is cached across models and repeats; all judge results are cached under
 `reasoning_judge_cache/`.
 
+A task kind is read as a shape, not as a literal name: `generation` and
+`knowledge_completion` are judged as generation, `selection` and
+`multi_selection` as selection, and an adapter whose kind matches neither is
+reported as not applicable rather than scored against a normalizer that does
+not fit it.
+
 Missing values are not silently turned into zero. The sample sheet's
 `reasoning_metrics_status`, `reasoning_metrics_inapplicable`, and
 `reasoning_judge_errors` columns distinguish a definition-level exclusion

@@ -125,7 +125,7 @@ engine:
   reasoning_judge:
     enabled: true
     model: gpt-oss-120b   # must also appear in this run's models list
-    max_tokens: 512
+    max_tokens: 2048
     temperature: 0.0
     group_size: 8
     cache: true
@@ -182,3 +182,40 @@ JSON verdict with the stored chain before launching the full suite.
 
 The pre-existing user modification to `.gitignore` and untracked `.DS_Store` /
 `.history` files were deliberately left out of this feature commit.
+
+
+## Review pass over the reasoning-metric stage
+
+Six defects found reading the stage back, each with a test:
+
+1. **A model with no usable batch route lost every reasoning metric.**
+   `chat_single` answers only the first conversation of a group, so a group of
+   eight came back with one answer and the strict `zip` raised; the engine
+   caught it and the whole task's metrics were dropped. Groups are now one item
+   wide whenever batching is unavailable, and a count mismatch drops the group
+   with a warning instead of the run's metrics. The same defect was in the
+   answer judge and is fixed there too.
+2. **The batch fallback the engine decides at startup was invisible to both
+   judges.** `engine._batch_disabled` is now passed to them by reference, so a
+   model whose batch probe failed structurally is judged with single calls
+   rather than through a route already known to be dead.
+3. **`multi_selection` and `knowledge_completion` were judged as neither shape.**
+   Eight datasets use those kinds. They now map to selection and generation
+   respectively; a kind that maps to neither is skipped with a reason, and a
+   normalized density that no branch defines is reported as an error instead of
+   quietly missing. `test_every_shipped_task_kind_has_a_reasoning_shape` fails
+   if a new kind is added without a shape.
+4. **An unparseable verdict was cached as a permanent failure.** Only parsed
+   verdicts are cached now, so continuing a run retries what it could not read.
+5. **`max_tokens: 512` is too small for a reasoning judge.** gpt-oss-120b
+   spends the budget on its hidden chain and returns empty content. The default
+   is 2048; it is a ceiling, so a terse judge still costs what it costs.
+6. **Rewriting a checkpointed record duplicated it under a non-strict resume
+   policy.** Records dedupe on (sample_id, fingerprint), and the rewrite
+   recomputed the fingerprint; it now keeps the record's own.
+
+Also made the verdict parser read the last JSON object in a reply rather than
+one greedy span from the first brace to the last, so a judge that reasons in
+the open, echoes the example object, or writes a stray brace is still read.
+
+Validation: `ruff check src tests` passed, full suite **201 passed**.
