@@ -254,6 +254,14 @@ class EvaluationEngine:
         #: Shared across tasks so a question's observation inventory is bought
         #: once and reused across models/repeats.
         self._reasoning_judge: ReasoningJudgeStage | None = None
+        #: One budget of in-flight calls for the judge *model*, not for a stage
+        #: or a task. Both judge stages talk to the same server, and JudgeStage
+        #: is built per task, so a per-stage semaphore let three tasks each open
+        #: its own -- 24 calls of 8 against a 64-sequence server, which pushed
+        #: vLLM into KV-cache preemption and made the whole thing slower than
+        #: issuing the batches one at a time. Created in run(), once the config
+        #: is known.
+        self._judge_calls: asyncio.Semaphore | None = None
 
     def _dump_resolved_config(self) -> None:
         """Write what this pass is running, without erasing what earlier ones ran.
@@ -346,6 +354,12 @@ class EvaluationEngine:
                 self._clients[model.id] = client
                 self._model_sems[model.id] = asyncio.Semaphore(model.limits.max_parallel_batches)
 
+            self._judge_calls = asyncio.Semaphore(
+                max(
+                    self.engine_cfg.judge.max_parallel_calls,
+                    self.engine_cfg.reasoning_judge.max_parallel_calls,
+                )
+            )
             if self.engine_cfg.reasoning_judge.enabled:
                 self._reasoning_judge = ReasoningJudgeStage(
                     config=self.engine_cfg.reasoning_judge,
@@ -355,6 +369,7 @@ class EvaluationEngine:
                     retry_policy=self.retry_policy,
                     cache_dir=self.run_dir / "reasoning_judge_cache",
                     batch_disabled=self._batch_disabled,
+                    calls=self._judge_calls,
                 )
 
             if not self.dry_run:
@@ -1462,6 +1477,7 @@ class EvaluationEngine:
                     # reasoning judge already caches this way.
                     cache_dir=self.run_dir / "judge_cache",
                     batch_disabled=self._batch_disabled,
+                    calls=self._judge_calls,
                 )
                 before = {
                     sample.sample_id: score for sample, _r, score in scores

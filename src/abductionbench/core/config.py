@@ -487,6 +487,11 @@ class JudgeConfig(_Base):
     max_tokens: int = Field(512, ge=1)
     temperature: float = Field(0.0, ge=0)
     group_size: int = Field(8, ge=1)
+    #: How many judge calls may be in flight at once.  In-flight sequences are
+    #: ``group_size x max_parallel_calls``; 8 x 8 fills this suite's judge
+    #: server exactly.  29 of 44 datasets are scored by this stage, and it used
+    #: to issue its batches strictly one after another.
+    max_parallel_calls: int = Field(8, ge=1)
     #: Cache judge verdicts on disk so re-scoring does not re-spend tokens.
     cache: bool = True
 

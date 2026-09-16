@@ -312,6 +312,7 @@ class ReasoningJudgeStage:
         retry_policy: RetryPolicy,
         cache_dir: Path,
         batch_disabled: set[str] | None = None,
+        calls: asyncio.Semaphore | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -339,7 +340,9 @@ class ReasoningJudgeStage:
         self._cache_path = self.cache_dir / "verdicts.json"
         self._cache: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
-        self._calls = asyncio.Semaphore(config.max_parallel_calls)
+        # The engine passes one semaphore shared by every judge stage and
+        # every task, because they all queue on the same server.
+        self._calls = calls or asyncio.Semaphore(config.max_parallel_calls)
         if config.cache and self._cache_path.exists():
             try:
                 payload = orjson.loads(self._cache_path.read_bytes())

@@ -366,3 +366,58 @@ steadier than the per-sample values, but `reasoning_total_steps` and everything
 derived from it should be read with that in mind.
 
 Validation: full suite **237 passed, 1 skipped**.
+
+
+## The answer judge was sequential too (2026-09-16)
+
+The reasoning judge was parallelized; the answer judge was not, and it scores
+**29 of the 44 datasets** -- the ones with no verifiable answer, where its
+verdict *is* the metric. It issued its batches strictly one after another, the
+same pattern that had just been fixed next door. It now runs bounded concurrent
+chunks like the reasoning judge does.
+
+**The first attempt made things slower, and the reason is worth recording.**
+`JudgeStage` is constructed inside `_run_task`, once per task, so a semaphore
+held on the stage bounds a *task* rather than the run: at
+`max_parallel_tasks: 3` that is 3 x 8 calls of 8 conversations = 192 sequences,
+on top of the reasoning judge's 64, against a server with `--max-num-seqs 64`.
+Oversubscribing vLLM that far pushes it into KV-cache preemption and recompute,
+which costs more than the concurrency buys. The budget is now one semaphore
+created by the engine and shared by both stages and every task, so in-flight
+sequences stay at `group_size x max_parallel_calls` no matter which stage or
+which task issues them -- the right unit is the judge *server*, not the stage.
+
+**No clean speed number for this one.** The two measurements taken after the
+change ran while a full production run was using both GPUs, and read 674 s and
+517 s against 178-319 s for the same configuration on a quiet machine. Those
+numbers say nothing about the change; they say a benchmark was run on a busy
+box. The earlier 3.12x for the reasoning judge was measured before that run
+started and stands.
+
+### `reasoning_effort: low` -- measured, and not adopted
+
+gpt-oss accepts `reasoning_effort`, and it is a large lever: **4.78x fewer
+completion tokens** across 50 judge calls over 10 real chains. It was rejected
+on the evidence, because it moves the verdicts:
+
+| family | tokens default | tokens low | verdicts unchanged |
+|---|---|---|---|
+| density | 6778 | 1143 | 0/10 |
+| backtracking | 3476 | 94 | 4/10 |
+| observation_coverage | 1068 | 103 | 6/10 |
+| directionality | 213 | 72 | 10/10 |
+| uncertainty | 3426 | 1718 | 9/10 |
+
+The control matters as much as the result: running the **default twice** agrees
+only **34/50**, against 29/50 for default-vs-low. So `low` is a real but modest
+degradation on top of a judge that is already unreliable at counting --
+`density` agrees with itself 2 times in 10. `directionality` and `uncertainty`
+are unaffected either way and could take `low` safely, which would need
+per-family effort settings that do not exist yet.
+
+Two further levers found and left alone: prefix caching is enabled for the model
+under test but not for the judge server, and the reasoning chain -- up to 30k
+tokens -- is re-sent to all nine families behind a family-specific system
+prompt, so none of it is a shared prefix. Moving the family instruction to the
+end of the user message would make the chain cacheable across all nine calls,
+but it changes the prompts, so it changes the measurements.

@@ -102,7 +102,11 @@ engine:
     template: judge_binary_v1
     max_tokens: 512
     temperature: 0.0
+    # In-flight sequences are group_size x max_parallel_calls; 8 x 8 = 64 is
+    # this judge server's --max-num-seqs. Costs no GPU memory: vLLM's KV cache
+    # is preallocated at startup, so this fills slots already paid for.
     group_size: 8
+    max_parallel_calls: 8
     cache: true
 
   # Structural metrics over chains of reasoning. This stage is independent of
