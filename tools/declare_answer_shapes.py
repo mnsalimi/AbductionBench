@@ -1,4 +1,17 @@
-"""One-shot: give every static/sequential adapter its answer shape.
+"""One-shot, SPENT: gave every static/sequential adapter its answer shape.
+
+.. warning::
+
+   **Do not run this again.**  Its table is a snapshot of the *superseded*
+   design, in which one ``answer_constraints`` list per dataset mixed three
+   different things: what the task demands, what the answer line looks like,
+   and whether the response may reason.  That last one put "do not explain"
+   into the same prompt as "work through the evidence step by step" on 27
+   datasets.  Those three now live in ``task_requirements``, ``answer_format``
+   and the mode instruction respectively (see ``adapters/_prompting.py``), so
+   re-running this would reintroduce the conflict it is kept here to document.
+   It is retained as the record of how the shapes were first declared, and it
+   refuses to write.
 
 Specification item 4 asks for prompts written from scratch for the static and
 sequential datasets, in one house structure, so that a difference in score is a
@@ -15,13 +28,14 @@ this table:
     What a well-formed answer looks like, in the dataset's own nouns.  It is
     rendered inside the closing line: ``Answer: <one short sentence>``.
 ``constraints``
-    What the answer must and must not do, one clause per line, rendered as a
-    "Requirements:" list.  Written as data rather than prose so the same
-    constraint reads identically in every dataset that needs it.
+    What the answer must and must not do, one clause per line.  Superseded:
+    the task-defining clauses of each list became ``task_requirements``, the
+    shape clauses were folded into ``answer_format``, and the rest were
+    deleted as duplicates of the mode instruction or of the closing.
 ``options_heading``
     What the candidate list is called where the dataset has one.
 
-Run once:  python tools/declare_answer_shapes.py
+Ran once, on the design this replaced; kept for the record.
 """
 
 from __future__ import annotations
@@ -215,6 +229,16 @@ def block_for(spec: dict) -> str:
 
 
 def main() -> int:
+    print(
+        "declare_answer_shapes is spent: its table predates the "
+        "task_requirements / answer_format split and would reintroduce the "
+        "reasoning conflict it once created. Refusing to write.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _historical_main() -> int:
     changed = 0
     for name, spec in sorted(TABLE.items()):
         path = ADAPTERS / f"{name}.py"

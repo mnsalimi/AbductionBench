@@ -47,11 +47,9 @@ class HypoBenchAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one hypothesis"
-    answer_constraints = (
-        "state one hypothesis, not several",
+    task_requirements = (
         "name the feature and the direction of its effect",
         "do not restate the observation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None

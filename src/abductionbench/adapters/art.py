@@ -52,15 +52,11 @@ class ARTAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one short sentence"
-    answer_constraints = (
-        "write exactly one sentence",
-        "output only the missing intermediate event or state",
-        "keep it short, plain and concrete",
+    task_requirements = (
         "make it plausible with both observations",
+        "keep it plain and concrete",
         "do not restate either observation",
         "do not add extra causes, background detail or consequences",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
     )
     options_heading = "Answer options:"
     #: Set per instance in prepare(). alphaNLI picks one of two hypotheses and is

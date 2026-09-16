@@ -404,20 +404,22 @@ Every static/sequential prompt is assembled the same way:
 
 [user]     Observation:  <the evidence>
            Question:     <the dataset's question, if it asks one>
+           Task:         <what this item asks for>
+           Requirements:                        <-- what the TASK demands
+           - use only the allowed predicates
+           - do not restate the observation
            Answer options:                     <-- numbered, never lettered
            1. ...
            2. ...
            Answer directly. Do not explain your reasoning.     <-- io
              (or: Work through the evidence step by step...)   <-- cot
-           Requirements:                        <-- generation tasks, io
-           - write exactly one sentence
-           - do not restate the observation
-           - do not explain your reasoning
-             (under cot: "Requirements for the answer line:",
-              and the reasoning-suppressing clauses are dropped)
            Select exactly one hypothesis.       <-- selection tasks
            Answer with only one of: 1, 2 or 3, on the last line, as:
            Answer: 1
+             (generation tasks close with:
+              On the last line, give your final answer as:
+              Answer: <one short sentence>
+              Write the answer itself after that marker and nothing else.)
 ```
 
 Three pieces are dataset-owned and declared as **data**, so the same constraint
@@ -427,20 +429,44 @@ one-shot table that set all 34):
 | attribute | what it says |
 |---|---|
 | `answer_format` | what a well-formed answer is (`"one short sentence"`), rendered into the closing line |
-| `answer_constraints` | what the answer must and must not do, one clause each, rendered as `Requirements:` |
+| `task_requirements` | what the **task** demands, one clause each, rendered as `Requirements:` |
 | `options_heading` | what the candidate list is called (`"Answer options:"`, `"Candidate diagnoses:"`) |
 
-**The Requirements block is scoped to the mode.** `answer_constraints` belong to
-the dataset, not to the mode, and many were written for `io`, where "do not
-explain" *is* the instruction. Rendered unchanged into a `cot` prompt they
-contradicted it: the model was told to work through the evidence step by step
-and then, three lines later, not to explain. 27 of the 44 datasets carried such
-a clause. Under `cot` and `self-consistency` those clauses are now dropped and
-the heading becomes **`Requirements for the answer line:`**, so the clauses that
-remain -- "write exactly one sentence", "output only the diagnosis name" --
-plainly govern the answer rather than the whole response. Under `io` nothing
-changes. A test renders every mode of every dataset and fails if a `cot` prompt
-ever tells the model not to reason.
+**Every string appears in exactly one layer, and only one layer talks about
+reasoning.** The prompt states three different kinds of thing, and each has one
+home:
+
+| what is being said | where it lives | who reads it |
+|---|---|---|
+| what the task demands | `task_requirements`, in the task block | identical in every prompt mode and every selection mode |
+| what the answer line looks like | `answer_format` + the closing | the parser |
+| whether the response may reason | the mode instruction, one line | `io` vs `cot` |
+
+That separation is the whole design, and it is a correction. `answer_constraints`
+used to hold all three at once. Many clauses were written for `io`, where "do not
+explain" *is* the instruction; rendered unchanged into a `cot` prompt they
+contradicted it -- the model was told to work through the evidence step by step
+and then, three lines later, not to explain. 27 of the 44 datasets carried such a
+clause, 123 clauses in all. They were filtered by phrase-matching under `cot`,
+which worked only for the four phrasings it knew, left "output only the diagnosis
+name" standing on 17 datasets, dropped the block outright on every selection task,
+and never looked at the `Task:` line -- where the sharper conflicts were, because
+`house_md` asked for "a short differential, then commit to the single most likely
+diagnosis" three lines above "Answer directly. Do not explain your reasoning."
+
+Now: the task-defining clauses became `task_requirements` and render unchanged in
+every mode; the answer's shape moved into `answer_format`, which the closing
+already prints; "output only the &lt;answer&gt;" is said once, by the closing, for
+every dataset, scoped to the marker rather than to the response; and the 37
+reasoning-suppressing clauses are gone, because `_IO_INSTRUCTION` already says
+that and says it once. There is no phrase filter any more -- there is nothing
+left for it to filter.
+
+Two tests hold the line, both over rendered prompts rather than declarations, and
+both written with vocabulary independent of the production strings: one fails if
+any `io` prompt asks for reasoning or any `cot` prompt forbids it outside the mode
+instruction, the other builds real samples and fails if a dataset's `Task:` line
+states the answer shape or directs reasoning.
 
 **Options are numbered.** One helper (`_common.choice_labels`) produces both the
 labels shown and the labels the gold refers to, so they cannot drift apart --

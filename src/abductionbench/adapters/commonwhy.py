@@ -43,11 +43,9 @@ class CommonWhyAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one short sentence"
-    answer_constraints = (
-        "write exactly one sentence",
+    task_requirements = (
         "give the reason itself",
         "do not restate the observation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None
@@ -91,8 +89,8 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             fields={
                 "observation": question,
                 "instructions": (
-                    "Explain the impossibility by naming the specific fact about the entity that "
-                    "makes it impossible, and how it conflicts with the event. One sentence."
+                    "Explain the impossibility by naming the specific fact about the entity "
+                    "that makes it impossible, and how it conflicts with the event."
                 ),
             },
             reference={"gold": answer, "rule": C.normalize_whitespace(item.get("rule"))},

@@ -45,12 +45,10 @@ class HypoArenaAdapter(PooledDatasetAdapter):
     )
     data_delivery_mode = "static"
 
-    answer_format = "one hypothesis"
-    answer_constraints = (
-        "state one hypothesis, not several",
+    answer_format = "one hypothesis, in at most five sentences"
+    task_requirements = (
         "make it specific and checkable against the observations",
         "do not restate the observation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None
@@ -99,8 +97,8 @@ class HypoArenaAdapter(PooledDatasetAdapter):
                     "What is the most plausible hypothesis that would account for this situation?"
                 ),
                 "instructions": (
-                    "State one specific, testable hypothesis, and name the evidence that would "
-                    "test it. Keep it under five sentences."
+                    "State one specific, testable hypothesis, and name the evidence that "
+                    "would test it."
                 ),
             },
             reference={"gold": hypotheses[0], "references": hypotheses},

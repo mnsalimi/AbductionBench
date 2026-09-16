@@ -94,8 +94,8 @@ class MuSRAdapter(PooledDatasetAdapter):
                 "options": choices,
                 "option_labels": labels,
                 "instructions": (
-                    "Weigh each suspect's means, motive and opportunity as described in the "
-                    "story, then choose the one the evidence best explains."
+                    "Name the murderer: the suspect the story's means, motive and "
+                    "opportunity converge on."
                 ),
             },
             reference={"gold_label": labels[answer], "options": choices},

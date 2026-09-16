@@ -48,11 +48,6 @@ class AIOps2025Adapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "the root cause"
-    answer_constraints = (
-        "write exactly one sentence",
-        "name only the root cause",
-        "do not use introductory phrases or commentary",
-    )
     options_heading = "Candidate root causes:"
     objective_metrics = True
     #: NOT a selection task: no candidate list is ever shown, the answer is

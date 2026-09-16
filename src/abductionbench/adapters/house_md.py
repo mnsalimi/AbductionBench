@@ -49,12 +49,6 @@ class HouseMDAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "a single diagnosis"
-    answer_constraints = (
-        "give exactly one diagnosis",
-        "output only the diagnosis name",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
-    )
     #: Measured, not assumed: the model writes a disease name into an open
     #: vocabulary with no candidate list, so "Ehlers-Danlos" against a gold of
     #: "Ehlers-Danlos syndrome, vascular type" is the same answer and fails a
@@ -114,13 +108,13 @@ class HouseMDAdapter(PooledDatasetAdapter):
                 "observation": item["prompt"],
                 "question": "What is the most likely diagnosis?",
                 "instructions": (
-                    "Give a short differential, then commit to the single most likely diagnosis. "
-                    "These are deliberately rare presentations."
+                    "Name the single most likely diagnosis. These are deliberately rare "
+                    "presentations."
                 ),
             },
             reference={"gold": item["disease"], "expected": item.get("expected", "")},
             task_kind="generation",
-            # Differential plus a committed answer, after a long vignette.
+            # Room for a diagnosis, and for the reasoning cot asks for.
             max_tokens=1024,
             metadata={"episode": item.get("episode"), "workbook": item.get("workbook")},
         )
@@ -203,7 +197,9 @@ class HouseMDAdapter(PooledDatasetAdapter):
                 "however written. 1.0 when the judge affirms.",
                 "diagnosis_in_differential": "1 if the gold disease appears anywhere in the "
                 "response -- the gap to the primary metric shows failures of commitment rather "
-                "than of recall",
+                "than of recall. Read per prompt mode: only cot asks for reasoning, so under io "
+                "there is usually no differential for the gold to appear in and the two metrics "
+                "nearly coincide.",
                 "reasoning_overlap": "token F1 between the response and the reference differential",
             },
             primary_metric="diagnosis_judged",
@@ -216,6 +212,11 @@ class HouseMDAdapter(PooledDatasetAdapter):
                 "would not measure abduction.",
                 "Reported diagnosis_in_differential separately, since these vignettes invite a "
                 "differential and a model may list the right disease without committing to it.",
+                "The task line asks for the diagnosis alone. It used to ask for 'a short "
+                "differential, then commit to the single most likely diagnosis', which under io "
+                "the prompt went on to forbid -- the mode instruction is the only thing that "
+                "decides whether the response reasons, so the differential is now whatever the "
+                "mode elicits rather than something the task line demands and io denies.",
                 "Scored by an LLM judge rather than by string comparison: the model writes a "
                 "disease name with no candidate list, so a correct answer routinely differs "
                 "from the gold in wording (synonym, eponym, abbreviation, subtype).",

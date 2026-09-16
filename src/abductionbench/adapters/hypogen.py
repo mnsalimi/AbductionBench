@@ -38,12 +38,10 @@ class HypoGenAdapter(PooledDatasetAdapter):
     )
     data_delivery_mode = "static"
 
-    answer_format = "one hypothesis"
-    answer_constraints = (
-        "state one hypothesis, not several",
+    answer_format = "one hypothesis, in two or three sentences"
+    task_requirements = (
         "say which condition changes the outcome and how",
         "do not restate the observation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None
@@ -81,8 +79,8 @@ class HypoGenAdapter(PooledDatasetAdapter):
                     "What alternative approach or hypothesis would overturn this limitation?"
                 ),
                 "instructions": (
-                    "State the hypothesis as a research claim: what to do differently and why "
-                    "that removes the limitation. Two or three sentences."
+                    "State the hypothesis as a research claim: what to do differently and "
+                    "why that removes the limitation."
                 ),
             },
             reference={"gold": flip, "spark": C.normalize_whitespace(item.get("spark"))},

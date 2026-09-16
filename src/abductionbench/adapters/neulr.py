@@ -37,11 +37,8 @@ class NeuLRAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one missing fact"
-    answer_constraints = (
-        "output exactly one missing fact",
+    task_requirements = (
         "the answer must be a single fact, not a rule",
-        "output only the missing fact",
-        "do not explain your reasoning",
     )
     #: Measured, not assumed: there is no candidate list. The model writes the
     #: missing fact itself, and its form varies -- "NPafp1fg is ADPRl020G",

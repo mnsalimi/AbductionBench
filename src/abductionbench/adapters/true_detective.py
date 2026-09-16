@@ -38,7 +38,7 @@ class TrueDetectiveAdapter(PooledDatasetAdapter):
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given a detective puzzle "
-        "in full. Work out which candidate explanation the evidence actually supports; these "
+        "in full. Identify which candidate explanation the evidence actually supports; these "
         "puzzles are designed so that the obvious reading is usually wrong."
     )
     data_delivery_mode = "static"

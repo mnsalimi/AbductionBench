@@ -629,7 +629,7 @@ def test_uniadilr_keeps_items_of_every_premise_count():
     source = inspect.getsource(uniadilr_hgc.UniADILRHGcAdapter.load_items)
     assert "len(premises) == 2" not in source
     assert "premise_counts" in source
-    constraints = " ".join(uniadilr_hgc.UniADILRHGcAdapter.answer_constraints)
+    constraints = " ".join(uniadilr_hgc.UniADILRHGcAdapter.task_requirements)
     assert "exactly two" not in constraints
 
 

@@ -98,11 +98,9 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one testable hypothesis"
-    answer_constraints = (
-        "state one hypothesis, not several",
+    task_requirements = (
         "make it specific enough to be tested",
         "do not describe the method or the expected result",
-        "do not use introductory phrases or commentary",
     )
     options_heading = "Candidate hypotheses:"
     # Generation is scored by overlap with one reference hypothesis, which is a

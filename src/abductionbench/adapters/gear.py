@@ -124,9 +124,9 @@ class GearAdapter(PooledDatasetAdapter):
                 ],
                 "option_labels": LABELS,
                 "instructions": (
-                    "Work out which objects must be blickets, which cannot be, and which are "
-                    "still unknown. Choose 'cannot be determined' only if the experiments leave "
-                    "the outcome genuinely open."
+                    "Decide whether the queried object activates the detector. Choose "
+                    "'cannot be determined' only if the experiments leave the outcome "
+                    "genuinely open."
                 ),
             },
             reference={"gold_label": LABELS[OUTCOMES.index(outcome)], "outcome": outcome},

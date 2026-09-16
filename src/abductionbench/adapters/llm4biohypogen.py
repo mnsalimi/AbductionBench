@@ -54,13 +54,11 @@ class LLM4BioHypoGenAdapter(PooledDatasetAdapter):
         "account for the gap and is specific enough to be investigated."
     )
     answer_format = "one hypothesis"
-    answer_constraints = (
-        "state one hypothesis, not several",
+    task_requirements = (
         "name the factors involved and the relationship claimed between them",
         "make it specific enough to be tested",
         "do not restate the background",
         "do not describe the method or the expected result",
-        "do not use introductory phrases or commentary",
     )
     data_delivery_mode = "static"
     objective_metrics = False

@@ -143,123 +143,195 @@ def _local_templates(tmp_path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# The Requirements block must not contradict the prompt mode
+# One layer per statement: only the mode instruction talks about reasoning
 # --------------------------------------------------------------------------- #
 
+#: Response-level suppression: wording that tells the model not to reason *at
+#: all*. Written independently of the production strings on purpose -- a guard
+#: that reuses the code's own vocabulary can only confirm that the code says
+#: what it says. Line-level scoping ("Answer with only one of: 1 or 2") is
+#: deliberately not matched: that constrains the answer line, which is exactly
+#: where a format belongs. No literal spaces, so these compose into a bigger
+#: pattern without needing re.VERBOSE.
+_SUPPRESSES_REASONING = (
+    r"do\s+not\s+(explain|justify|elaborate|reason|think)"
+    r"|don't\s+(explain|justify|reason)"
+    r"|without\s+(explanation|justification|reasoning|commenting)"
+    r"|no\s+(commentary|explanation|justification|preamble|reasoning)"
+    r"|(output|write|give|state|name)\s+only\s+the"
+    r"|answer\s+immediately"
+    r"|skip\s+the\s+reasoning"
+)
 
-def _free_form_parts(constraints):
+#: Response-level elicitation: wording that asks the model to reason before it
+#: answers, or to show working alongside the answer.
+_ELICITS_REASONING = (
+    r"step\s+by\s+step"
+    r"|work\s+(through|out)"
+    r"|think\s+(it\s+|this\s+)?through"
+    r"|show\s+your\s+(work|reasoning)"
+    r"|reason\s+(first|through|about)"
+    r"|briefly\s+justify"
+    r"|then\s+(commit|choose|decide|answer|pick)"
+    r"|weigh\s+each"
+    r"|give\s+a\s+short\s+differential"
+)
+
+
+def _without_the_mode_instruction(text):
+    """The rendered prompt with the one line that is allowed to mention reasoning removed."""
+    from abductionbench.adapters._prompting import (
+        _COT_INSTRUCTION,
+        _COT_INSTRUCTION_BOV,
+        _IO_INSTRUCTION,
+    )
+
+    for instruction in (_IO_INSTRUCTION, _COT_INSTRUCTION, _COT_INSTRUCTION_BOV):
+        text = text.replace(instruction, " ")
+    return text
+
+
+def _free_form_parts(requirements):
     from abductionbench.adapters._prompting import PromptParts
 
     return PromptParts(
         system="You explain things.",
         observation="The grass is wet.",
+        instructions="Name what wet it.",
         answer_format="one sentence",
-        constraints=list(constraints),
+        requirements=list(requirements),
     )
 
 
-def test_cot_drops_the_constraints_that_forbid_reasoning():
-    """The bug: "reason step by step" and "do not explain" in one prompt.
+def test_requirements_are_a_property_of_the_task_not_of_the_mode():
+    """The whole point of the split: a requirement reads the same in every mode.
 
-    `answer_constraints` belong to the dataset, not to the mode, so clauses
-    written for io -- where "do not explain" is the whole point -- were also
-    rendered into the cot prompt. 27 of 44 datasets carried one.
+    Before, `answer_constraints` mixed three different things into one list --
+    what the task demands, what the answer line looks like, and whether the
+    response may reason -- so the list had to be filtered per mode, and 27
+    datasets carried a clause that had to be dropped under cot. Requirements now
+    hold only the first, so there is nothing to filter and nothing to contradict.
     """
     from abductionbench.adapters._prompting import build_messages
     from abductionbench.core.modes import TaskModes
 
-    constraints = [
-        "output exactly one fact",
-        "do not explain",
-        "do not use introductory phrases or commentary",
-    ]
+    requirements = ["use only the allowed predicates", "do not restate the observation"]
+    rendered = {
+        mode: build_messages(_free_form_parts(requirements), TaskModes(prompt_mode=mode))[0][
+            -1
+        ].content
+        for mode in ("io", "cot", "self-consistency")
+    }
+    for mode, text in rendered.items():
+        assert "Requirements:\n- use only the allowed predicates" in text, mode
+        assert "- do not restate the observation" in text, mode
+    # ...and there is no second, mode-dependent heading any more.
+    for text in rendered.values():
+        assert text.count("Requirements") == 1
+        assert "answer line" not in text
 
-    cot, _ = build_messages(_free_form_parts(constraints), TaskModes(prompt_mode="cot"))
-    text = cot[-1].content
-    assert "step by step" in text
-    assert "do not explain" not in text
-    assert "introductory phrases" not in text
-    # The shape constraint survives, scoped to what it actually governs.
-    assert "Requirements for the answer line:" in text
-    assert "- output exactly one fact" in text
 
-
-def test_io_keeps_them_because_there_it_is_the_instruction():
+def test_io_and_cot_prompts_differ_by_exactly_the_mode_instruction():
+    """The property that makes an io/cot comparison mean anything."""
     from abductionbench.adapters._prompting import build_messages
     from abductionbench.core.modes import TaskModes
 
-    io, _ = build_messages(
-        _free_form_parts(["output exactly one fact", "do not explain"]),
-        TaskModes(prompt_mode="io"),
+    parts = _free_form_parts(["do not restate the observation"])
+    io = build_messages(parts, TaskModes(prompt_mode="io"))[0][-1].content
+    cot = build_messages(parts, TaskModes(prompt_mode="cot"))[0][-1].content
+    assert io != cot
+    assert _without_the_mode_instruction(io) == _without_the_mode_instruction(cot)
+
+
+def test_self_consistency_renders_exactly_the_cot_prompt():
+    """It is cot sampled k times; a different prompt would confound the two."""
+    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = _free_form_parts(["do not restate the observation"])
+    sc = build_messages(parts, TaskModes(prompt_mode="self-consistency"))[0][-1].content
+    cot = build_messages(parts, TaskModes(prompt_mode="cot"))[0][-1].content
+    assert sc == cot
+
+
+def test_the_answer_line_is_scoped_once_in_shared_wording():
+    """"output only the <answer>" is said by the closing, not by 17 datasets."""
+    from abductionbench.adapters._prompting import _ANSWER_LINE_ONLY, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    for mode in ("io", "cot"):
+        text = build_messages(_free_form_parts([]), TaskModes(prompt_mode=mode))[0][-1].content
+        assert text.count(_ANSWER_LINE_ONLY) == 1, mode
+        assert text.rstrip().endswith(_ANSWER_LINE_ONLY), mode
+
+
+def test_requirements_survive_every_selection_mode():
+    """They used to be dropped outright: _requirements ran only on the free-form path.
+
+    Four datasets declared requirements and also ran as a selection task, so
+    their task demands silently disappeared from SCS, MCS and BOV prompts.
+    """
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system="Choose.",
+        observation="Something happened.",
+        options=["it rained", "the sprinkler ran"],
+        option_labels=["1", "2"],
+        requirements=["judge each candidate against every observation"],
     )
-    text = io[-1].content
-    assert "Answer directly. Do not explain your reasoning." in text
-    assert "- do not explain" in text
-    assert text.count("Requirements:") == 1
-    assert "answer line" not in text
+    for selection in ("SCS", "MCS", "BOV"):
+        for mode in ("io", "cot"):
+            text = build_messages(
+                parts, TaskModes(prompt_mode=mode, selection_mode=selection)
+            )[0][-1].content
+            assert "- judge each candidate against every observation" in text, (selection, mode)
 
 
-def test_self_consistency_is_scoped_like_cot():
-    """It renders the same text as cot by design; the scoping must follow."""
+def test_an_empty_requirements_list_renders_no_heading():
     from abductionbench.adapters._prompting import build_messages
     from abductionbench.core.modes import TaskModes
 
-    parts = _free_form_parts(["write exactly one sentence", "do not explain your reasoning"])
-    sc, _ = build_messages(parts, TaskModes(prompt_mode="self-consistency"))
-    cot, _ = build_messages(parts, TaskModes(prompt_mode="cot"))
-    assert sc[-1].content == cot[-1].content
-    assert "do not explain" not in sc[-1].content
+    text = build_messages(_free_form_parts([]), TaskModes(prompt_mode="cot"))[0][-1].content
+    assert "Requirements" not in text
+    assert "Answer:" in text
 
 
-def test_a_requirements_block_of_only_reasoning_clauses_disappears():
-    """No empty heading left behind when every clause is dropped."""
-    from abductionbench.adapters._prompting import build_messages
-    from abductionbench.core.modes import TaskModes
+def test_no_shipped_dataset_talks_about_reasoning_outside_the_mode_instruction():
+    """The suite-wide guard, in both directions, over every adapter that ships.
 
-    cot, _ = build_messages(
-        _free_form_parts(["do not explain", "do not use introductory phrases or commentary"]),
-        TaskModes(prompt_mode="cot"),
-    )
-    assert "Requirements" not in cot[-1].content
-    assert "Answer:" in cot[-1].content
-
-
-def test_no_shipped_dataset_contradicts_cot():
-    """The suite-wide guard: rendered prompts, not declared constraints.
-
-    Catches the conflict wherever it enters the prompt -- an adapter's
-    constraints, its system prompt, or a per-sample instruction.
+    The old version checked one direction (cot must not be told to stop
+    reasoning), over five hardcoded adapters, with a regex that mirrored the
+    production filter -- so it could not fail for any wording the filter already
+    knew, and never looked at io at all. io was where the sharper conflicts
+    were: a task line asking for a differential, immediately under "Answer
+    directly. Do not explain your reasoning."
     """
     import re
 
-    from abductionbench.adapters._prompting import build_messages
+    from abductionbench.adapters._prompting import PromptParts, build_messages
     from abductionbench.core.modes import TaskModes
-    from abductionbench.core.registry import resolve_adapter
 
-    suppress = re.compile(
-        r"do not explain|do not use introductory|without explanation|no commentary", re.I
-    )
-    # A representative spread rather than every dataset: these need no data on
-    # disk because the parts are built from the class, not from a sample.
-    from abductionbench.adapters._prompting import PromptParts
+    suppresses = re.compile(_SUPPRESSES_REASONING, re.I)
+    elicits = re.compile(_ELICITS_REASONING, re.I)
 
-    for impl in (
-        "abductionbench.adapters.abductionrules:AbductionRulesAdapter",
-        "abductionbench.adapters.house_md:HouseMDAdapter",
-        "abductionbench.adapters.neulr:NeuLRAdapter",
-        "abductionbench.adapters.synpat:SynPATAdapter",
-        "abductionbench.adapters.uniadilr_hgc:UniADILRHGcAdapter",
-    ):
-        cls = resolve_adapter(impl)
+    offenders = []
+    for dataset_id, cls in _shipped_adapters():
         parts = PromptParts(
             system=cls.system_prompt,
             observation="an observation",
             answer_format=getattr(cls, "answer_format", "") or "an answer",
-            constraints=list(getattr(cls, "answer_constraints", ()) or ()),
+            requirements=list(getattr(cls, "task_requirements", ()) or ()),
         )
-        cot, _ = build_messages(parts, TaskModes(prompt_mode="cot"))
-        rendered = " ".join(m.content for m in cot)
-        assert not suppress.search(rendered), f"{impl} contradicts cot: {rendered[-300:]}"
+        for mode, forbidden in (("io", elicits), ("cot", suppresses)):
+            rendered = " ".join(
+                m.content for m in build_messages(parts, TaskModes(prompt_mode=mode))[0]
+            )
+            found = forbidden.search(_without_the_mode_instruction(rendered))
+            if found:
+                offenders.append((dataset_id, mode, found.group(0)))
+    assert not offenders, f"reasoning discussed outside the mode instruction: {offenders}"
 
 
 # --------------------------------------------------------------------------- #
@@ -283,7 +355,7 @@ def test_no_selection_scaffolding_without_a_candidate_list():
         system="Find the root cause.",
         observation="A service is alerting.",
         answer_format="the root cause",
-        constraints=["name only the root cause"],
+        requirements=["name the root cause, not a downstream symptom"],
     )  # note: no options
 
     for selection in ("SCS", "MCS", "BOV"):
@@ -358,7 +430,7 @@ def test_no_shipped_dataset_is_told_to_select_from_nothing():
             system=cls.system_prompt,
             observation="an observation",
             answer_format=getattr(cls, "answer_format", "") or "an answer",
-            constraints=list(getattr(cls, "answer_constraints", ()) or ()),
+            requirements=list(getattr(cls, "task_requirements", ()) or ()),
         )  # no options, as these datasets render none in their generation mode
         for selection in (None, "SCS", "BOV"):
             text = build_messages(
@@ -368,21 +440,23 @@ def test_no_shipped_dataset_is_told_to_select_from_nothing():
             assert "Select exactly one hypothesis" not in text, (impl, selection)
 
 
-def test_no_dataset_states_the_answer_shape_in_its_task_line():
-    """A task line must describe the TASK, never how to answer.
+def test_no_dataset_states_the_answer_shape_or_reasoning_in_its_task_line():
+    """A task line must describe the TASK -- not how to answer, not whether to reason.
 
-    The prompt has one place for answer shape -- `answer_format`, the
-    constraints, and the closing "On the last line, give your final answer
-    as:". A dataset that also puts it in `instructions` says it twice, and
-    under cot it says it in the wrong order: the Task line is rendered BEFORE
-    the reasoning instruction, so art's "Answer with a single short sentence
-    describing that event." told the model to answer immediately, and only then
-    was it asked to work through the evidence step by step.
+    Two failures, both over the per-sample `instructions` field, which no
+    mode-aware code path ever inspected:
 
-    Six datasets did this. Two of them contradicted themselves whatever the
-    mode -- uncommonsense asked for "a single sentence" while its own
-    answer_format says 1 to 3, and crosstrace asked for reasoning "in a few
-    numbered steps" that its constraints forbid.
+    * **Answer shape.** The prompt has one place for it -- `answer_format` and
+      the closing "On the last line, give your final answer as:". A dataset
+      that also puts it in `instructions` says it twice, and under cot it says
+      it in the wrong order, since the Task line renders BEFORE the reasoning
+      instruction.
+    * **Reasoning.** house_md asked for "a short differential, then commit to
+      the single most likely diagnosis" and medcasereasoning for "State the
+      diagnosis, then briefly justify it" -- in the io prompt, three lines above
+      "Answer directly. Do not explain your reasoning." gear and musr each
+      opened with a directive to work the evidence out first. Whether to reason
+      is the mode instruction's to say, in one line, and nothing else's.
     """
     import re
 
@@ -402,10 +476,15 @@ def test_no_dataset_states_the_answer_shape_in_its_task_line():
         pytest.skip(f"cannot load the run config: {exc}")
 
     directive = re.compile(
+        # answer shape
         r"\b(answer|respond|reply)\b.{0,30}\b(with|in|using|only)\b"
         r"|\bgive (your|the) answer\b|\boutput only\b|\breturn only\b"
         r"|\bin (one|a single) (short )?(sentence|line|word)\b"
-        r"|\bone short sentence\b|\bin a few numbered steps\b",
+        r"|\bone short sentence\b|\bin a few numbered steps\b"
+        r"|\b(one|two|three|four|five|1 to 3) (or (two|three) )?sentences?\b"
+        r"|\bkeep it (under|to) \w+ sentences\b"
+        # whether to reason: the mode instruction's job alone
+        + f"|{_ELICITS_REASONING}|{_SUPPRESSES_REASONING}",
         re.IGNORECASE,
     )
 
@@ -442,7 +521,7 @@ def test_no_dataset_states_the_answer_shape_in_its_task_line():
 
     if not checked:
         pytest.skip("no datasets are materialized on this machine")
-    assert not offenders, f"answer shape stated in a task line: {offenders}"
+    assert not offenders, f"answer shape or reasoning stated in a task line: {offenders}"
 
 
 # --------------------------------------------------------------------------- #

@@ -44,11 +44,6 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "the faulty component"
-    answer_constraints = (
-        "name only the component",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
-    )
     options_heading = "Candidate faulty components:"
     #: The primary answer is the faulty component, and the components are listed
     #: in the prompt -- a closed pool with fixed spellings, which a string test

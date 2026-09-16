@@ -46,13 +46,8 @@ class AbductionRulesAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one fact"
-    answer_constraints = (
-        "output exactly one fact",
+    task_requirements = (
         "phrase it exactly like the facts in the theory",
-        "output only the fact",
-        "do not output a list",
-        "do not explain",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = True
     selection_cardinality = None

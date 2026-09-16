@@ -142,11 +142,8 @@ class SynPATAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one equation in the given symbols"
-    answer_constraints = (
-        "output exactly one equation",
+    task_requirements = (
         "use only the symbols given",
-        "output only the equation",
-        "do not use introductory phrases or commentary",
     )
     #: Verifiable, and checked as such: an equation set to zero has a zero set,
     #: and SymPy decides whether two expressions share it. The judge sees only

@@ -46,12 +46,6 @@ class MedRBenchAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "a single diagnosis"
-    answer_constraints = (
-        "give exactly one diagnosis",
-        "output only the diagnosis name",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
-    )
     #: Measured, not assumed: the model writes a disease name into an open
     #: vocabulary with no candidate list, so a correct answer routinely differs
     #: from the gold in wording -- synonym, eponym, abbreviation, subtype -- and

@@ -72,12 +72,10 @@ class InAbHyDAdapter(PooledDatasetAdapter):
         "the observation follow. Name that statement."
     )
     answer_format = "one statement"
-    answer_constraints = (
-        "output exactly one statement",
+    task_requirements = (
         "use the same vocabulary and phrasing style as the theory",
-        "state only the missing assumption, not the reasoning that follows from it",
+        "give the missing assumption itself, not the conclusions that follow from it",
         "do not restate the observation",
-        "do not explain your reasoning",
     )
     data_delivery_mode = "static"
     #: Measured, not assumed: "A kurpor is windy." against a gold of "Every

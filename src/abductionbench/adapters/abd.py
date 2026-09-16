@@ -123,12 +123,9 @@ class ABDAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one s-expression formula in the variable x"
-    answer_constraints = (
-        "output exactly one formula",
+    task_requirements = (
         "use only the allowed predicates",
         "leave x as the only free variable",
-        "output only the formula",
-        "do not use introductory phrases or commentary",
     )
     #: Solver-checkable end to end: Z3 decides validity and cost exactly, and an
     #: answer it cannot parse is not undecidable but invalid -- a formula that

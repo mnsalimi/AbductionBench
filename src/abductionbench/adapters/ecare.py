@@ -55,13 +55,9 @@ class ECareAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one short factual statement"
-    answer_constraints = (
-        "write exactly one sentence",
+    task_requirements = (
         "name the underlying property, rule or definition",
-        "use plain factual wording",
         "do not refer to the cause and effect themselves",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
     )
     options_heading = "Answer options:"
     #: Set per instance in prepare(). The selection subtask picks one of two

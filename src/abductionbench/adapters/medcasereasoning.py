@@ -34,18 +34,12 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given a clinical case "
-        "report. State the final diagnosis, and let your reasoning follow the diagnostic "
-        "evidence in the case rather than prior probability alone."
+        "report. State the final diagnosis that the case's own diagnostic evidence "
+        "supports, rather than the one prior probability favours."
     )
     data_delivery_mode = "static"
 
     answer_format = "a single diagnosis"
-    answer_constraints = (
-        "give exactly one diagnosis",
-        "output only the diagnosis name",
-        "do not explain why",
-        "do not use introductory phrases or commentary",
-    )
     #: Measured, not assumed: the model writes a disease name into an open
     #: vocabulary with no candidate list, so a correct answer routinely differs
     #: from the gold in wording -- synonym, eponym, abbreviation, subtype -- and
@@ -78,14 +72,11 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
             fields={
                 "observation": presentation,
                 "question": "What is the most likely final diagnosis?",
-                "instructions": (
-                    "State the diagnosis, then briefly justify it from the findings that support "
-                    "it."
-                ),
+                "instructions": "State the final diagnosis the case supports.",
             },
             reference={"gold": diagnosis, "reasoning": reasoning},
             task_kind="generation",
-            # Diagnosis plus a short justification, after a long case.
+            # Room for a diagnosis, and for the reasoning cot asks for.
             max_tokens=1024,
             metadata={"pmcid": item.get("pmcid"), "journal": item.get("journal")},
         )
@@ -163,7 +154,8 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
                 "parse_failure_rate": "(lower is better, 0-1) fraction of responses no diagnosis "
                 "could be read from; these score 0 and are counted separately from being wrong.",
                 "reasoning_recall": "fraction of the clinician's reasoning statements the model's "
-                "response covers (token-F1 >= 0.3 per statement)",
+                "response covers (token-F1 >= 0.3 per statement). Read per prompt mode: only cot "
+                "asks for reasoning, so io scores near zero here by construction.",
             },
             primary_metric="diagnosis_judged",
             decisions=[
@@ -175,9 +167,12 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
                 "reasoning_recall uses a 0.3 token-F1 threshold per clinician statement -- the "
                 "dataset defines no threshold, and this one credits a paraphrase while rejecting "
                 "an unrelated sentence.",
-                "Asked for a brief justification alongside the diagnosis so reasoning_recall is "
-                "measurable; the answer line is still parsed for the diagnosis itself.",
-                "max_tokens=1024 to fit a diagnosis plus justification after a long case report.",
+                "The task line asks for the diagnosis alone. It used to ask for a brief "
+                "justification as well, so that reasoning_recall had something to measure -- but "
+                "under io the prompt then forbade the justification it had just requested. "
+                "reasoning_recall now measures the reasoning the prompt mode actually elicits, "
+                "which makes it a reading of cot rather than a constant of the dataset.",
+                "max_tokens=1024 to fit a diagnosis plus reasoning after a long case report.",
             ],
             caveats=[
                 "Case reports are published literature; large models may have memorized them.",

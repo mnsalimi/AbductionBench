@@ -43,12 +43,10 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
     )
     data_delivery_mode = "static"
 
-    answer_format = "one mechanism"
-    answer_constraints = (
-        "state one mechanism, not several",
+    answer_format = "one mechanism, in two or three sentences"
+    task_requirements = (
         "name the physical or chemical process responsible",
         "do not restate the observation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None
@@ -103,8 +101,8 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
                     "What mechanism-level hypothesis would explain and address this problem?"
                 ),
                 "instructions": (
-                    "State one hypothesis: the intervention and the mechanism by which it would "
-                    "resolve the limitation. Two or three sentences."
+                    "State one hypothesis: the intervention and the mechanism by which it "
+                    "would resolve the limitation."
                 ),
             },
             reference={

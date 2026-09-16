@@ -49,11 +49,8 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one missing premise"
-    answer_constraints = (
-        "output exactly one premise",
-        "output only the premise",
+    task_requirements = (
         "do not restate the hypothesis or the given premises",
-        "do not explain your reasoning",
     )
     #: Measured, not assumed: the missing premise is written in free English
     #: into an unbounded space, and several different premises complete the

@@ -54,13 +54,12 @@ class ProofWriterAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one fact per line, or None"
-    answer_constraints = (
-        "output only the missing facts",
+    task_requirements = (
         "each missing fact must be a single fact, not a rule",
         "if several single facts would each work, output all of them",
         "put each answer on its own line",
         "if there is no valid single missing fact, output exactly: None",
-        "do not explain your reasoning",
+        "do not restate the observation",
     )
     objective_metrics = True
     selection_cardinality = None
@@ -151,9 +150,8 @@ class ProofWriterAdapter(PooledDatasetAdapter):
                 "context": theory,
                 "observation": statement,
                 "instructions": (
-                    "Exactly one fact is missing from the list of facts. State that missing fact, "
-                    "phrased like the other facts. Do not restate the observation itself, and do "
-                    "not add a rule."
+                    "Exactly one fact is missing from the list of facts. State that missing "
+                    "fact, phrased like the other facts."
                 ),
             },
             reference={"gold": gold, "removed": removed},

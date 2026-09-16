@@ -101,16 +101,13 @@ class UniADILRHGcAdapter(PooledDatasetAdapter):
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given a numbered pool of "
         "statements, most of which are irrelevant. A few of them together support a single "
-        "further claim. Identify which ones -- work out how many there are as well as which."
+        "further claim. Identify which ones -- how many there are is part of the question, "
+        "not something you are told."
     )
-    answer_format = "the statement numbers"
-    answer_constraints = (
+    answer_format = "the statement numbers, separated by spaces (for example: 5 13)"
+    task_requirements = (
         "give the number of every supporting statement, and no others",
-        "separate them with spaces, for example: 5 13",
-        "output only the numbers",
         "do not name the claim",
-        "do not explain your reasoning",
-        "do not use introductory phrases or commentary",
     )
     data_delivery_mode = "static"
     #: The answer is a pair of numbers drawn from the pool the prompt shows, so

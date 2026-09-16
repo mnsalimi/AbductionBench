@@ -123,14 +123,21 @@ class PooledDatasetAdapter(DatasetAdapter):
     #: line.  A sample may override it with an ``answer_format`` field.
     answer_format: str = ""
 
-    #: What the answer must and must not do, one clause per item, rendered as a
-    #: "Requirements:" list.  Declared per dataset because the constraints are
-    #: the dataset's ("write exactly one sentence", "do not restate the
-    #: observation"), and declared as *data* because that is what keeps them
-    #: comparable: every generation task in the suite states its shape the same
-    #: way, so a difference in score is a difference in difficulty rather than
-    #: in how firmly the instruction was worded.
-    answer_constraints: tuple[str, ...] = ()
+    #: What the *task* requires, one clause per item, rendered as a
+    #: "Requirements:" list inside the task block.  Declared per dataset because
+    #: the requirements are the dataset's ("use only the allowed predicates",
+    #: "do not restate the observation"), and declared as *data* because that is
+    #: what keeps them comparable: every generation task in the suite states its
+    #: demands the same way, so a difference in score is a difference in
+    #: difficulty rather than in how firmly the instruction was worded.
+    #:
+    #: Three things that used to live here do not any more, because each has
+    #: exactly one home now: the answer's shape belongs to :attr:`answer_format`,
+    #: "output only the <answer>" is said once by the closing for every dataset,
+    #: and whether the response may reason is said only by the mode instruction.
+    #: A clause here is rendered unchanged in every prompt mode and every
+    #: selection mode, so anything mode-specific does not belong in it.
+    task_requirements: tuple[str, ...] = ()
 
     #: Heading above the candidate list, in the dataset's own words.
     options_heading: str = ""
@@ -144,7 +151,7 @@ class PooledDatasetAdapter(DatasetAdapter):
         that wording instead.
         """
         fields = sample.fields
-        constraints = fields.get("constraints")
+        requirements = fields.get("requirements")
         return PromptParts(
             system=self.system_prompt_for(sample),
             observation=str(fields.get("observation", "") or ""),
@@ -155,7 +162,7 @@ class PooledDatasetAdapter(DatasetAdapter):
             options=[str(o) for o in (fields.get("options") or [])],
             option_labels=[str(o) for o in (fields.get("option_labels") or [])],
             options_heading=str(fields.get("options_heading") or self.options_heading or ""),
-            constraints=[str(c) for c in (constraints or self.answer_constraints)],
+            requirements=[str(c) for c in (requirements or self.task_requirements)],
         )
 
     def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:

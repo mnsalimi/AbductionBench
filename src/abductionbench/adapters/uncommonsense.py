@@ -46,12 +46,9 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "1 to 3 sentences"
-    answer_constraints = (
-        "write 1 to 3 sentences",
+    task_requirements = (
         "make the outcome more likely, leaving as little of an information gap as possible",
         "do not restate the context or the outcome",
-        "write only the explanation",
-        "do not use introductory phrases or commentary",
     )
     objective_metrics = False
     selection_cardinality = None
