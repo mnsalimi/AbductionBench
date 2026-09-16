@@ -527,7 +527,22 @@ class ReasoningJudgeConfig(_Base):
     #: 2,048 it came back cut off and empty.
     max_tokens: int = Field(8192, ge=1)
     temperature: float = Field(0.0, ge=0)
+    #: Conversations per batch call.  In-flight judge sequences are
+    #: ``group_size x max_parallel_calls``; sized together they should fill the
+    #: judge server's ``--max-num-seqs`` and not exceed it, since the surplus
+    #: only queues inside vLLM.  8 x 8 = 64 matches this suite's judge exactly.
+    #:
+    #: The speed comes from ``max_parallel_calls``, so this stays at 8 rather
+    #: than growing: vLLM at temperature 0 is not bit-stable across batch
+    #: sizes -- the reduction order changes with the batch and can flip a token
+    #: -- and measured at 16 the density judge's step counts moved by a quarter.
+    #: Holding the batch size fixed keeps a verdict comparable with the runs
+    #: that came before it.
     group_size: int = Field(8, ge=1)
+    #: How many judge calls may be in flight at once, across every metric
+    #: family and every task being judged.  This is the only throttle on the
+    #: stage: the families now go out together rather than one after another.
+    max_parallel_calls: int = Field(8, ge=1)
     cache: bool = True
     #: Metric-family -> versioned prompt template id.  Keeping this configurable
     #: makes every score reproducible from the resolved run configuration.

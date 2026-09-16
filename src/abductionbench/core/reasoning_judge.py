@@ -241,9 +241,15 @@ def derive_reasoning_metrics(
     backtracking = _nonnegative_int((raw.get("backtracking") or {}).get("backtracking"))
     if backtracking is None:
         errors.append("backtracking:invalid_or_missing_output")
+    elif total_steps is not None and backtracking > total_steps:
+        # A backtrack is a step, so more backtracks than steps is not a value
+        # with a missing normalizer -- it is a judge that did not count. Keeping
+        # the raw number and dropping only the ratio is how one reply of "147"
+        # against a 14-step chain moved this metric's mean by fifty-fold.
+        errors.append("backtracking:exceeds_total_steps")
     else:
         metrics["reasoning_backtracking"] = float(backtracking)
-        if total_steps is not None and total_steps > 0 and backtracking <= total_steps:
+        if total_steps is not None and total_steps > 0:
             metrics["reasoning_backtracking_normalized"] = backtracking / total_steps
         else:
             errors.append("backtracking:invalid_or_missing_step_normalizer")
@@ -279,9 +285,13 @@ def derive_reasoning_metrics(
     )
     if uncertainty is None:
         errors.append("uncertainty:invalid_or_missing_output")
+    elif total_steps is not None and uncertainty > total_steps:
+        # Same rule: the count is of steps that mark uncertainty, so it cannot
+        # exceed the steps there are.
+        errors.append("uncertainty:exceeds_total_steps")
     else:
         metrics["reasoning_uncertainty_steps"] = float(uncertainty)
-        if total_steps is not None and total_steps > 0 and uncertainty <= total_steps:
+        if total_steps is not None and total_steps > 0:
             metrics["reasoning_uncertainty_normalized"] = uncertainty / total_steps
         else:
             errors.append("uncertainty:invalid_or_missing_step_normalizer")
@@ -329,6 +339,7 @@ class ReasoningJudgeStage:
         self._cache_path = self.cache_dir / "verdicts.json"
         self._cache: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        self._calls = asyncio.Semaphore(config.max_parallel_calls)
         if config.cache and self._cache_path.exists():
             try:
                 payload = orjson.loads(self._cache_path.read_bytes())
@@ -408,11 +419,8 @@ class ReasoningJudgeStage:
         if not targets:
             return updated
 
-        # Serializing apply() prevents two concurrently-running model tasks from
-        # buying the same question-only observation inventory before either has
-        # put it into the shared run cache.
+        await self._evaluate(targets)
         async with self._lock:
-            await self._evaluate(targets)
             self._save_cache()
 
         for target in targets:
@@ -447,7 +455,15 @@ class ReasoningJudgeStage:
             question_key = stable_hash({"question": target.question}, length=32)
             question_keys[target.index] = question_key
             inventory_requests.setdefault(question_key, {"question": target.question})
-        inventories = await self._judge_many("observation_inventory", inventory_requests)
+        # Only this step is serialized across tasks, and only because it is the
+        # one shared purchase: two tasks reaching the same question at once
+        # would otherwise both pay for its inventory before either had put the
+        # answer in the run cache. Everything after this is per-output, so
+        # tasks judge concurrently and the semaphore does the throttling.
+        async with self._lock:
+            inventories = await self._judge_many(
+                "observation_inventory", inventory_requests
+            )
 
         common: dict[int, dict[str, Any]] = {}
         for target in targets:
@@ -500,48 +516,9 @@ class ReasoningJudgeStage:
                 else:
                     target.raw[family] = results[key]
 
-        await run_family(
-            "observation_coverage",
-            targets,
-            ("question", "reasoning_chain", "total_observations"),
-        )
         generation = [
             target for target in targets if target.generation_like or target.pipeline_like
         ]
-        if generation:
-            await run_family(
-                "branchiness_diversity", generation, ("question", "reasoning_chain")
-            )
-        await run_family("density", targets, ("question", "reasoning_chain", "options"))
-        # The inventory total goes in as well: both counts are drawn from it,
-        # and a judge that cannot see it returns counts the normalizer rejects.
-        await run_family(
-            "redundancy_completeness",
-            targets,
-            (
-                "question",
-                "reasoning_chain",
-                "model_answer",
-                "reference_answer",
-                "total_observations",
-            ),
-        )
-        await run_family("directionality", targets, ("question", "reasoning_chain"))
-        await run_family("prior_knowledge", targets, ("question", "reasoning_chain"))
-
-        # These two prompts use the density judge's step count as the shared
-        # normalizer and to keep their step segmentation aligned.
-        for target in targets:
-            common[target.index]["total_steps"] = _nonnegative_int(
-                target.raw.get("density", {}).get("total_steps")
-            )
-        await run_family(
-            "backtracking", targets, ("question", "reasoning_chain", "total_steps")
-        )
-        await run_family(
-            "uncertainty", targets, ("question", "reasoning_chain", "total_steps")
-        )
-
         differential = [
             target
             for target in targets
@@ -549,12 +526,60 @@ class ReasoningJudgeStage:
             and not target.bov
             and len(target.options) >= 2
         ]
-        if differential:
-            await run_family(
-                "differential_elimination",
-                differential,
-                ("question", "reasoning_chain", "options", "option_count"),
+
+        # Two waves, not nine steps in a row. Only two dependencies exist --
+        # coverage and redundancy need the inventory's total, backtracking and
+        # uncertainty need density's step count -- and running the other six
+        # families one after another bought nothing but wall-clock.
+        first_wave = [
+            run_family(
+                "observation_coverage",
+                targets,
+                ("question", "reasoning_chain", "total_observations"),
+            ),
+            # The inventory total goes in as well: both counts are drawn from
+            # it, and a judge that cannot see it returns counts the normalizer
+            # rejects.
+            run_family(
+                "redundancy_completeness",
+                targets,
+                (
+                    "question",
+                    "reasoning_chain",
+                    "model_answer",
+                    "reference_answer",
+                    "total_observations",
+                ),
+            ),
+            run_family("density", targets, ("question", "reasoning_chain", "options")),
+            run_family("directionality", targets, ("question", "reasoning_chain")),
+            run_family("prior_knowledge", targets, ("question", "reasoning_chain")),
+        ]
+        if generation:
+            first_wave.append(
+                run_family("branchiness_diversity", generation, ("question", "reasoning_chain"))
             )
+        if differential:
+            first_wave.append(
+                run_family(
+                    "differential_elimination",
+                    differential,
+                    ("question", "reasoning_chain", "options", "option_count"),
+                )
+            )
+        await asyncio.gather(*first_wave)
+
+        # These two prompts use the density judge's step count as the shared
+        # normalizer and to keep their step segmentation aligned, so they are
+        # the one thing that genuinely has to wait.
+        for target in targets:
+            common[target.index]["total_steps"] = _nonnegative_int(
+                target.raw.get("density", {}).get("total_steps")
+            )
+        await asyncio.gather(
+            run_family("backtracking", targets, ("question", "reasoning_chain", "total_steps")),
+            run_family("uncertainty", targets, ("question", "reasoning_chain", "total_steps")),
+        )
 
     async def _judge_many(
         self, family: str, requests: dict[str, dict[str, Any]]
@@ -578,7 +603,8 @@ class ReasoningJudgeStage:
             self.client.supports_batch and self.config.model not in self._batch_disabled
         )
         chunk_size = self.config.group_size if can_batch else 1
-        for chunk in iter_chunks(keyed, chunk_size):
+
+        async def run_chunk(chunk: list[tuple[str, dict[str, Any], str]]) -> None:
             conversations = []
             for _request_id, fields, key in chunk:
                 sample = SampleSpec(sample_id=f"reasoning-judge::{key}", fields=fields,
@@ -589,21 +615,26 @@ class ReasoningJudgeStage:
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
             )
-            try:
-                result, _outcome = await with_retry(
-                    lambda convs=conversations, params=sampling: (
-                        self.client.chat_batch(convs, params)
-                        if can_batch and len(convs) > 1
-                        else self.client.chat_single(convs[0], params)
-                    ),
-                    policy=self.retry_policy,
-                    description=f"reasoning judge {family} ({len(conversations)} item(s))",
-                )
-            except EndpointError as exc:
-                logger.warning("reasoning judge %s failed permanently: %s", family, exc)
-                for request_id, _fields, _key in chunk:
-                    out[request_id] = None
-                continue
+            # The semaphore is the whole run's, not this family's or this
+            # task's: it is what keeps in-flight judge sequences at roughly
+            # group_size x max_parallel_calls however many families and tasks
+            # are judging at once, so the server is filled and not flooded.
+            async with self._calls:
+                try:
+                    result, _outcome = await with_retry(
+                        lambda convs=conversations, params=sampling: (
+                            self.client.chat_batch(convs, params)
+                            if can_batch and len(convs) > 1
+                            else self.client.chat_single(convs[0], params)
+                        ),
+                        policy=self.retry_policy,
+                        description=f"reasoning judge {family} ({len(conversations)} item(s))",
+                    )
+                except EndpointError as exc:
+                    logger.warning("reasoning judge %s failed permanently: %s", family, exc)
+                    for request_id, _fields, _key in chunk:
+                        out[request_id] = None
+                    return
             if len(result.choices) != len(chunk):
                 # Losing the alignment between requests and answers would
                 # attach one chain's metrics to another chain, so the whole
@@ -616,7 +647,7 @@ class ReasoningJudgeStage:
                 )
                 for request_id, _fields, _key in chunk:
                     out[request_id] = None
-                continue
+                return
             for (request_id, _fields, key), choice in zip(
                 chunk, result.choices, strict=True
             ):
@@ -637,6 +668,8 @@ class ReasoningJudgeStage:
                         "reasoning judge %s: unparseable reply %r", family, raw[:200]
                     )
                 out[request_id] = values
+
+        await asyncio.gather(*(run_chunk(chunk) for chunk in iter_chunks(keyed, chunk_size)))
         return out
 
     @staticmethod

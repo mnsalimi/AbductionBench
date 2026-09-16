@@ -259,6 +259,32 @@ def test_multi_selection_is_judged_as_a_selection():
     assert "reasoning_differential_elimination" in metrics
 
 
+def test_a_count_larger_than_the_chain_is_dropped_not_averaged():
+    """A judge once answered 147 backtracks for a 14-step chain.
+
+    The raw number was recorded and only the ratio was withheld, so one reply
+    moved that metric's mean by fifty-fold across otherwise identical runs.
+    """
+    raw = _raw_metrics()
+    raw["backtracking"] = {"backtracking": 147}
+    raw["uncertainty"] = {"uncertainty_steps": 99}
+    metrics, errors, _ = derive_reasoning_metrics(
+        raw, generation_like=True, selection_like=False, option_count=0
+    )
+    assert "reasoning_backtracking" not in metrics
+    assert "reasoning_backtracking_normalized" not in metrics
+    assert "reasoning_uncertainty_steps" not in metrics
+    assert "backtracking:exceeds_total_steps" in errors
+    assert "uncertainty:exceeds_total_steps" in errors
+
+    # A count that fits is still reported, ratio and all.
+    ok, errors, _ = derive_reasoning_metrics(
+        _raw_metrics(), generation_like=True, selection_like=False, option_count=0
+    )
+    assert ok["reasoning_backtracking"] == 1.0
+    assert errors == []
+
+
 def test_a_shapeless_task_reports_why_density_has_no_normalizer():
     _metrics, errors, _inapplicable = derive_reasoning_metrics(
         _raw_metrics(), generation_like=False, selection_like=False, option_count=0

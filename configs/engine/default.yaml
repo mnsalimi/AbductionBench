@@ -118,7 +118,16 @@ engine:
     # on this suite's longest reasoning chain.
     max_tokens: 8192
     temperature: 0.0
+    # In-flight judge sequences are group_size x max_parallel_calls. Size them
+    # to the judge server's --max-num-seqs (64 here): more only queues inside
+    # vLLM, less leaves scheduler slots idle. This costs no GPU memory -- vLLM
+    # preallocates its KV cache at startup, so these fill slots already paid for.
+    #
+    # The concurrency, not the batch size, is what was raised: a temperature-0
+    # verdict still depends on what it was batched with, so group_size stays
+    # where earlier runs had it and their numbers stay comparable.
     group_size: 8
+    max_parallel_calls: 8
     cache: true
     templates:
       observation_inventory: reasoning_observation_inventory_v1

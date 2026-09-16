@@ -305,3 +305,64 @@ the suite, and the signal is already there in `parse_failure_rate`,
 
 Validation: `ruff check src tests` shows the same 24 pre-existing errors as
 before the pass and no new ones; full suite **236 passed, 1 skipped**.
+
+
+## Making the reasoning judge fast (2026-09-16), measured
+
+**Why it was slow.** The stage issued roughly **171 sequential round-trips per
+task**: nine metric families awaited one after another, and inside each family
+150 samples split into 19 chunks of 8, also awaited one after another. Every
+round-trip is a gpt-oss call that generates thousands of hidden reasoning tokens
+before its one-line JSON. A run-wide lock then serialized the whole stage across
+tasks, so at `max_parallel_tasks: 3` only one task could judge at a time. The
+judge server offers 64 scheduler slots; the stage used 8.
+
+**What changed.** Families now run in two dependency waves -- only coverage and
+redundancy need the inventory total, and only backtracking and uncertainty need
+density's step count; the other six waited for nothing. Chunks within a family
+go out together. A single run-wide semaphore bounds the whole stage at
+`group_size x max_parallel_calls = 8 x 8 = 64`, the judge's `--max-num-seqs`
+exactly. The lock now covers only the observation-inventory purchase, which is
+the one genuinely shared buy.
+
+**Measured**, ecare, cot only, same budget and prompts on both sides:
+
+| sample size | before | after | |
+|---|---|---|---|
+| 6 records, 2 datasets | 378 s | 193 s | **1.96x** |
+| 32 records | 801 s | 257 s | **3.12x** |
+
+The gain grows with sample size because chunk parallelism does not engage below
+`group_size`. At the suite's 150 samples per task there are ~19 chunks per
+family rather than 1, so 3.1x is a floor rather than a ceiling.
+
+**No OOM risk, by construction.** vLLM preallocates its KV cache at startup from
+`GPU_MEMORY_UTILIZATION` (0.40 + 0.36 = 71 GB of 98 GB here, 27 GB free).
+Client-side concurrency allocates no GPU memory; requests beyond
+`--max-num-seqs` queue in the scheduler. The concurrency was sized to land on 64
+so nothing even queues.
+
+**`group_size` stays at 8.** Raising it to 16 was tried and reverted: vLLM at
+temperature 0 is not bit-stable across batch sizes, and the density judge's step
+counts moved by a quarter. The speed comes from the concurrency, so the batch
+size is held where earlier runs had it and their numbers stay comparable.
+
+### What the measurement turned up
+
+Running the **identical code twice** moved `reasoning_backtracking` from 0.032
+to 1.568 -- more than any difference the speed work caused. The cause was one
+sample: the judge answered **147 backtracks for a 14-step chain**, and
+`derive_reasoning_metrics` recorded that raw 147 while withholding only the
+ratio. A backtrack is a step, so a count above the step count is not a value
+missing its normalizer; it is a judge that did not count. Both backtracking and
+uncertainty now drop the raw value too, with `:exceeds_total_steps` recorded.
+
+That fixes the outlier. It does not fix the underlying noise: `total_steps` for
+one sample read 43 in one run and 4 in the next, and 28 of 94 samples changed
+their step count between identical runs. The step-segmentation prompt is not
+reproducible enough for a per-sample number to be trusted, and that is a prompt
+problem rather than a code one. Aggregate means over 150 samples are far
+steadier than the per-sample values, but `reasoning_total_steps` and everything
+derived from it should be read with that in mind.
+
+Validation: full suite **237 passed, 1 skipped**.
