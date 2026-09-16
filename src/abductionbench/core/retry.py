@@ -119,14 +119,7 @@ async def with_retry(
             return result, outcome
         except asyncio.CancelledError:
             raise
-        except (KeyboardInterrupt, SystemExit):
-            # Not a failure of the call: someone asked the process to stop.
-            # These are BaseException and not Exception, and the classifier
-            # below would file them as ``unknown`` -- which is retryable by
-            # default, so a Ctrl-C used to re-issue the batch four more times
-            # over ~30 seconds of backoff before the interrupt got out.
-            raise
-        except Exception as exc:  # noqa: BLE001 - classified below
+        except BaseException as exc:  # noqa: BLE001 - classified below
             outcome.last_error = exc
             outcome.error_class = policy.error_class_of(exc)
             if not policy.should_retry(exc, attempt):

@@ -26,29 +26,6 @@ def _run(config_path: Path, **kwargs):
     return asyncio.run(engine.run()), engine
 
 
-def _model_with_cap(base_url: str, cap: int) -> dict:
-    """The conftest model, with room for a longer answer."""
-    return {
-        "id": "fake-model",
-        "model_name": "test/model",
-        "endpoint": {
-            "base_url": base_url,
-            "api_key": "test-key",
-            "batch": {
-                "enabled": True,
-                "path": "/v1/chat/completions/batch",
-                "group_size": 4,
-            },
-        },
-        "sampling": {
-            "max_tokens_default": cap,
-            "max_tokens_cap": cap,
-            "max_tokens_floor": 16,
-        },
-        "limits": {"max_parallel_batches": 2, "context_window": 16384},
-    }
-
-
 def _records(task_dir: Path) -> list[dict]:
     path = task_dir / "records.jsonl"
     return [orjson.loads(line) for line in path.read_bytes().splitlines() if line.strip()]
@@ -256,9 +233,8 @@ def test_dataset_mostly_oversize_is_reported_unusable(fake_server, write_run_con
 
 
 def test_empty_response_is_its_own_status(fake_server, write_run_config, fake_dataset):
-    """A server that answers with nothing, having finished on its own terms."""
+    """A reasoning model can burn max_tokens and return content: null."""
     fake_server.state.empty_marker = "observation number 1"
-    fake_server.state.empty_finish_reason = "stop"
     config_path = write_run_config(
         base_url=fake_server.base_url, datasets=[fake_dataset("fake", n=4, sample_size=4)]
     )
@@ -267,64 +243,6 @@ def test_empty_response_is_its_own_status(fake_server, write_run_config, fake_da
     assert records["s0001"]["status"] == "empty"
     assert records["s0001"]["parse_ok"] is False
     assert result.tasks[0].metrics["empty_response_rate"] == pytest.approx(0.25)
-
-
-def test_a_budget_starved_reply_is_truncated_not_empty(
-    fake_server, write_run_config, fake_dataset
-):
-    """A reasoning model can burn max_tokens and return content: null.
-
-    Filing that as `empty` hid the only cause a larger budget would fix, and
-    made it indistinguishable from a server that answered with nothing.
-    """
-    fake_server.state.empty_marker = "observation number 1"
-    fake_server.state.empty_finish_reason = "length"
-    config_path = write_run_config(
-        base_url=fake_server.base_url, datasets=[fake_dataset("fake", n=4, sample_size=4)]
-    )
-    result, _ = _run(config_path)
-    records = {r["sample_id"]: r for r in _records(result.tasks[0].output_dir)}
-    assert records["s0001"]["status"] == "truncated"
-    assert records["s0001"]["response"]["finish_reason"] == "length"
-    metrics = result.tasks[0].metrics
-    assert metrics["empty_response_rate"] == pytest.approx(0.0)
-    assert metrics["truncation_rate"] == pytest.approx(0.25)
-    # Named on its own, because "cut off before any answer" and "cut off
-    # mid-sentence" call for different reactions.
-    assert metrics["empty_after_truncation_rate"] == pytest.approx(0.25)
-
-
-def test_resume_reasks_a_sample_the_budget_has_outgrown(
-    fake_server, write_run_config, fake_dataset
-):
-    """A truncated answer is not reused once the run allows a bigger budget."""
-    fake_server.state.empty_marker = "observation number 1"
-    fake_server.state.empty_finish_reason = "length"
-    config_path = write_run_config(
-        base_url=fake_server.base_url,
-        datasets=[fake_dataset("fake", n=2, sample_size=2)],
-        engine={"checkpoint": {"resume_policy": "sample_id"}},
-    )
-    first, _ = _run(config_path)
-    truncated = [
-        r for r in _records(first.tasks[0].output_dir) if r["status"] == "truncated"
-    ]
-    assert truncated, "the fixture must produce a truncated record to resume from"
-    asked_before = len(fake_server.state.batch_calls) + fake_server.state.single_calls
-
-    # Same run directory, a larger cap: the truncated sample must be asked again
-    # while the answered one is reused.
-    bigger = write_run_config(
-        base_url=fake_server.base_url,
-        datasets=[fake_dataset("fake", n=2, sample_size=2)],
-        engine={"checkpoint": {"resume_policy": "sample_id"}},
-        models=[_model_with_cap(fake_server.base_url, 2048)],
-    )
-    second, _ = _run(bigger, run_id=first.run_id, run_dir=first.run_dir)
-    assert (
-        len(fake_server.state.batch_calls) + fake_server.state.single_calls > asked_before
-    )
-    assert second.tasks[0].n_reused < 2
 
 
 def test_fallback_to_single_calls_when_batch_route_missing(

@@ -48,10 +48,6 @@ class FakeServerState:
         self.poison_marker: str | None = None
         #: Return ``content: null`` for conversations containing this marker.
         self.empty_marker: str | None = None
-        #: What a server reports alongside an empty reply. "stop" is a server
-        #: that answered with nothing; "length" is a reasoning model whose
-        #: hidden chain spent the whole budget before any answer.
-        self.empty_finish_reason: str = "stop"
         #: Reply function: (conversation, max_tokens) -> content string.
         self.responder: Callable[[list[dict[str, Any]], int], str] = (
             lambda conv, max_tokens: f"echo:{conv[-1]['content'][:80]}"
@@ -137,12 +133,6 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return self.state.responder(conversation, max_tokens)
 
-    def _finish_for(self, content: str | None, max_tokens: int) -> str:
-        """The finish reason, honouring the configured flavour of empty."""
-        if not content:
-            return self.state.empty_finish_reason
-        return _finish_reason(content, max_tokens)
-
     def _batch(self, payload: dict[str, Any]) -> None:
         if not self.state.batch_enabled:
             self._json(404, {"error": {"message": "route not found"}})
@@ -195,7 +185,7 @@ class _Handler(BaseHTTPRequestHandler):
                     # Real servers report "length" both when the budget is spent
                     # before any content (reasoning models) and when a longer
                     # answer was cut off mid-way.
-                    "finish_reason": self._finish_for(content, max_tokens),
+                    "finish_reason": _finish_reason(content, max_tokens),
                 }
             )
         self._json(
@@ -236,7 +226,7 @@ class _Handler(BaseHTTPRequestHandler):
                             "role": "assistant",
                             "content": _clip_to_budget(content, max_tokens),
                         },
-                        "finish_reason": self._finish_for(content, max_tokens),
+                        "finish_reason": _finish_reason(content, max_tokens),
                     }
                 ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},

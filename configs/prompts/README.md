@@ -1,8 +1,8 @@
 # Prompt templates
 
-Prompt wording is configuration, not code. Dataset prompts live in their
-adapters; the versioned templates here control semantic answer judging and COT
-reasoning-structure judging.
+Prompt wording is configuration, not code.  Each YAML file here is one
+*versioned* template that the engine binds to a `task_kind` declared by a
+dataset adapter (`generation`, `selection`, `judge`, ...).
 
 ## The field contract
 
@@ -38,26 +38,3 @@ active template rather than hardcoding one prompt's format.  Recognized keys
 used by the generic helpers in `abductionbench.core.metrics`:
 `answer_prefix`, `answer_regex`, `strip_markdown`, and for judge templates
 `verdict_regex`, `score_regex`, `labels`, `expect_numeric_score`, `score_scale`.
-
-## COT reasoning metrics
-
-`judge/reasoning_*.yaml` contains one strict-JSON prompt per requested metric
-family. Multi-output definitions stay grouped in one call: observation
-coverage, branchiness/diversity, density/step counts, and
-redundancy/completeness. The question-only observation inventory is the sole
-extra prompt; it is cached by exact rendered question across models and repeats.
-
-Enable the stage independently of semantic answer judging:
-
-```yaml
-engine:
-  reasoning_judge:
-    enabled: true
-    model: judge-model-id   # one of the run's configured models
-```
-
-The stage runs only for `cot` and `self-consistency` prompt modes. It never
-calls a judge or adds reasoning metrics to `io` records. Raw judge outputs are
-validated, normalized values are calculated locally from shared counts, and
-undefined/inapplicable values are named in the sample sheet instead of being
-forced to zero.

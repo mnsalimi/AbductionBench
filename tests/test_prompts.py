@@ -27,21 +27,7 @@ def test_shipped_templates_load(prompt_dir: Path):
     registry = _registry(prompt_dir)
     ids = registry.ids()
     # Only judge templates ship now; a dataset's prompts live with its adapter.
-    assert set(ids) == {
-        "judge_binary_v1",
-        "judge_graded_v1",
-        "reasoning_observation_inventory_v1",
-        "reasoning_observation_coverage_v1",
-        "reasoning_branchiness_diversity_v1",
-        "reasoning_density_v1",
-        "reasoning_redundancy_completeness_v1",
-        "reasoning_redundancy_completeness_v2",
-        "reasoning_directionality_v1",
-        "reasoning_backtracking_v1",
-        "reasoning_differential_elimination_v1",
-        "reasoning_prior_knowledge_v1",
-        "reasoning_uncertainty_v1",
-    }
+    assert set(ids) == {"judge_binary_v1", "judge_graded_v1"}
     template = registry.get("judge_binary_v1")
     assert set(template.required_fields) == {"candidate", "gold"}
     assert template.output_contract["labels"] == ["yes", "no"]

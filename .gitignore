@@ -21,6 +21,3 @@ full_run.log
 # frame per episode). 254 of these were committed once by a `git add -A`; they
 # are generated, large, and belong to nothing that is read back.
 video/
-nohup.out
-calib_run.log
-run_*.log

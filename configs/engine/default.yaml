@@ -102,48 +102,8 @@ engine:
     template: judge_binary_v1
     max_tokens: 512
     temperature: 0.0
-    # In-flight sequences are group_size x max_parallel_calls; 8 x 8 = 64 is
-    # this judge server's --max-num-seqs. Costs no GPU memory: vLLM's KV cache
-    # is preallocated at startup, so this fills slots already paid for.
     group_size: 8
-    max_parallel_calls: 8
     cache: true
-
-  # Structural metrics over chains of reasoning. This stage is independent of
-  # semantic answer judging above and runs only for cot/self-consistency
-  # outputs, never for io outputs. The observation inventory is cached by the
-  # exact question so its total is shared across models and repeats.
-  reasoning_judge:
-    enabled: false
-    model: null               # must be one of the run's models
-    # A ceiling, not an allocation: it must also cover a reasoning judge's
-    # hidden chain, or the reply comes back with empty content and the metrics
-    # from that call are lost. gpt-oss-20b measured at 5,220 completion tokens
-    # on this suite's longest reasoning chain.
-    max_tokens: 8192
-    temperature: 0.0
-    # In-flight judge sequences are group_size x max_parallel_calls. Size them
-    # to the judge server's --max-num-seqs (64 here): more only queues inside
-    # vLLM, less leaves scheduler slots idle. This costs no GPU memory -- vLLM
-    # preallocates its KV cache at startup, so these fill slots already paid for.
-    #
-    # The concurrency, not the batch size, is what was raised: a temperature-0
-    # verdict still depends on what it was batched with, so group_size stays
-    # where earlier runs had it and their numbers stay comparable.
-    group_size: 8
-    max_parallel_calls: 8
-    cache: true
-    templates:
-      observation_inventory: reasoning_observation_inventory_v1
-      observation_coverage: reasoning_observation_coverage_v1
-      branchiness_diversity: reasoning_branchiness_diversity_v1
-      density: reasoning_density_v1
-      redundancy_completeness: reasoning_redundancy_completeness_v2
-      directionality: reasoning_directionality_v1
-      backtracking: reasoning_backtracking_v1
-      differential_elimination: reasoning_differential_elimination_v1
-      prior_knowledge: reasoning_prior_knowledge_v1
-      uncertainty: reasoning_uncertainty_v1
 
   # Incremental off-box backup of the run directory. Runs in a background
   # thread that shells out to rclone, so it cannot slow inference down: all the

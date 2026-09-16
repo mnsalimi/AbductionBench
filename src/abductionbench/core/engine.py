@@ -66,9 +66,8 @@ from .errors import (
 )
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean
-from .modes import BOV, COT, SELF_CONSISTENCY, TaskModes
+from .modes import BOV, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
-from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
 from .sync import ArtifactSync
@@ -251,17 +250,6 @@ class EvaluationEngine:
         #: Hypothesis modes run beyond what the dataset table lists, with the
         #: benchmark formulation that justifies each (specification item 15).
         self._introduced_modes: list[dict[str, str]] = []
-        #: Shared across tasks so a question's observation inventory is bought
-        #: once and reused across models/repeats.
-        self._reasoning_judge: ReasoningJudgeStage | None = None
-        #: One budget of in-flight calls for the judge *model*, not for a stage
-        #: or a task. Both judge stages talk to the same server, and JudgeStage
-        #: is built per task, so a per-stage semaphore let three tasks each open
-        #: its own -- 24 calls of 8 against a 64-sequence server, which pushed
-        #: vLLM into KV-cache preemption and made the whole thing slower than
-        #: issuing the batches one at a time. Created in run(), once the config
-        #: is known.
-        self._judge_calls: asyncio.Semaphore | None = None
 
     def _dump_resolved_config(self) -> None:
         """Write what this pass is running, without erasing what earlier ones ran.
@@ -353,24 +341,6 @@ class EvaluationEngine:
                 )
                 self._clients[model.id] = client
                 self._model_sems[model.id] = asyncio.Semaphore(model.limits.max_parallel_batches)
-
-            self._judge_calls = asyncio.Semaphore(
-                max(
-                    self.engine_cfg.judge.max_parallel_calls,
-                    self.engine_cfg.reasoning_judge.max_parallel_calls,
-                )
-            )
-            if self.engine_cfg.reasoning_judge.enabled:
-                self._reasoning_judge = ReasoningJudgeStage(
-                    config=self.engine_cfg.reasoning_judge,
-                    registry=self.registry,
-                    renderer=self.renderer,
-                    clients=self._clients,
-                    retry_policy=self.retry_policy,
-                    cache_dir=self.run_dir / "reasoning_judge_cache",
-                    batch_disabled=self._batch_disabled,
-                    calls=self._judge_calls,
-                )
 
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
@@ -1341,18 +1311,6 @@ class EvaluationEngine:
                 else prompt.sample_id
             )
             record = reusable.get(key)
-            if record is not None and self._outgrew_its_budget(record, prompt):
-                # Reusing it would keep reporting an answer the model never got
-                # to finish, while the run is now willing to pay for one.
-                logger.info(
-                    "task %s: re-asking %s -- it was cut off at %s tokens and this run "
-                    "allows %d",
-                    identity.slug,
-                    prompt.sample_id,
-                    (record.get("sampling") or {}).get("max_tokens"),
-                    prompt.sampling.max_tokens,
-                )
-                record = None
             if record is not None:
                 reused_records.append(record)
             else:
@@ -1472,34 +1430,29 @@ class EvaluationEngine:
                     renderer=self.renderer,
                     clients=self._clients,
                     retry_policy=self.retry_policy,
-                    # Run-level, not task-level: the same (template, fields)
-                    # verdict is otherwise re-bought once per task, and the
-                    # reasoning judge already caches this way.
-                    cache_dir=self.run_dir / "judge_cache",
-                    batch_disabled=self._batch_disabled,
-                    calls=self._judge_calls,
+                    cache_dir=output_dir / "judge_cache",
                 )
                 before = {
                     sample.sample_id: score for sample, _r, score in scores
                 }
                 scores = await judge.apply(adapter, scores)
-                # The records were written per batch, before judging. They are
-                # brought up to date by the single refresh below, which appends
-                # the judged record and lets record de-duplication -- on
-                # (sample_id, prompt_fingerprint), the key records are actually
-                # identified by -- retire the pre-judge one. This used to be a
-                # second mechanism that rewrote the file in place and matched on
-                # sample_id alone, which patched every fingerprint variant of a
-                # sample rather than the one that was judged.
-                judged = sum(
-                    1
+                # The records were written per batch, before judging; bring the
+                # sample-level log up to date so a row shows the score its
+                # dataset is actually reported on.
+                rewritten = store.update_scores({
+                    sample.sample_id: {
+                        "metrics": dict(score.metrics),
+                        "prediction": score.prediction,
+                        "details": dict(score.details),
+                        "parse_ok": score.parse_ok,
+                    }
                     for sample, _response, score in scores
                     if before.get(sample.sample_id) is not score
-                )
-                if judged:
+                })
+                if rewritten:
                     logger.info(
                         "task %s: %d sample record(s) updated with the judge's verdict",
-                        identity.slug, judged,
+                        identity.slug, rewritten,
                     )
                 if judge.unavailable:
                     # Verdicts were asked for and never came back. `apply`
@@ -1528,109 +1481,16 @@ class EvaluationEngine:
                         "produced; the task is marked failed", identity.slug,
                     )
 
-        # Reconstruct checkpointed outputs for the reasoning judge. Scoring
-        # code changes do not alter a request fingerprint, so a resumed COT run
-        # may contain perfectly reusable model answers that predate these
-        # metrics; they must be judged rather than silently left blank.
-        prompt_by_id = {prompt.sample_id: prompt for prompt in rendered}
-        reused_triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
-        reused_fingerprints: dict[str, str] = {}
-        for record in reused_records:
-            prompt = prompt_by_id.get(str(record.get("sample_id", "")))
-            if prompt is None:
-                continue
-            if record.get("prompt_fingerprint"):
-                reused_fingerprints[prompt.sample_id] = str(record["prompt_fingerprint"])
-            response_payload = record.get("response") or {}
-            try:
-                status = ResponseStatus(record.get("status", ResponseStatus.ERROR.value))
-            except ValueError:
-                status = ResponseStatus.ERROR
-            reused_triplets.append(
-                (
-                    prompt.sample,
-                    ModelResponse(
-                        sample_id=prompt.sample_id,
-                        model_id=identity.model_id,
-                        status=status,
-                        content=response_payload.get("content"),
-                        reasoning=response_payload.get("reasoning"),
-                        finish_reason=response_payload.get("finish_reason"),
-                        error=response_payload.get("error"),
-                        error_class=response_payload.get("error_class"),
-                        attempts=int(response_payload.get("attempts") or 1),
-                        latency_s=float(response_payload.get("latency_s") or 0.0),
-                        batch_id=response_payload.get("batch_id"),
-                        batch_size=response_payload.get("batch_size"),
-                        batch_index=response_payload.get("batch_index"),
-                        usage=response_payload.get("usage") or {},
-                        usage_is_batch_aggregate=bool(
-                            response_payload.get("usage_is_batch_aggregate")
-                        ),
-                        completion_tokens_est=response_payload.get("completion_tokens_est"),
-                    ),
-                    SampleScore(
-                        metrics={
-                            key: float(value)
-                            for key, value in (record.get("metrics") or {}).items()
-                        },
-                        prediction=record.get("prediction"),
-                        parse_ok=bool(record.get("parse_ok", True)),
-                        details=record.get("details") or {},
-                    ),
-                )
-            )
-
-        # Structural reasoning metrics are a separate judge stage and are
-        # guarded by the prompt mode inside ReasoningJudgeStage: IO outputs can
-        # never enter it.  The stage is shared for the run so question-only
-        # observation totals are cached across models and repeats.
-        if self._reasoning_judge is not None and (scores or reused_triplets) and not fatal:
-            try:
-                fresh_count = len(scores)
-                reasoning_scored = await self._reasoning_judge.apply(
-                    adapter, identity, rendered, [*scores, *reused_triplets]
-                )
-                scores = reasoning_scored[:fresh_count]
-                reused_triplets = reasoning_scored[fresh_count:]
-            except Exception as exc:  # noqa: BLE001 - judging is best-effort
-                logger.exception(
-                    "task %s: reasoning judge stage failed: %s", identity.slug, exc
-                )
-                checkpoint.notes["reasoning_judge_error"] = str(exc)
-
-        # Initial records are written immediately after inference for crash
-        # safety. Append their post-judge replacements now; record de-duplication
-        # keeps the newest request fingerprint, which is what makes every judge
-        # metric appear as its own per-sample sheet column.
-        reasoning_mode = identity.prompt_mode in (COT, SELF_CONSISTENCY)
-        records_to_refresh = [
-            *scores,
-            *(reused_triplets if reasoning_mode else []),
-        ]
-        if records_to_refresh and (
-            self.engine_cfg.judge.enabled
-            or (self._reasoning_judge is not None and reasoning_mode)
-        ):
-            judged_records = [
-                self._make_record(
-                    identity,
-                    prompt_by_id[sample.sample_id],
-                    response,
-                    score,
-                    fingerprint=reused_fingerprints.get(sample.sample_id),
-                )
-                for sample, response, score in records_to_refresh
-                if sample.sample_id in prompt_by_id
-            ]
-            if judged_records:
-                store.append_many(judged_records)
-
         # Fold in reused records so metrics cover the whole planned set.
         reused_scores = [
-            score
-            for _sample, response, score in reused_triplets
-            if response.status is not ResponseStatus.SKIPPED
+            SampleScore(
+                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
+                prediction=rec.get("prediction"),
+                parse_ok=bool(rec.get("parse_ok", True)),
+                details=rec.get("details") or {},
+            )
+            for rec in reused_records
+            if rec.get("status") != ResponseStatus.SKIPPED.value
         ]
         reused_errors = sum(
             1 for rec in reused_records if rec.get("status") == ResponseStatus.ERROR.value
@@ -2120,26 +1980,19 @@ class EvaluationEngine:
             )
         content = choice.content
         finish = choice.finish_reason
-        # The budget check comes first, and deliberately. A reasoning model that
-        # spends its whole budget thinking returns finish_reason=length with no
-        # content at all; filing that as EMPTY made it indistinguishable from a
-        # server that answered with nothing, and hid the one cause a larger
-        # budget would actually fix.
-        if finish == "length":
-            status = ResponseStatus.TRUNCATED
-        elif content is None or not content.strip():
+        if content is None or not content.strip():
             status = ResponseStatus.EMPTY
+        elif finish == "length":
+            status = ResponseStatus.TRUNCATED
         else:
             status = ResponseStatus.OK
-        if status is ResponseStatus.TRUNCATED and not (content or "").strip():
-            logger.warning(
-                "sample %s: no content at all -- the %d-token budget ran out first%s. "
-                "Raising engine/model max_tokens and resuming will re-ask it.",
+        if status is ResponseStatus.EMPTY and client.model.reasoning_model:
+            logger.debug(
+                "sample %s: empty content with finish_reason=%s -- reasoning consumed the "
+                "%d-token budget",
                 prompt.sample_id,
+                finish,
                 prompt.sampling.max_tokens,
-                " (reasoning model: the hidden chain is what spent it)"
-                if client.model.reasoning_model
-                else "",
             )
         completion_est = None
         if content or choice.reasoning:
@@ -2476,22 +2329,6 @@ class EvaluationEngine:
             getattr(self, "_clamped_output_budgets", 0) / planned
         )
         metrics["empty_response_rate"] = (empty + reused_empty) / planned
-        # The reasoning-model case, kept visible under its own name now that it
-        # is filed as a truncation rather than as an empty reply: the budget ran
-        # out before a single token of answer, so there is nothing to score and
-        # a larger budget is the fix.
-        starved = sum(
-            1
-            for _, r, _ in fresh
-            if r.status is ResponseStatus.TRUNCATED and not (r.content or "").strip()
-        )
-        reused_starved = sum(
-            1
-            for rec in reused_records
-            if rec.get("status") == ResponseStatus.TRUNCATED.value
-            and not ((rec.get("response") or {}).get("content") or "").strip()
-        )
-        metrics["empty_after_truncation_rate"] = (starved + reused_starved) / planned
         return metrics
 
     def _reduce_groups(
@@ -2568,39 +2405,19 @@ class EvaluationEngine:
             )
         return out, records
 
-    @staticmethod
-    def _outgrew_its_budget(record: dict[str, Any], prompt: RenderedPrompt) -> bool:
-        """Was this stored answer cut off by a budget this run has since raised?
-
-        Only ``strict`` resume compares prompts, and the budget is part of the
-        fingerprint there, so this is what keeps the looser policies honest: a
-        ``sample_id`` resume would otherwise reuse a truncated answer forever,
-        and the larger budget the run was reconfigured with would never be spent
-        on the samples that needed it.
-        """
-        if record.get("status") != ResponseStatus.TRUNCATED.value:
-            return False
-        previous = (record.get("sampling") or {}).get("max_tokens")
-        return isinstance(previous, int) and prompt.sampling.max_tokens > previous
-
     def _make_record(
         self,
         identity: TaskIdentity,
         prompt: RenderedPrompt,
         response: ModelResponse,
         score: SampleScore,
-        fingerprint: str | None = None,
     ) -> EvalRecord:
         clip_chars = self.engine_cfg.reporting.response_clip_chars
         return EvalRecord(
             task=identity,
             sample_id=prompt.sample_id,
             status=response.status,
-            # Rewriting a checkpointed record keeps that record's fingerprint:
-            # records dedupe on (sample_id, fingerprint), so recomputing it
-            # under a resume policy that ignores prompt changes would leave the
-            # sample in the sheet twice instead of replacing it.
-            prompt_fingerprint=fingerprint or prompt.fingerprint(identity.model_id),
+            prompt_fingerprint=prompt.fingerprint(identity.model_id),
             task_kind=prompt.sample.task_kind,
             input_tokens_est=prompt.input_tokens_est,
             sampling=prompt.sampling.to_payload(),

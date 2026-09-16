@@ -453,39 +453,6 @@ was, and the marker is what lets the parser take the label the model
 xcopa, ecare, musr, true_detective and aer in both io and cot:
 `parse_failure_rate` 0.0 on nine of ten tasks and 0.1 on the tenth.
 
-### COT reasoning-chain metrics
-
-An optional, independent judge stage measures the structure of every `cot` and
-`self-consistency` output. It never runs on `io` output. Enable it with:
-
-```yaml
-engine:
-  reasoning_judge:
-    enabled: true
-    model: gpt-oss-120b
-```
-
-The sample sheet receives one `metric.reasoning_*` column for every applicable
-raw or normalized value: observation totals/coverage, branchiness/diversity,
-step counts/density, redundancy/completeness, directionality, backtracking,
-differential elimination, prior knowledge, and uncertainty marking. Shared
-normalizers are computed once and reused. The question-only observation total
-is cached across models and repeats; all judge results are cached under
-`reasoning_judge_cache/`.
-
-A task kind is read as a shape, not as a literal name: `generation` and
-`knowledge_completion` are judged as generation, `selection` and
-`multi_selection` as selection, and an adapter whose kind matches neither is
-reported as not applicable rather than scored against a normalizer that does
-not fit it.
-
-Missing values are not silently turned into zero. The sample sheet's
-`reasoning_metrics_status`, `reasoning_metrics_inapplicable`, and
-`reasoning_judge_errors` columns distinguish a definition-level exclusion
-(such as differential elimination on generation) from an invalid judge reply
-or a genuinely unusable task structure. BOV differential elimination is
-reported as inapplicable because each BOV chain sees only one option.
-
 ## Interactive and sequential benchmarks
 
 A benchmark marked `interactive` in the dataset table is executed as a loop, not
@@ -1063,3 +1030,4 @@ Where a dataset's task makes a single accuracy number misleading, its adapter
 reports what the task actually measures. Those metrics are defined in
 [Field reference §4](#4-metrics) and, per dataset, in
 [`docs/datasets.md`](docs/datasets.md).
+

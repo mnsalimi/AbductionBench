@@ -40,16 +40,12 @@ __all__ = [
     "extract_choice_label",
     "extract_choice_labels",
     "extract_answer_span",
-    "answer_span_is_marked",
     "extract_first_number",
     "mean",
     "std",
     "confidence_interval_95",
     "summarize_numeric",
     "brier_score",
-    "any_exact_match",
-    "macro_average",
-    "aggregate_mean_metrics",
 ]
 
 _PUNCT_TABLE = str.maketrans({ch: " " for ch in string.punctuation})
@@ -270,50 +266,27 @@ def spearman(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def kendall_tau(a: Sequence[float], b: Sequence[float]) -> float:
-    """Kendall's tau-b (tie-corrected); 0.0 for degenerate input.
-
-    Ties are the reason this is tau-b and not tau-a.  Dividing the concordant
-    surplus by the number of *untied* pairs -- which is what dropping tied pairs
-    from both counts amounts to -- reports a rank correlation of 1.0 for data
-    whose ranks mostly coincide by being tied, which is the opposite of what a
-    tie means.  Tau-b keeps tied pairs in the normalizer instead, so a heavily
-    tied series cannot reach 1.0.
-    """
+    """Kendall's tau-a; 0.0 for degenerate input."""
     n = len(a)
     if n != len(b) or n < 2:
         return 0.0
-    concordant = discordant = tied_a = tied_b = 0
+    concordant = discordant = 0
     for i in range(n):
         for j in range(i + 1, n):
-            da = a[i] - a[j]
-            db = b[i] - b[j]
-            if da == 0 and db == 0:
-                # Tied in both: counted in neither normalizer, by definition.
+            sign_a = (a[i] - a[j]) > 0
+            sign_b = (b[i] - b[j]) > 0
+            if a[i] == a[j] or b[i] == b[j]:
                 continue
-            if da == 0:
-                tied_a += 1
-            elif db == 0:
-                tied_b += 1
-            elif (da > 0) == (db > 0):
+            if sign_a == sign_b:
                 concordant += 1
             else:
                 discordant += 1
-    denominator = math.sqrt((concordant + discordant + tied_a) *
-                            (concordant + discordant + tied_b))
-    return (concordant - discordant) / denominator if denominator else 0.0
+    total = concordant + discordant
+    return (concordant - discordant) / total if total else 0.0
 
 
-def numeric_match(
-    prediction: Any, reference: Any, *, rel_tol: float = 0.05, abs_tol: float | None = None
-) -> float:
-    """1.0 when two numbers agree within a relative tolerance.
-
-    A relative tolerance is undefined against a reference of zero, so that case
-    falls back to ``abs_tol`` as an *absolute* window.  It defaults to
-    ``rel_tol``, which is what this function always did -- but silently, under a
-    name that says relative.  A dataset whose zero means something (a count, a
-    rate) should set ``abs_tol`` explicitly rather than inherit a proportion.
-    """
+def numeric_match(prediction: Any, reference: Any, *, rel_tol: float = 0.05) -> float:
+    """1.0 when two numbers agree within a relative tolerance."""
     try:
         pred = float(prediction)
         ref = float(reference)
@@ -322,22 +295,16 @@ def numeric_match(
     if math.isnan(pred) or math.isnan(ref):
         return 0.0
     if ref == 0:
-        return float(abs(pred) <= (rel_tol if abs_tol is None else abs_tol))
+        return float(abs(pred) <= rel_tol)
     return float(abs(pred - ref) / abs(ref) <= rel_tol)
 
 
 def brier_score(probability: float, outcome: float) -> float:
-    """Squared error of a probabilistic judgement (lower is better).
-
-    A probability that cannot be read is ``nan``, not 1.0.  Returning the worst
-    possible score for an unparseable answer records a confident wrong forecast
-    the model never made; ``nan`` is dropped by the aggregator and by the record
-    serializer, so the sample is reported as unmeasured instead.
-    """
+    """Squared error of a probabilistic judgement (lower is better)."""
     try:
         p = float(probability)
     except (TypeError, ValueError):
-        return math.nan
+        return 1.0
     p = min(1.0, max(0.0, p))
     return (p - float(outcome)) ** 2
 
@@ -391,33 +358,6 @@ def extract_answer_span(text: str | None, contract: dict[str, Any] | None = None
         body = body.strip().strip("`").strip()
         body = re.sub(r"^\*+|\*+$", "", body).strip()
     return body
-
-
-def answer_span_is_marked(text: str | None, contract: dict[str, Any] | None = None) -> bool:
-    """Did the template's declared answer marker actually appear in the response?
-
-    :func:`extract_answer_span` falls back to the whole trimmed response when a
-    declared ``answer_regex`` / ``answer_prefix`` does not match, so a scorer
-    that only looks at what came back cannot tell "the model wrote ``Answer: X``"
-    from "the model wrote three paragraphs and the span is all of them".  That
-    made a parse failure unreportable for every free-text dataset: the span is
-    never empty, so the unparsed branch never fired and ``parse_failure_rate``
-    read 0.0 by construction.
-
-    A contract that declares no marker returns ``True``: there is nothing to
-    find, and the whole response *is* the answer by that contract's own terms.
-    """
-    contract = contract or {}
-    regex = contract.get("answer_regex")
-    prefix = contract.get("answer_prefix")
-    if not regex and not prefix:
-        return True
-    body = (text or "").strip()
-    if not body:
-        return False
-    if regex and re.search(regex, body, flags=re.IGNORECASE | re.DOTALL):
-        return True
-    return bool(prefix) and str(prefix).lower() in body.lower()
 
 
 def extract_choice_label(
@@ -548,16 +488,8 @@ def extract_first_number(text: str | None) -> float | None:
 
 
 def mean(values: Iterable[float]) -> float:
-    """Arithmetic mean, ``nan`` when there is nothing to average.
-
-    ``nan`` rather than 0.0: an average over no observations is not the same
-    claim as an average that came out at zero, and every consumer here already
-    treats a non-finite metric as "not measured" -- ``aggregate_mean_metrics``
-    skips it and ``EvalRecord.to_json_dict`` drops it instead of writing a
-    number nothing can read.
-    """
     items = [float(v) for v in values if v is not None and not _is_nan(v)]
-    return sum(items) / len(items) if items else math.nan
+    return sum(items) / len(items) if items else 0.0
 
 
 def std(values: Iterable[float]) -> float:
