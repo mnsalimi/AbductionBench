@@ -48,6 +48,7 @@ from .batching import iter_chunks
 from .client import ModelClient
 from .config import ReasoningJudgeConfig
 from .errors import ConfigError, EndpointError
+from .judge import clip_middle
 from .modes import BOV, COT, SELF_CONSISTENCY
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .retry import RetryPolicy, with_retry
@@ -521,8 +522,15 @@ class ReasoningJudgeStage:
                     score=score,
                     question=question,
                     reasoning=reasoning,
-                    answer=(score.prediction or response.text or "")[:2000],
-                    reference=json.dumps(sample.reference, ensure_ascii=False, default=str)[:2000],
+                    # Not truncated at a fixed few thousand characters any more:
+                    # what a judge may be shown is a property of its context
+                    # window, and _clip_chain applies that one budget to all of
+                    # it. A reference cut mid-JSON told the judge less than
+                    # nothing.
+                    answer=self._clip_chain(score.prediction or response.text or ""),
+                    reference=self._clip_chain(
+                        json.dumps(sample.reference, ensure_ascii=False, default=str)
+                    ),
                     options=options,
                     generation_like=generation_like,
                     selection_like=selection_like,
@@ -929,13 +937,8 @@ class ReasoningJudgeStage:
         limit = self.config.max_chain_chars
         if len(chain) <= limit:
             return chain
-        half = limit // 2
         self.stats["clipped"] = self.stats.get("clipped", 0) + 1
-        return (
-            chain[:half]
-            + f"\n\n[... {len(chain) - limit} characters of the chain omitted ...]\n\n"
-            + chain[-half:]
-        )
+        return clip_middle(chain, limit)
 
     # -- parsing -------------------------------------------------------------- #
 

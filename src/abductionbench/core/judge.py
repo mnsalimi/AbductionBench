@@ -39,7 +39,32 @@ from .types import ModelResponse, SampleScore, SampleSpec, SamplingParams, stabl
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["JudgeVerdict", "JudgeStage"]
+__all__ = ["JudgeVerdict", "JudgeStage", "clip_middle"]
+
+
+def clip_middle(text: str, limit: int) -> str:
+    """Keep ``text`` under ``limit`` characters, losing the middle if it must.
+
+    Shared by both judge stages, because both face the same problem: a judge
+    should be shown everything the model was given and everything it produced,
+    and on the longest items that does not fit in the judge's own context
+    window -- a request that overruns is rejected outright, so the sample gets
+    no verdict rather than a slightly thinner one.
+
+    The middle goes rather than the tail. The opening of a prompt says what the
+    task is and the opening of a response says what the model set out to do;
+    the close of a response is where it commits to an answer. Truncating from
+    the end throws away the answer, which is the one part every judge needs.
+    The cut is marked, so a judge is never silently shown a doctored document.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    half = max(1, (limit - 80) // 2)
+    return (
+        text[:half]
+        + f"\n\n[... {len(text) - 2 * half} characters omitted from the middle ...]\n\n"
+        + text[-half:]
+    )
 
 
 @dataclass(slots=True)
@@ -144,9 +169,21 @@ class JudgeStage:
         self,
         adapter: DatasetAdapter,
         scored: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+        prompts: list[Any] | None = None,
     ) -> list[tuple[SampleSpec, ModelResponse, SampleScore]]:
-        """Judge what the adapter asks to be judged; return updated scores."""
+        """Judge what the adapter asks to be judged; return updated scores.
+
+        Every request also carries the *whole* exchange -- the conversation the
+        model was sent and the whole of what it replied -- added here rather
+        than by each adapter, so all 29 judged datasets get it and none can
+        forget to. An adapter's own fields stay authoritative: they name the
+        candidate and the reference, which is what the verdict is about. These
+        two are the context for reading them, and the difference matters on a
+        chain-of-thought answer, where the adapter's `candidate` is one line and
+        the reasoning that produced it is the rest of the response.
+        """
         self.template = self._template_for(adapter)
+        by_id = {p.sample_id: p for p in (prompts or [])}
         pending: list[tuple[int, dict[str, Any], str]] = []
         for index, (sample, response, score) in enumerate(scored):
             try:
@@ -156,6 +193,7 @@ class JudgeStage:
                 continue
             if not request:
                 continue
+            request = {**self._whole_exchange(by_id.get(sample.sample_id), response), **request}
             key = stable_hash({"template": self.template.ref, "fields": request})
             pending.append((index, request, key))
 
@@ -266,6 +304,31 @@ class JudgeStage:
         return updated
 
     # ------------------------------------------------------------------ #
+
+    def _whole_exchange(self, prompt: Any, response: ModelResponse) -> dict[str, Any]:
+        """The conversation sent and the reply received, both in full.
+
+        Budgeted rather than unbounded: the two together can exceed the judge's
+        own context window on the longest items, and a request that overruns is
+        rejected outright -- no verdict at all, which is strictly worse than a
+        verdict read from a marked, middle-clipped copy.
+        """
+        fields: dict[str, Any] = {}
+        if prompt is not None:
+            fields["full_prompt"] = clip_middle(
+                "\n\n".join(
+                    f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
+                ),
+                self.config.max_prompt_chars,
+            )
+        whole = response.content or ""
+        if response.reasoning:
+            # A reasoning model's chain arrives in its own channel; it is part
+            # of what the model produced and the judge should see it.
+            whole = f"[REASONING]\n{response.reasoning}\n\n[ANSWER]\n{whole}"
+        if whole:
+            fields["full_response"] = clip_middle(whole, self.config.max_response_chars)
+        return fields
 
     def _parse(self, text: str) -> JudgeVerdict:
         """Parse a judge response using the template's ``output_contract``.

@@ -213,7 +213,7 @@ class InAbHyDAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:400],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 120),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "The candidate is correct if it states the same assumption as the "
                 "reference. Differences of quantifier phrasing that do not change the "

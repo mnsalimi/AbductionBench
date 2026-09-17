@@ -134,7 +134,7 @@ class LLM4BioHypoGenAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:900],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 250),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "The candidate is correct if it proposes the same relationship between the "
                 "same factors as the reference hypothesis, however it is worded. A "

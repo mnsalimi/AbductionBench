@@ -595,7 +595,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         return {
             "candidate": str(score.prediction)[:600],
             "gold": "; ".join(sample.reference.get("accepted", [sample.reference["gold"]])),
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": "Any of the listed accepted diagnoses counts as correct.",
         }
 

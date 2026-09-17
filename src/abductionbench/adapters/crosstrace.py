@@ -146,7 +146,7 @@ class CrossTraceAdapter(PooledDatasetAdapter):
         return {
             "candidate": response.text[:900],
             "gold": sample.reference.get("insight") or sample.reference["gold"][:600],
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "Correct if the candidate's core insight matches the reference hypothesis, even "
                 "if the supporting reasoning differs."

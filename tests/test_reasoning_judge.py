@@ -697,7 +697,7 @@ def test_an_over_long_chain_is_clipped_from_the_middle(tmp_path):
     assert len(clipped) < len(chain)
     assert clipped.startswith("START")
     assert clipped.endswith("END")
-    assert "characters of the chain omitted" in clipped
+    assert "omitted" in clipped, "the cut must be marked, not silent"
     assert stage.stats["clipped"] == 1
     # A chain that fits is returned untouched.
     assert stage._clip_chain("short") == "short"

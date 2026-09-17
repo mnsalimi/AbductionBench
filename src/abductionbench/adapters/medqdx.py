@@ -328,7 +328,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:600],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "The candidate is correct if it names the same disease entity as the "
                 "reference, however it is written: synonyms, abbreviations, eponyms and "

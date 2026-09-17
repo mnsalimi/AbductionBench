@@ -509,6 +509,14 @@ class JudgeConfig(_Base):
     #: stage issued its batches strictly one after another, and 29 of the 44
     #: datasets are scored by it.
     max_parallel_calls: int = Field(8, ge=1)
+    #: How much of the conversation the model was sent, and of what it replied,
+    #: a judge may be shown.  Both are passed in full up to these limits and
+    #: middle-clipped beyond them: a judge grading a chain-of-thought answer
+    #: needs the question it was answering and the reasoning that produced it,
+    #: not just the answer line -- but a request that overruns the judge's own
+    #: context window is rejected outright and the sample gets no verdict.
+    max_prompt_chars: int = Field(40000, ge=1000)
+    max_response_chars: int = Field(40000, ge=1000)
     #: Cache judge verdicts on disk so re-scoring does not re-spend tokens.
     cache: bool = True
 

@@ -121,7 +121,7 @@ class MedCaseReasoningAdapter(PooledDatasetAdapter):
             # on 79% of house_md's records and 48-70% of the other four.
             "candidate": (score.prediction or extract_answer_span(response.text, None))[:600],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "The candidate is correct if it names the same disease entity as the "
                 "reference, however it is written: synonyms, abbreviations, eponyms and "

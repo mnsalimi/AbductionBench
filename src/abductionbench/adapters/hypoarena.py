@@ -150,7 +150,7 @@ class HypoArenaAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:900],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "Correct if the candidate identifies the same underlying mechanism or cause as "
                 "the reference hypothesis."

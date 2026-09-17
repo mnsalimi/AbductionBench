@@ -5,7 +5,7 @@ description: >-
   account for the observation, relative to the reference?
 task_kinds: [judge]
 required_fields: [candidate]
-optional_fields: [gold, observation, context, criteria]
+optional_fields: [gold, observation, context, criteria, full_prompt, full_response]
 messages:
   - role: system
     content: |
@@ -19,6 +19,18 @@ messages:
       0 -- irrelevant, contradictory, or no explanation given.
   - role: user
     content: |
+      {% if full_prompt %}
+      ===== WHAT THE MODEL WAS ASKED =====
+      {{ full_prompt }}
+
+      ===== WHAT THE MODEL REPLIED, IN FULL =====
+      {{ full_response }}
+
+      ===== THE JUDGEMENT =====
+      The answer below was read out of that reply. Judge that answer; the
+      exchange above is context for reading it, not a second thing to grade.
+
+      {% endif %}
       {% if observation %}
       Observation:
       {{ observation }}

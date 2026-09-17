@@ -203,7 +203,7 @@ class ECareAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:600],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 200),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "The candidate is correct if it states the same general fact, property or rule "
                 "as the reference explanation, however it is worded. Restating the cause and "

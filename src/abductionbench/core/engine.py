@@ -1478,7 +1478,9 @@ class EvaluationEngine:
                 before = {
                     sample.sample_id: score for sample, _r, score in scores
                 }
-                scores = await judge.apply(adapter, scores)
+                # The rendered prompts go in too: the judge is shown the whole
+                # exchange, not just the answer the scorer pulled out of it.
+                scores = await judge.apply(adapter, scores, rendered)
                 # The records were written per batch, before judging; bring the
                 # sample-level log up to date so a row shows the score its
                 # dataset is actually reported on.

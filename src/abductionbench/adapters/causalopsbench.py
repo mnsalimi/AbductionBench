@@ -187,7 +187,7 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:600],
             "gold": sample.reference["fault_type"],
-            "observation": C.clip_words(sample.fields["observation"], 150),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "Judge only the KIND OF FAULT named, not which component it is on. The "
                 "candidate is correct if it describes the same failure mode as the reference "

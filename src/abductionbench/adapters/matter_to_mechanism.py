@@ -148,7 +148,7 @@ class MatterToMechanismAdapter(PooledDatasetAdapter):
         return {
             "candidate": score.prediction or response.text[:800],
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(sample.fields["observation"], 150),
+            "observation": sample.fields["observation"],
             "criteria": (
                 "Correct if the candidate proposes the same intervention and the same mechanism "
                 "as the reference, even if worded differently or less specifically."
