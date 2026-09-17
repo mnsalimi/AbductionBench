@@ -517,6 +517,18 @@ the interaction and nothing else. Its two multi-turn modes quote the release's
 own protocol prompt and so run `io` only; its single-turn mode is written in
 this suite's house style and gets both prompt modes.
 
+**Alien Abduction generates its own data.** Its authors released no code and
+no test instances, so the 50 targets are Python functions in
+`adapters/_alien_targets.py` and the suites are computed by running them. They
+are still written to `data/alien_abduction*/` like any other dataset's source —
+`targets.json` (names, signatures, bodies, and the reading behind each ambiguous
+name), `test_cases.jsonl` (every suite plus its reveal order) and
+`MANIFEST.json` (a fingerprint over the generator version and every target
+body). `python tools/alien_abduction_data.py` writes them ahead of a run; the
+adapters write them on `prepare()` anyway, and regenerate whenever the
+fingerprint stops matching, so an edited target body can never leave a run
+scoring against the previous suite.
+
 **Alien Abduction executes model output.** It is the only dataset here that
 does: the paper's criterion is that the submitted function agrees with the
 hidden one on a held-out suite, and there is no way to check that without

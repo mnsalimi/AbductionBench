@@ -3,23 +3,19 @@
 Source: https://huggingface.co/datasets/pkavumba/balanced-copa
         (original COPA: Roemmele et al. 2011; Balanced COPA: Kavumba et al. 2019)
 
-**Only the cause half is used.**  Every COPA item asks either *"what caused
-this?"* or *"what happened as a result?"*, tagged in the release's ``question``
-column.  The cause half is abduction -- infer the antecedent that best explains
-the premise -- while the effect half is prediction in the other direction.
-Items with ``question == "effect"`` are dropped, which halves each split and is
-the same restriction the suite applies to XCOPA and e-CARE.
+**Only the cause half is used.**  Every item asks either *"what caused this?"*
+or *"what happened as a result?"*, tagged in the release's ``question`` column.
+The cause half is abduction -- infer the antecedent that best explains the
+premise -- while the effect half is prediction in the other direction.  Items
+with ``question == "effect"`` are dropped, which halves the split and is the
+same restriction the suite applies to XCOPA and e-CARE.
 
-**One dataset from this release.**  The Hugging Face mirror carries two splits;
-the suite uses one of them:
-
-``b_copa``  ``train.csv`` -- 1,000 items, half original and half *mirrored*.
-            A mirrored item keeps the premise and swaps which alternative is
-            correct, so a model that has learned a surface cue between the two
-            alternatives scores well on one and badly on its mirror. That is
-            the point of Balanced COPA: a surface cue that works on an item
-            fails on its mirror, so the pair measures the cue rather than the
-            reasoning.
+**``train.csv``, not ``test.csv``.**  It is the only file in the release that
+carries the *mirrored* counterparts -- 1,000 items, half original and half
+mirrored.  A mirrored item keeps the premise and swaps which alternative is
+correct, so a model that has learned a surface cue between the two alternatives
+scores well on one and badly on its mirror.  That pairing is the whole point of
+this dataset: it measures the cue rather than the reasoning.
 
 **Scoring.**  Two alternatives, one correct, named by the release's ``label``
 column: accuracy, checked mechanically. No judge.
@@ -39,8 +35,8 @@ from ._base import PooledDatasetAdapter, selection_score
 REPO_ID = "pkavumba/balanced-copa"
 
 
-class _COPABase(PooledDatasetAdapter):
-    """Shared loader: the cause half of one COPA file."""
+class BalancedCOPAAdapter(PooledDatasetAdapter):
+    """Balanced COPA: the same premises, with mirrored counterparts."""
 
     adapter_version = "1.0"
 
@@ -60,10 +56,8 @@ class _COPABase(PooledDatasetAdapter):
     table_hypothesis_mode = "Selection"
     primary_metric = "accuracy"
 
-    #: Which file of the release this dataset is, set by the subclass.
-    source_file = "test.csv"
-    #: Whether the mirrored counterparts are part of this dataset.
-    includes_mirrored = False
+    #: The only file in the release carrying the mirrored counterparts.
+    source_file = "train.csv"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -118,7 +112,7 @@ class _COPABase(PooledDatasetAdapter):
             task_kind="selection",
             metadata={
                 "mirrored": str(item.get("mirrored", "")).lower() == "true",
-                "copa_id": item.get("id"),
+                "item_id": item.get("id"),
             },
         )
 
@@ -136,12 +130,11 @@ class _COPABase(PooledDatasetAdapter):
             output_contract=output_contract,
             metric_name="accuracy",
         )
-        if self.includes_mirrored:
-            # The comparison Balanced COPA exists to make: an item and its
-            # mirror share a premise, so a gap between these two means a
-            # surface cue is being used rather than causal knowledge.
-            key = "accuracy_mirrored" if sample.metadata["mirrored"] else "accuracy_original"
-            score.metrics[key] = score.metrics.get("accuracy", 0.0)
+        # The comparison Balanced COPA exists to make: an item and its mirror
+        # share a premise, so a gap between these two means a surface cue is
+        # being used rather than causal knowledge.
+        key = "accuracy_mirrored" if sample.metadata["mirrored"] else "accuracy_original"
+        score.metrics[key] = score.metrics.get("accuracy", 0.0)
         return score
 
     def aggregate(self, scores) -> dict[str, float]:
@@ -153,13 +146,6 @@ class _COPABase(PooledDatasetAdapter):
             metrics["mirror_gap"] = original - mirrored
         return metrics
 
-
-class BalancedCOPAAdapter(_COPABase):
-    """Balanced COPA: the same premises, with mirrored counterparts."""
-
-    source_file = "train.csv"
-    includes_mirrored = True
-
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
             dataset_id=self.dataset_id,
@@ -169,10 +155,10 @@ class BalancedCOPAAdapter(_COPABase):
             processing_mode="Selection",
             split_used=getattr(self, "split_used", "train.csv"),
             abductive_subset=(
-                "THE CAUSE QUESTIONS ONLY, as for COPA: the effect half asks what followed "
-                "and is dropped on the release's own `question` column. What is added here "
-                "over COPA is the mirrored counterparts -- same premise, correct alternative "
-                "swapped -- which is what makes the set balanced."
+                "THE CAUSE QUESTIONS ONLY: the effect half asks what followed and is "
+                "dropped on the release's own `question` column. What Balanced COPA adds "
+                "over the original COPA it rebalances is the mirrored counterparts -- same "
+                "premise, correct alternative swapped -- which is what makes the set balanced."
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
@@ -201,7 +187,7 @@ class BalancedCOPAAdapter(_COPABase):
             decisions=[
                 "Used the cause half only, filtered on the release's own question column.",
                 "Read train.csv, which is where the mirrored counterparts live; test.csv "
-                "carries none and is the separate copa dataset.",
+                "carries none.",
                 "Reported original and mirrored accuracy separately and their gap, because a "
                 "pooled mean hides exactly the effect the dataset was built to measure.",
             ],
@@ -210,8 +196,6 @@ class BalancedCOPAAdapter(_COPABase):
                 "because it is the only file carrying mirrored items -- worth knowing if a "
                 "model under test may have trained on it.",
                 "Two options means chance is about 0.5.",
-                "It shares premises with copa, so the two are not independent evidence; a "
-                "suite-level average over both counts those premises twice.",
             ],
             statistics={
                 **self.base_statistics(),

@@ -146,16 +146,18 @@ class _AlienAbductionBase(PooledDatasetAdapter):
     # ------------------------------------------------------------------ #
 
     def load_items(self) -> list[dict[str, Any]]:
-        """The fifty targets of Table 3, each with its suite and its reveal order."""
-        items: list[dict[str, Any]] = []
-        for target in T.TARGETS:
-            count = int(self.context.option("test_cases", 100))
-            cases = T.test_cases(target, count)
-            # One fixed order per target, so the single-turn batch is the prefix
-            # of the sequential mode's reveals: that is what makes "STO vs. PO
-            # isolates the effect of sequential interaction" true here too.
-            order = T.reveal_order(target, count)
-            items.append({"target": target, "cases": cases, "order": order})
+        """The fifty targets of Table 3, each with its suite and its reveal order.
+
+        Read from ``data/<dataset_id>/``, which this adapter writes rather than
+        downloads: the benchmark's authors released nothing to fetch, so the
+        materialized copy *is* the dataset on disk, and it is regenerated
+        whenever the generator's fingerprint stops matching it.  The reveal
+        order is fixed per target, so the single-turn batch is the prefix of the
+        sequential mode's reveals -- which is what makes the paper's "STO vs. PO
+        isolates the effect of sequential interaction" true here too.
+        """
+        count = int(self.context.option("test_cases", 100))
+        items = T.load_materialized(self.context.data_dir, count)
         self.split_used = (
             "the 50 targets of Table 3, rebuilt from the paper's published names "
             "(no code or test release exists); 10 per domain across 5 domains"
@@ -390,6 +392,12 @@ class _AlienAbductionBase(PooledDatasetAdapter):
                 "suite, in a resource-bounded subprocess (see core.sandbox). Scoring it any other "
                 "way -- string similarity to the reference source, or an LLM judge -- would grade "
                 "how the function was written rather than what it computes.",
+                "Wrote the generated benchmark into data/<dataset_id>/ (targets.json, "
+                "test_cases.jsonl, MANIFEST.json) instead of keeping it only in memory, so this "
+                "dataset's data directory holds its source like every other dataset's does. The "
+                "manifest carries a fingerprint over the generator version and every target body, "
+                "and a copy that no longer matches is regenerated rather than trusted -- otherwise "
+                "editing one function would leave a run scoring against the previous suite.",
                 *self.mode_decisions,
             ],
             caveats=[

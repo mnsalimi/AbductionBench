@@ -39,15 +39,18 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import random
 import string
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 __all__ = [
     "Target", "TARGETS", "BY_NAME", "DOMAINS", "AMBIGUOUS",
     "test_cases", "reveal_order", "render_input",
+    "materialize", "load_materialized", "fingerprint", "GENERATOR_VERSION",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -683,3 +686,136 @@ def reveal_order(target: Target, count: int = 100) -> list[int]:
 def render_input(args: tuple[Any, ...]) -> str:
     """One input as the Game Master writes it: ``-10`` for one argument, ``2, 1`` for two."""
     return ", ".join(repr(arg) for arg in args)
+
+
+# --------------------------------------------------------------------------- #
+# materialization -- the generated benchmark, written out as data
+# --------------------------------------------------------------------------- #
+
+#: Bumped whenever a target body or the evidence construction changes, so a
+#: materialized copy from an older version is detected rather than trusted.
+GENERATOR_VERSION = "1.0"
+
+TARGETS_FILE = "targets.json"
+CASES_FILE = "test_cases.jsonl"
+MANIFEST_FILE = "MANIFEST.json"
+
+
+def fingerprint(count: int = 100) -> str:
+    """Identifies exactly which benchmark the generator currently produces.
+
+    Covers the generator version, the requested suite size and every target's
+    name *and source*, so editing one function body invalidates the copy on
+    disk.  Without this a materialized dataset would silently outlive the code
+    that describes it, and a run would score one benchmark against another's
+    reference.
+    """
+    digest = hashlib.sha256()
+    digest.update(f"{GENERATOR_VERSION}:{count}".encode())
+    for target in TARGETS:
+        digest.update(target.name.encode())
+        digest.update(target.source.encode())
+    return digest.hexdigest()[:16]
+
+
+def materialize(root: Any, count: int = 100) -> dict[str, Any]:
+    """Write the generated benchmark into ``root`` and return its manifest.
+
+    Alien Abduction has nothing to download -- its authors released no code or
+    test instances -- so where every other dataset here caches a clone or a
+    snapshot, this one writes what it generated.  Doing so is not a convenience:
+    it is what makes the benchmark *inspectable*.  A reader can diff the suites,
+    a run can be audited against the exact evidence it used, and the data
+    directory stops being empty for a reason no one can see from the outside.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    targets_payload = [
+        {
+            "name": target.name,
+            "domain": target.domain,
+            "signature": target.signature,
+            "arity": target.arity,
+            "source": target.source,
+            "ambiguous_reading": AMBIGUOUS.get(target.name, ""),
+        }
+        for target in TARGETS
+    ]
+    (root / TARGETS_FILE).write_text(
+        json.dumps(targets_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    with open(root / CASES_FILE, "w", encoding="utf-8") as handle:
+        for target in TARGETS:
+            cases = test_cases(target, count)
+            handle.write(
+                json.dumps(
+                    {
+                        "name": target.name,
+                        "domain": target.domain,
+                        "cases": [[list(args), output] for args, output in cases],
+                        "reveal_order": reveal_order(target, count),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    manifest = {
+        "generator_version": GENERATOR_VERSION,
+        "fingerprint": fingerprint(count),
+        "requested_cases_per_target": count,
+        "targets": len(TARGETS),
+        "domains": {
+            domain: {"signature": signature, "targets": len(functions)}
+            for domain, (signature, functions) in DOMAINS.items()
+        },
+        "ambiguous_readings": AMBIGUOUS,
+        "provenance": (
+            "Generated, not downloaded. The benchmark's authors released no code or test "
+            "instances ('will be released upon acceptance'), so the 50 target names, their "
+            "signatures, the five domains and the evidence construction are taken from the "
+            "paper (arXiv:2608.03388, Table 2, Table 3, Section 4.1) and the function bodies "
+            "are this suite's reading of those published names. Regenerate with "
+            "`python tools/alien_abduction_data.py`."
+        ),
+    }
+    (root / MANIFEST_FILE).write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return manifest
+
+
+def load_materialized(root: Any, count: int = 100) -> list[dict[str, Any]]:
+    """Read the written benchmark back, regenerating it first if it is absent or stale."""
+    root = Path(root)
+    manifest_path = root / MANIFEST_FILE
+    current = fingerprint(count)
+    stale = True
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stale = manifest.get("fingerprint") != current
+        except (json.JSONDecodeError, OSError):
+            stale = True
+    if stale or not (root / CASES_FILE).is_file():
+        materialize(root, count)
+
+    items: list[dict[str, Any]] = []
+    with open(root / CASES_FILE, encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            blob = json.loads(line)
+            items.append(
+                {
+                    "target": BY_NAME[blob["name"]],
+                    # Back to tuples: an input is a fixed argument list, and JSON
+                    # has only one sequence type. Leaving them as lists would make
+                    # two modes' suites compare unequal while being the same data.
+                    "cases": [(tuple(args), output) for args, output in blob["cases"]],
+                    "order": list(blob["reveal_order"]),
+                }
+            )
+    return items

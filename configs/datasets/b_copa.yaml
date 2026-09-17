@@ -1,6 +1,6 @@
 dataset:
   id: b_copa
-  impl: abductionbench.adapters.copa:BalancedCOPAAdapter
+  impl: abductionbench.adapters.b_copa:BalancedCOPAAdapter
   options: {}
   notes: >-
     Balanced COPA (train.csv -- the only file carrying the mirrored

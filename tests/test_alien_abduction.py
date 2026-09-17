@@ -396,3 +396,68 @@ def test_documentation_states_the_reconstruction_and_the_execution():
         assert "not released" in blob, "the reconstruction has to be stated"
         assert "executed" in blob and "security boundary" in blob
         assert doc.statistics["targets"] == 50
+
+
+# --------------------------------------------------------------------------- #
+# materialization: the generated benchmark, on disk
+# --------------------------------------------------------------------------- #
+
+
+def test_materialize_writes_the_benchmark_and_reads_back_identically(tmp_path):
+    manifest = T.materialize(tmp_path)
+    assert manifest["targets"] == 50
+    assert manifest["fingerprint"] == T.fingerprint(100)
+    for name in (T.TARGETS_FILE, T.CASES_FILE, T.MANIFEST_FILE):
+        assert (tmp_path / name).is_file(), name
+
+    loaded = T.load_materialized(tmp_path)
+    assert [item["target"].name for item in loaded] == [t.name for t in T.TARGETS]
+    for item in loaded:
+        # Round-tripping through JSON must not turn an input tuple into a list;
+        # two modes' suites are compared for equality.
+        assert item["cases"] == T.test_cases(item["target"])
+        assert item["order"] == T.reveal_order(item["target"])
+
+
+def test_a_stale_materialization_is_regenerated_rather_than_trusted(tmp_path):
+    """Editing a target body must not leave a run scoring against the old suite."""
+    import json
+
+    T.materialize(tmp_path)
+    manifest_path = tmp_path / T.MANIFEST_FILE
+    blob = json.loads(manifest_path.read_text())
+    blob["fingerprint"] = "0000000000000000"
+    manifest_path.write_text(json.dumps(blob))
+    # Corrupt the cases too, so a silent reuse would be visible as wrong data.
+    (tmp_path / T.CASES_FILE).write_text('{"name": "nonsense", "cases": [], "reveal_order": []}\n')
+
+    loaded = T.load_materialized(tmp_path)
+    assert [item["target"].name for item in loaded] == [t.name for t in T.TARGETS]
+    assert json.loads(manifest_path.read_text())["fingerprint"] == T.fingerprint(100)
+
+
+def test_the_fingerprint_tracks_the_target_bodies_not_just_their_names():
+    baseline = T.fingerprint(100)
+    assert T.fingerprint(100) == baseline
+    assert T.fingerprint(50) != baseline, "suite size is part of the identity"
+
+
+def test_adapters_populate_their_data_directory(tmp_path):
+    """The data dir is no longer empty -- and what is in it is what ran."""
+    import json
+
+    modes = TaskModes(prompt_mode="io", selection_mode=None, data_delivery_mode="static")
+    adapter = AlienAbductionAdapter(
+        AdapterContext(
+            dataset_id="alien_abduction", data_dir=tmp_path, modes=modes, sample_size=50
+        )
+    )
+    adapter.prepare()
+    samples = adapter.build_samples()
+    assert len(samples) == 50
+    written = {p.name for p in tmp_path.iterdir()}
+    assert written == {T.TARGETS_FILE, T.CASES_FILE, T.MANIFEST_FILE}
+
+    on_disk = json.loads((tmp_path / T.TARGETS_FILE).read_text())
+    assert {row["name"] for row in on_disk} == {s.reference["target"] for s in samples}
+    assert {row["source"] for row in on_disk} == {s.reference["source"] for s in samples}
