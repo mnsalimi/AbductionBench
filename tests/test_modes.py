@@ -737,49 +737,6 @@ def test_the_same_item_always_shuffles_the_same_way():
     assert sorted(first) == sorted(options)
 
 
-def test_option_order_does_not_depend_on_which_option_is_gold():
-    """Alphabetical order looked neutral and was not.
-
-    A gold hypothesis shares its opening words with the negatives written
-    against it, so sorting put the gold first far more often than chance --
-    40% of ResearchBench's ranking items landed on option 1 against a uniform
-    16.7%, and answering "1" every time would have scored 40%.
-    """
-    import collections
-
-    from abductionbench.adapters._common import shuffled_options
-
-    # Negatives that all begin like the gold: exactly the case sorting breaks.
-    positions = collections.Counter()
-    for item in range(600):
-        gold = "Peanut leaf extract inhibits corrosion of mild steel"
-        options = sorted([
-            gold,
-            "Peanut leaf extract accelerates corrosion of mild steel",
-            "Peanut leaf extract has no effect on mild steel",
-            "Peanut leaf extract dissolves mild steel",
-        ])
-        assert options.index(gold) == 3  # sorting is deterministic, and biased
-        ordered = shuffled_options(options, key=f"item-{item}", seed=0)
-        positions[ordered.index(gold)] += 1
-
-    assert set(positions) == {0, 1, 2, 3}, "the gold never reached some positions"
-    # No position should carry anything close to the 100% that sorting gave it.
-    assert max(positions.values()) / 600 < 0.35, positions
-
-
-def test_the_same_item_always_shuffles_the_same_way():
-    """Resume, a different sample size and a different mode must agree."""
-    from abductionbench.adapters._common import shuffled_options
-
-    options = [f"hypothesis {index}" for index in range(6)]
-    first = shuffled_options(options, key="paper-42", seed=7)
-    assert first == shuffled_options(options, key="paper-42", seed=7)
-    # A different item, or a different run seed, orders differently.
-    assert first != shuffled_options(options, key="paper-43", seed=7)
-    assert first != shuffled_options(options, key="paper-42", seed=8)
-    assert sorted(first) == sorted(options)
-
 # --------------------------------------------------------------------------- #
 # the selection-mode rule, and the switch that gates BOV
 # --------------------------------------------------------------------------- #

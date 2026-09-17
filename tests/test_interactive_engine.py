@@ -263,11 +263,12 @@ def _response(text: str):
 
 def _viva_adapter(tmp_path=None):
     """A prepared VivaBench adapter, or a skip when the snapshot is absent."""
+    from pathlib import Path
+
     import pytest
 
     from abductionbench.adapters.vivabench import VivaBenchAdapter
     from abductionbench.core.adapter import AdapterContext
-    from pathlib import Path
 
     context = AdapterContext(
         dataset_id="vivabench",
