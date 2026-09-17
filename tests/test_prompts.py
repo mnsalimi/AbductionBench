@@ -618,3 +618,97 @@ def test_a_bov_prompt_never_refers_to_a_list_it_does_not_show():
         # And it must not ask for a superlative over candidates it cannot see.
         assert "best explanation of the observation" not in rendered
         assert "YES or NO" in rendered
+
+
+def test_the_dead_binding_fields_stay_inert():
+    """They load, and they do nothing -- both halves matter.
+
+    `prompts.bindings`, `dataset_overrides` and `template_variants` date from
+    the design in which the harness owned dataset wording. Each dataset's prompt
+    lives with its adapter now, so nothing reads them; they are kept only so an
+    old run config still loads. The risk is that they quietly acquire a meaning
+    again and a stale binding starts steering real prompts, so this pins the
+    fact that no caller exists.
+    """
+    import ast
+    from pathlib import Path
+
+    from abductionbench.core.config import PromptConfig
+
+    # They still parse, so an old config is not a hard error.
+    config = PromptConfig(
+        bindings={"generation": "gone_v1"},
+        dataset_overrides={"ecare": {"generation": "gone_v1"}},
+        template_variants={"v2": {"generation": "gone_v1"}},
+    )
+    assert config.bindings == {"generation": "gone_v1"}
+
+    # ...and nothing in the package calls the machinery that would read them.
+    callers = []
+    for path in Path("src/abductionbench").rglob("*.py"):
+        if path.name == "prompts.py":
+            continue  # where they are defined
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Attribute) and node.attr in (
+                "bindings_for_dataset",
+                "template_for",
+            ):
+                callers.append(f"{path.name}:{node.lineno}")
+    assert not callers, (
+        f"prompt bindings have acquired a caller ({callers}); either wire them up "
+        "properly and document them, or delete them -- they must not half-work"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# an interactive benchmark is a protocol: one prompt set means one prompt mode
+# --------------------------------------------------------------------------- #
+
+
+def test_a_dataset_that_quotes_its_release_offers_one_prompt_mode():
+    """io and cot must not be the same bytes under two labels.
+
+    Five interactive datasets used to report an io row and a cot row built from
+    the identical prompt, because their prompts come from their releases and
+    interactive_start never looked at prompt_mode. medqdx was the sharpest: its
+    authors' wording says "Do NOT include any explanations, reasoning", and that
+    was the row labelled cot.
+
+    Where the prompt is the release's, there is one prompt set and so one task.
+    Where this harness had to write the prompt itself, the mode instruction is
+    ours to add and both modes are real.
+    """
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    quoted = ["cloud_opsbench:CloudOpsBenchAdapter", "med_inquire:MedInquireAdapter",
+              "medqdx:MedQDxAdapter", "vivabench:VivaBenchAdapter"]
+    ours = ["ddxplus:DDXPlusAdapter"]
+
+    for impl in quoted:
+        cls = resolve_adapter(f"abductionbench.adapters.{impl}")
+        assert cls.authors_prompt is True, impl
+        assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
+        refusal = cls.supports_modes(TaskModes(prompt_mode="cot"))
+        assert refusal and "one prompt set" in refusal, impl
+
+    for impl in ours:
+        cls = resolve_adapter(f"abductionbench.adapters.{impl}")
+        assert cls.authors_prompt is False, impl
+        # Both modes are offered, because the prompt is this harness's to vary.
+        assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
+        assert cls.supports_modes(TaskModes(prompt_mode="cot")) is None, impl
+
+
+def test_the_harness_written_interview_prompt_actually_varies_by_mode():
+    """ddxplus offers both modes, so its two prompts have to differ."""
+    from abductionbench.adapters._prompting import mode_instruction
+    from abductionbench.core.modes import TaskModes
+
+    io = mode_instruction(TaskModes(prompt_mode="io"))
+    cot = mode_instruction(TaskModes(prompt_mode="cot"))
+    assert io != cot
+    assert "Do not explain" in io
+    assert "step by step" in cot
+    # self-consistency is cot sampled k times, so it renders the cot line.
+    assert mode_instruction(TaskModes(prompt_mode="self-consistency")) == cot

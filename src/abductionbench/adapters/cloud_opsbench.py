@@ -115,6 +115,9 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "symptom."
     )
     data_delivery_mode = "interactive"
+    #: The prompt below is the release's own, so there is one prompt set
+    #: and one prompt mode (see DatasetAdapter.authors_prompt).
+    authors_prompt = True
     #: Measured, not assumed: the root cause is a short technical label the model
     #: writes itself -- no candidate list is shown, and the release's own golds
     #: ("missing_service_account", "cpu_throttling") are one naming convention

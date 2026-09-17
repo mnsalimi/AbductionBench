@@ -215,7 +215,7 @@ abench doctor   configs/runs/pilot.yaml        # probe endpoints incl. the batch
 abench prepare  configs/runs/pilot.yaml        # materialize datasets, no inference
 abench run      configs/runs/pilot.yaml        # the evaluation
 abench run      configs/runs/pilot.yaml --dry-run          # plan + render prompts only
-abench run      configs/runs/pilot.yaml -d ecare -m gpt-oss-120b
+abench run      configs/runs/pilot.yaml -d ecare -m qwen3-5-2b-local
 abench run      configs/runs/pilot.yaml --resume runs/<run-id>   # continue after a drop
 abench report   runs/<run-id>                  # rebuild the workbook from records
 abench templates configs/runs/pilot.yaml        # the judge templates
@@ -620,109 +620,34 @@ reference. Two models are served on the one GPU:
 | | model | port | window | role |
 |---|---|---|---|---|
 | under test | `Qwen/Qwen3.5-2B` | 18001 | 65,536 | answers |
-| judge | `openai/gpt-oss-120b` | 18004 | 65,536 | grades |
+| judge | `openai/gpt-oss-20b` | 18003 | 65,536 | grades answers, and reasoning chains |
 
 **Why two.** Grading a model's answers with that same model scores its own
-reasoning. The judge is therefore a 117B-parameter model and the model under
-test is a 2B one, and they are separate servers.
+reasoning. The judge is a different model from the one under test, and they are
+separate servers.
+
+**Why the 20b and not the 120b.** This used to be `gpt-oss-120b` on :18004, and
+that is what `configs/models/gpt-oss-120b-local.yaml` still describes. It worked,
+but its 60.8 GiB of MXFP4 weights left the card with ~269 MiB free and cuBLAS
+could not allocate a GEMM workspace: the engine died mid-service with
+`CUBLAS_STATUS_INTERNAL_ERROR`, which -- before judge failures were made fatal --
+surfaced as a full set of plausible-looking zeros. The 20b is 13 GiB, leaves
+~50 GiB free, and is what every run config now points at. The 120b configs are
+kept for a machine with room for them.
 
 **Why the judge is in `models:`.** The run needs a client to reach it. It is
-marked `judge_only: true` in `configs/models/gpt-oss-120b-local.yaml`, so
+marked `judge_only: true` in `configs/models/gpt-oss-20b-local.yaml`, so
 `evaluated_models()` leaves it out of task planning -- otherwise it would double
 the run and report a column nobody asked for. `--models` also never filters it
 out: that flag narrows what is *measured*, and dropping the judge with it would
 silently switch off the judged metric of every dataset that has no answer key.
 
-**Sharing one 95.6 GiB card.** gpt-oss-120b's weights are 60.8 GiB in MXFP4, so
-the split is deliberate and the start order matters -- restart Qwen first so it
-shrinks, then start the judge, which needs its whole budget free to pass vLLM's
-check:
-
-```
-qwen3.5-2b     GPU_MEMORY_UTILIZATION=0.20  ->  19 GiB  (~10 GiB KV = 1.04M tokens)
-gpt-oss-120b   GPU_MEMORY_UTILIZATION=0.78  ->  75 GiB  (~11 GiB KV =  158k tokens)
-```
-
-`MAX_NUM_BATCHED_TOKENS=8192` on the judge is load-bearing: without it vLLM
-profiles a forward pass at the full 65,536 tokens, and that activation peak
-consumed the entire budget -- startup died with *"No available memory for the
-cache blocks"* at 0.78 utilisation with 60.8 GiB of weights.
-
-Both `.env` files under `/workspace/vllm_serving/` carry these numbers and the
-reasoning; timestamped backups sit beside them.
-
-## Reasoning-chain metrics (cot only)
-
-The judge above grades *whether the answer is right*. A second, independent
-judge stage measures *how the model got there*, over the chain of reasoning a
-`cot` (or `self-consistency`) output contains. It never sees an `io` output:
-there is no chain in one, so a number measured over it would be a number about
-the answer line.
-
-```
-abench run configs/runs/reasoning.yaml            # judged inline, as each task finishes
-abench judge-reasoning runs/<run-id> \
-    --config configs/runs/reasoning.yaml          # the same metrics over a run that
-                                                  # already happened -- the answers are on
-                                                  # disk, so this asks the model under
-                                                  # test nothing
-```
-
-Eight metric families, one judge prompt each, and the grouping is the
-measurement's rather than an optimisation -- metric 2's four counts have to come
-from *one* segmentation of the chain, so they are one prompt returning four
-numbers and not four prompts that would each segment it differently:
-
-| # | metric | raw values the judge returns | computed here, from them |
-|---|---|---|---|
-| 1 | observation coverage | observations the question supplies; how many the chain used | used ÷ total |
-| 2 | steps & backtracking | total, useful, useless, backtracking steps | useful ÷ total, useless ÷ total, backtracking ÷ total |
-| 3 | branchiness & diversity *(generation)* | distinct explanations considered; whether they are diverse (0/1) | — |
-| 4 | redundancy & completeness | evidence used that was dispensable; evidence used that was necessary | each ÷ total observations (metric 1) |
-| 5 | directionality | 0 (explanation first, justified backwards), 0.5, or 1 (evidence first) | — |
-| 6 | differential elimination *(selection)* | option combinations compared against each other | ÷ 2^n − n − 1, every subset of two or more |
-| 7 | uncertainty marking | steps that explicitly hedge | ÷ total steps (metric 2) |
-| 8 | prior knowledge | whether knowledge absent from the sample is invoked (0/1) | — |
-
-**No judge prompt ever mentions a ratio.** Each asks for raw counts only, and
-every normalized value is computed in `derive_reasoning_metrics` once all of a
-sample's raw values are in hand. A judge asked for a ratio has to do arithmetic
-on its own counts, and the sheet can then disagree with its own columns; a test
-greps every shipped prompt for the vocabulary of normalization and fails on a
-hit.
-
-**Two values are shared rather than recomputed.** The observation total is
-bought **once per sample**, by its own question-only judge call, and cached by
-the exact question text -- so every model, every repeat and every task asking
-that question reuses it, and metric 1 and metric 4 normalize on the same number.
-The step count comes from metric 2 and normalizes metric 7. Nothing normalized
-is computed until every raw value it depends on has arrived.
-
-**A blank cell always has a reason next to it.** Nothing is coerced: a count
-that is missing, malformed or impossible (more backtracks than steps, more
-observations used than the question supplies) is dropped and explained.
-`reasoning_metrics_status`, `reasoning_metrics_inapplicable` and
-`reasoning_judge_errors` sit beside the metric columns in the sample sheet, so a
-metric that does not apply to a task is never mistakable for a judge call that
-failed.
-
-**Speed.** Requests are batched `group_size` at a time, the families are issued
-together rather than one after another -- only two dependencies exist, and both
-are honoured -- and the stage is shared across tasks, so several judge at once.
-One semaphore, shared with the answer judge because both talk to the same
-server, holds in-flight sequences at `group_size x max_parallel_calls`
-regardless of how many families and tasks are running: 8 x 8 = 64, this judge's
-`--max-num-seqs`. A group stays `group_size` requests even where the server has
-no batch route (they go as that many concurrent single calls), so a server
-without one keeps the same concurrency instead of quietly losing a factor of
-eight.
-
-**Where the numbers land.** One column per raw value and one per derived value
-in the workbook's sample sheet, plus `reasoning_metrics.jsonl` in the run
-directory -- every raw judge reply beside what was derived from it, one line per
-judged output. Both are inside the run directory, so `engine.sync` mirrors them
-to the configured backup with everything else; an offline `judge-reasoning` pass
-uploads once when it finishes.
+**How hard the judge thinks.** gpt-oss is a reasoning model, and both judge
+stages set `reasoning_effort: low`. That is not a quality compromise -- measured
+on this suite's longest real chains, at the same 4,096-token budget: default
+effort produced a usable verdict on 1 of 12 and took 65s; low effort produced 12
+of 12 and took 7s. A verdict is a short classification, and an unbounded chain on
+one returns `content: null` when it runs out of budget, losing the call.
 
 ## Models and batching
 

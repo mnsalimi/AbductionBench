@@ -21,10 +21,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import extract_answer_span
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 REPO_ID = "matter2mech/matter-to-mechanism"
 

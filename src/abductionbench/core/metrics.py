@@ -266,7 +266,13 @@ def spearman(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def kendall_tau(a: Sequence[float], b: Sequence[float]) -> float:
-    """Kendall's tau-a; 0.0 for degenerate input."""
+    """Kendall's tau-b; 0.0 for degenerate input.
+
+    tau-b rather than tau-a because ties are normal in the data this would be
+    used on -- judge scores and rank positions repeat constantly -- and tau-a's
+    denominator (every pair, tied or not) caps the coefficient below 1 whenever
+    they do, so a perfect but tied ordering cannot score 1.
+    """
     n = len(a)
     if n != len(b) or n < 2:
         return 0.0
@@ -281,8 +287,18 @@ def kendall_tau(a: Sequence[float], b: Sequence[float]) -> float:
                 concordant += 1
             else:
                 discordant += 1
-    total = concordant + discordant
-    return (concordant - discordant) / total if total else 0.0
+    # tau-b's denominator: sqrt((C+D+ties_in_a) * (C+D+ties_in_b)). Dividing by
+    # C+D alone -- which is what this did while calling itself tau-a -- is
+    # Goodman-Kruskal gamma, which ignores ties entirely and reads systematically
+    # higher than either tau.
+    ties_a = sum(
+        1 for i in range(n) for j in range(i + 1, n) if a[i] == a[j] and b[i] != b[j]
+    )
+    ties_b = sum(
+        1 for i in range(n) for j in range(i + 1, n) if b[i] == b[j] and a[i] != a[j]
+    )
+    denominator = math.sqrt((concordant + discordant + ties_a) * (concordant + discordant + ties_b))
+    return (concordant - discordant) / denominator if denominator else 0.0
 
 
 def numeric_match(prediction: Any, reference: Any, *, rel_tol: float = 0.05) -> float:

@@ -37,6 +37,7 @@ from ..core.types import (
 from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score, text_match_score
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
+from ._prompting import mode_instruction
 
 FIGSHARE = "https://ndownloader.figshare.com/files"
 FILES = {
@@ -217,9 +218,17 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         store = EvidenceStore()
         store.categories["ask"] = dict(meta.get("_answers") or {})
         state = {"evidence": store, "counts": {}, "final": None}
+        # The interview prompt is this harness's, not the release's -- DDXPlus
+        # publishes the questions and the patient's answers but no prompt to
+        # frame the interview with -- so the mode instruction is ours to add,
+        # and io and cot genuinely differ here. The four interactive datasets
+        # that *do* quote their release set authors_prompt and run one mode.
         return (
             [
-                ChatMessage(role="system", content=self.INTERVIEW_PROMPT),
+                ChatMessage(
+                    role="system",
+                    content=f"{self.INTERVIEW_PROMPT}\n\n{mode_instruction(self.context.modes)}",
+                ),
                 ChatMessage(role="user", content="\n".join(opening)),
             ],
             state,

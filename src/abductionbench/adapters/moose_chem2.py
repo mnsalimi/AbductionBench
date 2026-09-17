@@ -22,10 +22,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics, extract_answer_span
+from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, unparsed_score
+from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 
 REPO_URL = "https://github.com/ZonglinY/MOOSE-Chem2"
 

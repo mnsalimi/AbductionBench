@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import random
 import sys
-from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset

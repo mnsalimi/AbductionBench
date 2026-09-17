@@ -54,7 +54,6 @@ from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import extract_answer_span
 from ..core.types import (
     AdapterDocumentation,
     ChatMessage,
@@ -147,6 +146,9 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: what it measures is which findings the model went looking for. Run as a
     #: one-shot it measures something else entirely.
     data_delivery_mode = "interactive"
+    #: The prompt below is the release's own, so there is one prompt set
+    #: and one prompt mode (see DatasetAdapter.authors_prompt).
+    authors_prompt = True
     #: The committed diagnosis is free text against a list of accepted
     #: diagnoses, so the judge scores it; there is no candidate list to check
     #: a label against.

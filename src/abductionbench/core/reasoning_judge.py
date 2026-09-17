@@ -791,8 +791,20 @@ class ReasoningJudgeStage:
         # factor of group_size on exactly the servers that are slowest already.
         can_batch = self.client.supports_batch and self.config.model not in self._batch_disabled
 
-        def record(request_id: str, key: str, raw: str) -> None:
+        def record(request_id: str, key: str, raw: str, reasoning: str | None = None) -> None:
             values = self._parse_json(raw, template)
+            if values is None and reasoning:
+                # A reasoning model puts its chain in a separate channel and
+                # `content` comes back null when that chain ran to the budget.
+                # Where it got as far as the JSON before running out, the
+                # verdict is in there and throwing it away costs a metric for
+                # nothing. Deliberately a fallback, not the first choice: the
+                # content channel is where a finished answer belongs.
+                values = self._parse_json(reasoning, template)
+                if values is not None:
+                    self.stats["recovered_from_reasoning"] = (
+                        self.stats.get("recovered_from_reasoning", 0) + 1
+                    )
             if values is not None:
                 self._cache[key] = {
                     "template": template.ref,
@@ -859,7 +871,7 @@ class ReasoningJudgeStage:
                     for (request_id, _fields, key), choice in zip(
                         chunk, result.choices, strict=True
                     ):
-                        record(request_id, key, choice.content or "")
+                        record(request_id, key, choice.content or "", choice.reasoning)
                     return
 
                 async def one(request_id: str, key: str, messages: Any) -> None:
@@ -882,7 +894,7 @@ class ReasoningJudgeStage:
                         out[request_id] = None
                         self.stats["failed"] += 1
                         return
-                    record(request_id, key, choice.content or "")
+                    record(request_id, key, choice.content or "", choice.reasoning)
 
                 await asyncio.gather(
                     *(

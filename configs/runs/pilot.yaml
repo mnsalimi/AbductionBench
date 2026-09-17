@@ -48,11 +48,10 @@ engine:
     cache: true
 
 prompts:
+  # Only where the judge templates are found. There are no dataset bindings any
+  # more -- each dataset's prompt lives with its adapter -- and the three that
+  # used to sit here named templates that no longer exist.
   template_dirs: [../prompts]
-  bindings:
-    generation: gen_freeform_v1
-    selection: sel_mcq_letter_v1
-    knowledge_completion: gen_structured_v1
 
 # How each record is asked. Every combination a dataset admits becomes its own
 # task, with its own directory and its own row in the grid.

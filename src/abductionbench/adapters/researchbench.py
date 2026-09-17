@@ -42,7 +42,12 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score, selection_score, text_match_score
+from ._base import (
+    PooledDatasetAdapter,
+    apply_judged_metric,
+    judged_only_score,
+    selection_score,
+)
 
 REPO_ID = "ankilok/ResearchBench"
 ACCEPT_URL = f"https://huggingface.co/datasets/{REPO_ID}"

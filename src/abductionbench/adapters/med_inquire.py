@@ -79,6 +79,9 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         "the presenting picture you can see."
     )
     data_delivery_mode = "interactive"
+    #: The prompt below is the release's own, so there is one prompt set
+    #: and one prompt mode (see DatasetAdapter.authors_prompt).
+    authors_prompt = True
     #: The generation subtask -- the only one run -- asks for a disease name with
     #: no candidate list, so a correct answer routinely differs from the gold in
     #: wording and only the judge can score it. prepare() flips this back to True

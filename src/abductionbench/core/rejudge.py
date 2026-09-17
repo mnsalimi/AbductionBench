@@ -243,6 +243,7 @@ async def _judge_run(
         "skipped_interactive": [],
         "unmatched_records": 0,
         "prompts_from_raw": 0,
+        "failed_tasks": [],
     }
     started = time.time()
 
@@ -347,6 +348,15 @@ async def _judge_run(
     task_slots = asyncio.Semaphore(task_limit)
 
     async def judge_task(adapter, identity, records_path, records, task_prompts) -> None:
+        try:
+            await _judge_one_task(adapter, identity, records_path, records, task_prompts)
+        except Exception as exc:  # noqa: BLE001 - one task must not end the pass
+            logger.exception(
+                "judging %s failed: %s", records_path.parent.relative_to(run_dir), exc
+            )
+            summary["failed_tasks"].append(str(records_path.parent.relative_to(run_dir)))
+
+    async def _judge_one_task(adapter, identity, records_path, records, task_prompts) -> None:
         triplets = [
             _triplet(record, prompt, identity.model_id)
             for record, prompt in zip(records, task_prompts, strict=True)

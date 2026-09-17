@@ -856,8 +856,13 @@ class PromptConfig(_Base):
     being prompted by the harness rather than a dataset being evaluated, so its
     templates stay versioned configuration.
 
-    ``bindings`` is therefore optional and, where present, is only consulted by
-    the judge stage.
+    ``bindings``, ``dataset_overrides`` and ``template_variants`` are **dead**:
+    they date from the design in which the harness owned dataset wording, and
+    nothing reads them now -- the judge stages resolve their templates from
+    ``engine.judge.template`` / ``engine.reasoning_judge.templates`` and from an
+    adapter's own ``judge_template``.  They are kept so that a run config
+    written against the old design still loads, and a test asserts they stay
+    inert rather than quietly acquiring a meaning again.
     """
 
     template_dirs: list[Path] = Field(default_factory=lambda: [Path("configs/prompts")])

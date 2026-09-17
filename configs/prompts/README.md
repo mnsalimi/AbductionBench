@@ -24,11 +24,24 @@ instead of producing a silently empty prompt.
 
 ## Swapping templates
 
-* Change one binding for a whole run: `prompts.bindings.generation: gen_cot_v1`.
-* Change it for one dataset only: `prompts.dataset_overrides.<dataset_id>`.
-* Compare several templates in a single run: `prompts.template_variants`, which
-  turns each variant into its own task, its own output directory and its own
-  row in the result grid.
+Change which prompt a judge stage uses in the run config:
+
+```yaml
+engine:
+  judge:            { template: judge_graded_v1 }      # the answer judge
+  reasoning_judge:  { templates: { steps: reasoning_steps_v2 } }   # one family
+```
+
+An adapter whose grading criteria are its own names its template with
+`judge_template`, which wins over `engine.judge.template` for that dataset.
+
+> **Dataset prompts are not swappable here.** `prompts.bindings`,
+> `prompts.dataset_overrides` and `prompts.template_variants` are vestiges of
+> the design in which the harness owned dataset wording. Each dataset's prompt
+> now lives with its adapter (`system_prompt`, `task_requirements`,
+> `answer_format`, and `adapters/_prompting.py` for the shared scaffolding), so
+> nothing reads those three fields. They remain in `PromptConfig` only so an old
+> run config still loads; setting them changes nothing.
 
 ## `output_contract`
 

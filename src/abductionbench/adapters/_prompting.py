@@ -49,7 +49,7 @@ from typing import Any
 from ..core.modes import BOV, COT, IO, MCS, SCS, SELF_CONSISTENCY, TaskModes
 from ..core.types import ChatMessage
 
-__all__ = ["PromptParts", "build_messages", "option_labels_for", "letters"]
+__all__ = ["PromptParts", "build_messages", "mode_instruction", "option_labels_for", "letters"]
 
 #: The answer marker every scorer looks for.  One marker across the suite means
 #: a dataset's scorer keeps working when its prompt mode changes.
@@ -79,6 +79,20 @@ _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
 #: "output only the fact" had to be either dropped or left to argue with the
 #: reasoning instruction.
 _ANSWER_LINE_ONLY = "Write the answer itself after that marker and nothing else."
+
+
+def mode_instruction(modes: TaskModes, *, one_at_a_time: bool = False) -> str:
+    """The one line in a prompt that says whether to reason.
+
+    Exposed for the interactive adapters, whose prompts this module does not
+    assemble: one of them writes its own interview prompt and so has to carry
+    the mode instruction itself, or its io and cot tasks are the same bytes
+    under two labels.  The adapters that quote their release's prompt instead
+    run a single mode and never call this.
+    """
+    if modes.prompt_mode in (COT, SELF_CONSISTENCY):
+        return _COT_INSTRUCTION_BOV if one_at_a_time else _COT_INSTRUCTION
+    return _IO_INSTRUCTION
 
 
 def _requirements_block(requirements: list[str]) -> str:

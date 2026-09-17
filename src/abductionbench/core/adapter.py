@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from .metrics import extract_answer_span
-from .modes import BOV, MCS, SCS, SELECTION_MODES, SELF_CONSISTENCY, TaskModes
+from .modes import BOV, IO, MCS, SCS, SELECTION_MODES, SELF_CONSISTENCY, TaskModes
 from .types import (
     AdapterDocumentation,
     ChatMessage,
@@ -166,6 +166,23 @@ class DatasetAdapter(ABC):
     #: How this dataset's data reaches the model: static | interactive |
     #: sequential.  A property of the benchmark, never a configuration choice.
     data_delivery_mode: str = "static"
+
+    #: Whether this dataset's prompt is the source release's own, quoted rather
+    #: than written here.
+    #:
+    #: An interactive benchmark is a protocol, and reproducing it means sending
+    #: the wording its authors sent.  Where that is true there is exactly one
+    #: prompt set, so ``io`` and ``cot`` would be the same bytes filed under two
+    #: labels -- which is what they were: five interactive datasets each
+    #: reported an ``io`` row and a ``cot`` row that were byte-identical, and
+    #: medqdx's ``cot`` row carried the authors' own "Do NOT include any
+    #: explanations, reasoning" in it.  Such a dataset offers one prompt mode.
+    #:
+    #: A dataset whose interactive prompt this harness had to write itself sets
+    #: this ``False`` and gets both modes, because there the mode instruction is
+    #: ours to add (ddxplus is the one: its release publishes the questions and
+    #: the answers, but no prompt to frame the interview with).
+    authors_prompt: bool = False
 
     #: Whether this dataset's metrics are objectively verifiable -- scorable
     #: statistically without an LLM judge.  Only these datasets offer the
@@ -450,6 +467,16 @@ class DatasetAdapter(ABC):
         # self-consistency stays restricted to datasets with a checkable
         # answer; the judged ones report Best-of-N over the same repeats
         # instead (see EvaluationEngine._best_of_n_metrics).
+        if cls.authors_prompt and modes.prompt_mode != IO:
+            # One prompt set means one task. IO is the label it runs under
+            # because something has to go in the column; what it means for these
+            # datasets is "the release's own protocol prompt, unmodified", which
+            # the adapter's caveats say too.
+            return (
+                "this benchmark is run with its own authors' prompt, unmodified, so there "
+                "is one prompt set: a second mode would be the same bytes under a different "
+                f"label. It runs as {IO} only"
+            )
         if modes.prompt_mode == SELF_CONSISTENCY and not cls.objective_metrics:
             return (
                 "self-consistency needs answers that can coincide, which free-text "

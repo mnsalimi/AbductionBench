@@ -42,7 +42,7 @@ from ..core.types import (
 )
 from . import _common as C
 from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
-from ._interactive import EvidenceStore, InteractiveMixin, parse_action
+from ._interactive import EvidenceStore, InteractiveMixin
 
 REPO_URL = "https://github.com/MaiWert/MedQDx"
 LEVELS = ("100% Case", "80% Case", "50% Case")
@@ -60,6 +60,9 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         "actually present."
     )
     data_delivery_mode = "interactive"
+    #: The prompt below is the release's own, so there is one prompt set
+    #: and one prompt mode (see DatasetAdapter.authors_prompt).
+    authors_prompt = True
     #: No candidate list is shown -- the release asks for an open diagnosis
     #: ("Output ONLY the name of the disease or condition using correct medical
     #: term"), so the answer is written into an open vocabulary and a correct
