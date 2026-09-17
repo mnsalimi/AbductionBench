@@ -728,12 +728,12 @@ def test_no_dataset_question_dictates_the_answer_shape():
     """
     import re
 
+    import pytest
+
     from abductionbench.core.adapter import AdapterContext
     from abductionbench.core.config import load_run_config
     from abductionbench.core.modes import TaskModes
     from abductionbench.core.registry import resolve_adapter
-
-    import pytest
 
     shape = re.compile(
         r"answer with a label only|label only|\bone word\b|\ba single letter\b"
