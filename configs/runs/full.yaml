@@ -68,15 +68,16 @@ engine:
     resume_policy: strict
 
 models:
-  # Whatever this box is serving right now. The gemma configs are kept for when
-  # that model comes back; a run lists the models it can actually reach.
-  - file: ../models/qwen3-5-2b-local.yaml
+  # Whatever this box is serving right now -- currently gemma-4-e4b-vllm on
+  # 127.0.0.1:18000. A run lists the models it can actually reach, so this line
+  # follows the supervisor service rather than the other way round.
+  - file: ../models/gemma-4-e4b-local.yaml
 
   # The judge. Listed here because the run needs a client to reach it, and
   # marked `judge_only: true` in its own file so it is not evaluated: it is
   # grading, not being graded. Grading a model's answers with that same model
   # would score its own reasoning, which is why the judge is a gpt-oss and the
-  # model under test is Qwen3.5-2B.
+  # model under test is Gemma 4 E4B.
   #
   # gpt-oss-20b rather than the 120b: the 120b's 60.8 GiB of weights left the
   # card with ~269 MiB free, and cuBLAS could not allocate a GEMM workspace --
