@@ -541,10 +541,14 @@ def _reasoning_judge_templates() -> dict[str, str]:
     """
     return {
         "observation_inventory": "reasoning_observation_inventory_v1",
-        "observation_coverage": "reasoning_observation_coverage_v1",
+        # Metrics 1 and 4 share a prompt for the same reason metric 2's four
+        # counts do: they are counts over one set of observations, and separate
+        # calls read that set separately -- the used count and the
+        # redundant/necessary split could disagree with each other and nothing
+        # would notice.
+        "evidence": "reasoning_evidence_v1",
         "steps": "reasoning_steps_v1",
         "branchiness_diversity": "reasoning_branchiness_diversity_v1",
-        "redundancy_completeness": "reasoning_redundancy_completeness_v1",
         "directionality": "reasoning_directionality_v1",
         "differential_elimination": "reasoning_differential_elimination_v1",
         "uncertainty": "reasoning_uncertainty_v1",

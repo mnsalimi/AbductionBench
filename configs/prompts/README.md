@@ -59,11 +59,16 @@ whether an answer is right.  They are used only for `cot` and
 `self-consistency` outputs; the stage that runs them refuses an `io` output,
 because there is no chain in one to measure.
 
-One template per metric family, and the grouping is the measurement's rather
-than a convenience.  `reasoning_steps_v1` returns four counts -- total, useful,
-useless and backtracking steps -- in one reply precisely because they have to
-come from one segmentation of one chain; asking four times would segment it
-four ways and the counts would not add up.
+The grouping of metrics into templates is the measurement's rather than a
+convenience.  `reasoning_steps_v1` returns four counts -- total, useful, useless
+and backtracking steps -- in one reply precisely because they have to come from
+one segmentation of one chain; asking four times would segment it four ways and
+the counts would not add up.  `reasoning_evidence_v1` is the same argument for
+the evidence: how many observations the chain used, and how many of those were
+dispensable or necessary, are three counts over one set, and every observation
+used is either dispensable or necessary -- so they must sum, and they can only
+be made to sum if one call produced them.  Both invariants are enforced in
+`derive_reasoning_metrics`; a reply that breaks one is reported, not averaged.
 
 Their `output_contract` uses a key the answer judges do not:
 

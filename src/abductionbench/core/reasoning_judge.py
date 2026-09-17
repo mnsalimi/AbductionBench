@@ -76,10 +76,9 @@ _SELECTION_KINDS = frozenset({"selection", "multi_selection"})
 
 _REQUIRED_TEMPLATES = {
     "observation_inventory",
-    "observation_coverage",
+    "evidence",
     "steps",
     "branchiness_diversity",
-    "redundancy_completeness",
     "directionality",
     "differential_elimination",
     "uncertainty",
@@ -217,25 +216,31 @@ def derive_reasoning_metrics(
     else:
         metrics["reasoning_observations_total"] = float(total_observations)
 
-    coverage = raw.get("observation_coverage") or {}
-    observations_used = _nonnegative_int(coverage.get("observations_used"))
-    coverage_total = _nonnegative_int(coverage.get("total_observations"))
+    # Metrics 1 and 4 come from one call, so the three counts are one reading of
+    # one inventory and can be checked against each other -- which two separate
+    # calls could not be.
+    evidence = raw.get("evidence") or {}
+    observations_used = _nonnegative_int(evidence.get("observations_used"))
+    echoed_total = _nonnegative_int(evidence.get("total_observations"))
+    redundant = _nonnegative_int(evidence.get("redundancy"))
+    complete = _nonnegative_int(evidence.get("completeness"))
+
     if observations_used is None:
-        errors.append("observation_coverage:invalid_or_missing_used_count")
+        errors.append("evidence:invalid_or_missing_used_count")
     elif total_observations is None:
-        errors.append("observation_coverage:no_inventory_to_count_against")
+        errors.append("evidence:no_inventory_to_count_against")
     elif observations_used > total_observations:
-        errors.append("observation_coverage:used_exceeds_inventory_total")
+        errors.append("evidence:used_exceeds_inventory_total")
     else:
-        if coverage_total is not None and coverage_total != total_observations:
+        if echoed_total is not None and echoed_total != total_observations:
             # Worth recording but not worth voiding the count: the inventory is
             # the authority and the used count was taken against it.
-            errors.append("observation_coverage:echoed_total_differs_from_inventory")
+            errors.append("evidence:echoed_total_differs_from_inventory")
         metrics["reasoning_observations_used"] = float(observations_used)
         if total_observations > 0:
             metrics["reasoning_observation_coverage"] = observations_used / total_observations
         else:
-            errors.append("observation_coverage:inventory_total_is_zero")
+            errors.append("evidence:inventory_total_is_zero")
 
     # -- 2. reasoning steps & backtracking ---------------------------------- #
     steps = raw.get("steps") or {}
@@ -304,20 +309,23 @@ def derive_reasoning_metrics(
         inapplicable.append("branchiness_diversity:generation_only")
 
     # -- 4. redundancy & completeness --------------------------------------- #
-    redundancy_raw = raw.get("redundancy_completeness") or {}
-    redundant = _nonnegative_int(redundancy_raw.get("redundancy"))
-    complete = _nonnegative_int(redundancy_raw.get("completeness"))
+    # Same call as metric 1 above, so this can hold the two to each other: every
+    # observation the chain used is either removable or necessary, and a pair
+    # that does not add up to the used count is a judge that did not partition
+    # the evidence rather than one that found an unusual chain.
     if redundant is None or complete is None:
-        errors.append("redundancy_completeness:invalid_or_missing_output")
+        errors.append("evidence:invalid_or_missing_redundancy_completeness")
+    elif observations_used is not None and redundant + complete != observations_used:
+        errors.append("evidence:redundancy_plus_completeness_is_not_the_used_count")
     else:
         metrics["reasoning_redundancy"] = float(redundant)
         metrics["reasoning_completeness"] = float(complete)
         if total_observations is None:
-            errors.append("redundancy_completeness:no_inventory_to_normalize_against")
+            errors.append("evidence:no_inventory_to_normalize_against")
         elif total_observations == 0:
-            errors.append("redundancy_completeness:inventory_total_is_zero")
+            errors.append("evidence:inventory_total_is_zero")
         elif redundant > total_observations or complete > total_observations:
-            errors.append("redundancy_completeness:count_exceeds_inventory_total")
+            errors.append("evidence:count_exceeds_inventory_total")
         else:
             metrics["reasoning_redundancy_normalized"] = redundant / total_observations
             metrics["reasoning_completeness_normalized"] = complete / total_observations
@@ -715,17 +723,15 @@ class ReasoningJudgeStage:
         ]
 
         # Wave one: everything that needs at most the observation inventory.
-        # Seven families' batches are in flight together here.
+        # Six families' batches are in flight together here -- one fewer than
+        # before, because the used count and the redundant/necessary split are
+        # one call now rather than two readings of the same evidence.
         wave_one = [
             run_family(
-                "observation_coverage", targets, ("question", "reasoning_chain",
-                                                  "total_observations")
-            ),
-            run_family(
-                "redundancy_completeness",
+                "evidence",
                 targets,
-                ("question", "reasoning_chain", "model_answer", "reference_answer",
-                 "total_observations"),
+                ("question", "reasoning_chain", "total_observations", "model_answer",
+                 "reference_answer"),
             ),
             run_family("steps", targets, ("question", "reasoning_chain", "options")),
             run_family("directionality", targets, ("question", "reasoning_chain")),

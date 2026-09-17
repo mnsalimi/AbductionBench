@@ -649,6 +649,97 @@ effort produced a usable verdict on 1 of 12 and took 65s; low effort produced 12
 of 12 and took 7s. A verdict is a short classification, and an unbounded chain on
 one returns `content: null` when it runs out of budget, losing the call.
 
+## Reasoning-chain metrics (cot only)
+
+The judge above grades *whether the answer is right*. A second, independent
+judge stage measures *how the model got there*, over the chain of reasoning a
+`cot` (or `self-consistency`) output contains. It never sees an `io` output:
+there is no chain in one, so a number measured over it would be a number about
+the answer line.
+
+```
+abench run configs/runs/reasoning.yaml            # judged inline, as each task finishes
+abench judge-reasoning runs/<run-id> \
+    --config configs/runs/reasoning.yaml          # the same metrics over a run that
+                                                  # already happened -- the answers are on
+                                                  # disk, so this asks the model under
+                                                  # test nothing
+```
+
+Eight metrics, and the *grouping* of prompts is the measurement's rather than an
+optimisation. Counts that have to agree share a call, because separate calls read
+the same material separately and nothing downstream can tell that they disagreed:
+metric 2's four counts come from one segmentation of the chain, and metrics 1 and
+4 come from one reading of the evidence, where the used count must equal
+redundancy plus completeness. Six prompts cover the eight metrics, plus a one-off
+observation inventory bought once per sample:
+
+| # | metric | raw values the judge returns | computed here, from them |
+|---|---|---|---|
+| 1 | observation coverage | observations the question supplies; how many the chain used *(one call with 4)* | used ÷ total |
+| 2 | steps & backtracking | total, useful, useless, backtracking steps | useful ÷ total, useless ÷ total, backtracking ÷ total |
+| 3 | branchiness & diversity *(generation)* | distinct explanations considered; whether they are diverse (0/1) | — |
+| 4 | redundancy & completeness | of the evidence used, how much was dispensable and how much necessary *(one call with 1; the two must sum to the used count)* | each ÷ total observations (metric 1) |
+| 5 | directionality | 0 (explanation first, justified backwards), 0.5, or 1 (evidence first) | — |
+| 6 | differential elimination *(selection)* | option combinations compared against each other | ÷ 2^n − n − 1, every subset of two or more |
+| 7 | uncertainty marking | steps that explicitly hedge | ÷ total steps (metric 2) |
+| 8 | prior knowledge | whether knowledge absent from the sample is invoked (0/1) | — |
+
+**No judge prompt ever mentions a ratio.** Each asks for raw counts only, and
+every normalized value is computed in `derive_reasoning_metrics` once all of a
+sample's raw values are in hand. A judge asked for a ratio has to do arithmetic
+on its own counts, and the sheet can then disagree with its own columns; a test
+greps every shipped prompt for the vocabulary of normalization and fails on a
+hit.
+
+**Two values are shared rather than recomputed.** The observation total is
+bought **once per sample**, by its own question-only judge call, and cached by
+the exact question text -- so every model, every repeat and every task asking
+that question reuses it, and metric 1 and metric 4 normalize on the same number.
+The step count comes from metric 2 and normalizes metric 7. Nothing normalized
+is computed until every raw value it depends on has arrived.
+
+**How hard the judge thinks, and what it is shown.** Both judge stages run at
+`reasoning_effort: low` -- measured on the longest real chains, default effort
+produced a usable verdict on 1 of 12 and took 65s, low effort 12 of 12 in 7s,
+because an unbounded chain returns `content: null` when it runs out of budget.
+Each judge sees the whole exchange: the conversation the model was sent and
+everything it replied. An exchange too big for the judge's window is **skipped,
+not clipped** -- a verdict read from a chain with its middle removed would be
+averaged in beside verdicts read from whole ones, and nothing downstream could
+tell them apart.
+
+**Coverage is the number to read beside a mean.** `reports/coverage.csv` and the
+workbook's `Coverage` sheet give records / kept / skipped / coverage for every
+dataset and metric, because a mean says what the records that produced a number
+were worth and never said how many did.
+
+**A blank cell always has a reason next to it.** Nothing is coerced: a count
+that is missing, malformed or impossible (more backtracks than steps, more
+observations used than the question supplies) is dropped and explained.
+`reasoning_metrics_status`, `reasoning_metrics_inapplicable` and
+`reasoning_judge_errors` sit beside the metric columns in the sample sheet, so a
+metric that does not apply to a task is never mistakable for a judge call that
+failed.
+
+**Speed.** Requests are batched `group_size` at a time, the families are issued
+together rather than one after another -- only two dependencies exist, and both
+are honoured -- and the stage is shared across tasks, so several judge at once.
+One semaphore, shared with the answer judge because both talk to the same
+server, holds in-flight sequences at `group_size x max_parallel_calls`
+regardless of how many families and tasks are running: 8 x 8 = 64, this judge's
+`--max-num-seqs`. A group stays `group_size` requests even where the server has
+no batch route (they go as that many concurrent single calls), so a server
+without one keeps the same concurrency instead of quietly losing a factor of
+eight.
+
+**Where the numbers land.** One column per raw value and one per derived value
+in the workbook's sample sheet, plus `reasoning_metrics.jsonl` in the run
+directory -- every raw judge reply beside what was derived from it, one line per
+judged output. Both are inside the run directory, so `engine.sync` mirrors them
+to the configured backup with everything else; an offline `judge-reasoning` pass
+uploads once when it finishes.
+
 ## Models and batching
 
 Each model is one file in `configs/models/`, with **its own batch group size**:

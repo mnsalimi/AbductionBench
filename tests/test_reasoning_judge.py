@@ -21,7 +21,13 @@ def _raw(**overrides):
     """A complete, self-consistent set of judge outputs."""
     base = {
         "observation_inventory": {"total_observations": 8},
-        "observation_coverage": {"total_observations": 8, "observations_used": 6},
+        # Metrics 1 and 4 in one call: used = redundancy + completeness.
+        "evidence": {
+            "total_observations": 8,
+            "observations_used": 6,
+            "redundancy": 2,
+            "completeness": 4,
+        },
         "steps": {
             "total_steps": 10,
             "useful_steps": 7,
@@ -29,7 +35,6 @@ def _raw(**overrides):
             "backtracking_steps": 2,
         },
         "branchiness_diversity": {"branchiness": 4, "diversity": 1},
-        "redundancy_completeness": {"redundancy": 2, "completeness": 5},
         "directionality": {"directionality": 0.5},
         "differential_elimination": {"differential_elimination": 3},
         "uncertainty": {"uncertainty_steps": 3},
@@ -64,7 +69,7 @@ def test_every_raw_and_derived_value_is_reported():
     assert metrics["reasoning_backtracking_rate"] == 0.2
     # metric 4 normalizes on metric 1's per-sample total, not on its own counts
     assert metrics["reasoning_redundancy_normalized"] == 2 / 8
-    assert metrics["reasoning_completeness_normalized"] == 5 / 8
+    assert metrics["reasoning_completeness_normalized"] == 4 / 8
     # metric 5, 6, 7, 8
     assert metrics["reasoning_directionality"] == 0.5
     assert metrics["reasoning_differential_elimination"] == 3
@@ -131,9 +136,10 @@ def test_a_pipeline_task_gets_both_generation_and_selection_families():
             "steps:backtracking_exceeds_total_steps",
         ),
         (
-            _raw(observation_coverage={"total_observations": 8, "observations_used": 99}),
+            _raw(evidence={"total_observations": 8, "observations_used": 99,
+                           "redundancy": 50, "completeness": 49}),
             "reasoning_observations_used",
-            "observation_coverage:used_exceeds_inventory_total",
+            "evidence:used_exceeds_inventory_total",
         ),
         (
             _raw(steps={"total_steps": 10, "useful_steps": 7, "useless_steps": 9,
@@ -152,9 +158,10 @@ def test_a_pipeline_task_gets_both_generation_and_selection_families():
             "directionality:expected_0_0.5_or_1",
         ),
         (
-            _raw(redundancy_completeness={"redundancy": 20, "completeness": 1}),
+            _raw(evidence={"total_observations": 8, "observations_used": 6,
+                           "redundancy": 20, "completeness": 1}),
             "reasoning_redundancy_normalized",
-            "redundancy_completeness:count_exceeds_inventory_total",
+            "evidence:redundancy_plus_completeness_is_not_the_used_count",
         ),
         (
             _raw(prior_knowledge={"prior_knowledge": 7}),
@@ -187,8 +194,8 @@ def test_a_zero_observation_inventory_blocks_the_ratios_but_keeps_the_counts():
     metrics, errors, _ = derive_reasoning_metrics(
         _raw(
             observation_inventory={"total_observations": 0},
-            observation_coverage={"total_observations": 0, "observations_used": 0},
-            redundancy_completeness={"redundancy": 0, "completeness": 0},
+            evidence={"total_observations": 0, "observations_used": 0,
+                      "redundancy": 0, "completeness": 0},
         ),
         generation_like=True,
         selection_like=False,
@@ -198,8 +205,7 @@ def test_a_zero_observation_inventory_blocks_the_ratios_but_keeps_the_counts():
     assert metrics["reasoning_observations_used"] == 0
     assert "reasoning_observation_coverage" not in metrics
     assert "reasoning_redundancy_normalized" not in metrics
-    assert "observation_coverage:inventory_total_is_zero" in errors
-    assert "redundancy_completeness:inventory_total_is_zero" in errors
+    assert "evidence:inventory_total_is_zero" in errors
 
 
 def test_a_missing_family_costs_only_its_own_metrics():
@@ -230,7 +236,7 @@ def test_one_prompt_per_metric_family_ships():
 
     ids = {path.stem for path in _judge_prompt_files()}
     assert set(ReasoningJudgeConfig().templates.values()) == ids
-    assert len(ids) == 9
+    assert len(ids) == 8
 
 
 def test_no_judge_prompt_mentions_normalization():
@@ -406,7 +412,11 @@ def _reasoning_responder(conversation, max_tokens):
     if "total_observations" in body and "observations_used" not in body:
         return '{"total_observations": 2}'
     if "observations_used" in body:
-        return '{"total_observations": 2, "observations_used": 1}'
+        # One call for metrics 1 and 4; used must equal redundancy + completeness.
+        return (
+            '{"total_observations": 2, "observations_used": 2, '
+            '"redundancy": 1, "completeness": 1}'
+        )
     if "backtracking_steps" in body:
         return (
             '{"total_steps": 4, "useless_steps": 1, "useful_steps": 3, '
@@ -414,8 +424,6 @@ def _reasoning_responder(conversation, max_tokens):
         )
     if "branchiness" in body:
         return '{"branchiness": 2, "diversity": 1}'
-    if "redundancy" in body:
-        return '{"redundancy": 1, "completeness": 1}'
     if "directionality" in body:
         return '{"directionality": 1}'
     if "differential_elimination" in body:
@@ -748,3 +756,33 @@ def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):
     assert by_metric["reasoning_total_steps"]["kept"] == 2
     assert by_metric["reasoning_total_steps"]["skipped"] == 1
     assert by_metric["reasoning_total_steps"]["coverage"] == round(2 / 3, 4)
+
+
+def test_the_evidence_counts_must_partition_the_observations_used():
+    """What merging metrics 1 and 4 into one call buys.
+
+    Every observation the chain used is either removable or necessary, so
+    redundancy and completeness partition the used count. As two separate calls
+    this could not be checked at all: each read the evidence on its own, and a
+    used count of 6 sitting beside a redundancy of 2 and a completeness of 5 was
+    simply reported, because nothing knew the two readings were meant to be the
+    same one.
+    """
+    metrics, errors, _ = derive_reasoning_metrics(
+        _raw(evidence={"total_observations": 8, "observations_used": 6,
+                       "redundancy": 2, "completeness": 5}),   # 2 + 5 != 6
+        generation_like=True, selection_like=False, option_count=0,
+    )
+    assert "evidence:redundancy_plus_completeness_is_not_the_used_count" in errors
+    assert "reasoning_redundancy" not in metrics
+    assert "reasoning_completeness" not in metrics
+    # The used count itself still stands: it is not what failed.
+    assert metrics["reasoning_observations_used"] == 6
+
+    ok, errors, _ = derive_reasoning_metrics(
+        _raw(evidence={"total_observations": 8, "observations_used": 6,
+                       "redundancy": 2, "completeness": 4}),
+        generation_like=True, selection_like=False, option_count=0,
+    )
+    assert not errors
+    assert ok["reasoning_redundancy"] == 2 and ok["reasoning_completeness"] == 4
