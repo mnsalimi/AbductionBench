@@ -18,7 +18,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 
 from .config import BatchingConfig, ModelSamplingConfig
-from .types import RenderedPrompt, SamplingParams
+from .types import RenderedPrompt, SamplingParams, stable_hash
 
 __all__ = ["quantize_max_tokens", "resolve_sampling", "Batch", "plan_batches", "bisect"]
 
@@ -162,12 +162,20 @@ class Batch:
         return [p.messages for p in self.prompts]
 
 
+def _id_segment(signature: str, discriminator: str) -> str:
+    """The hash segment of a batch id: the signature alone, or mixed with more."""
+    if not discriminator:
+        return signature[:8]
+    return stable_hash({"signature": signature, "discriminator": discriminator}, length=8)
+
+
 def plan_batches(
     prompts: Iterable[RenderedPrompt],
     *,
     group_size: int,
     batching: BatchingConfig,
     prefix: str = "b",
+    discriminator: str = "",
 ) -> list[Batch]:
     """Group rendered prompts into deterministic batches.
 
@@ -179,6 +187,16 @@ def plan_batches(
 
     Ordering is stable given the same input, which keeps runs reproducible and
     makes resume deterministic.
+
+    ``discriminator`` separates batches that would otherwise be named
+    identically.  The id is built from the *sampling* signature, which an
+    interactive benchmark repeats unchanged on every turn of a dialogue -- so
+    turn 2's first batch was named exactly what turn 1's was, and its raw
+    payload overwrote it.  Passing something turn-specific (the conversations
+    themselves) separates them without putting the turn in the name, and
+    without any counter to keep: the same conversations always hash to the same
+    id, so a resumed run rewrites its own file rather than colliding with it.
+    Callers that pass nothing get byte-identical ids to before.
     """
     effective_size = max(1, min(group_size, batching.max_group_size))
     partitions: dict[str, list[RenderedPrompt]] = {}
@@ -199,7 +217,10 @@ def plan_batches(
             chunk = group[chunk_index : chunk_index + effective_size]
             batches.append(
                 Batch(
-                    batch_id=f"{prefix}-{signature[:8]}-{chunk_index // effective_size:04d}",
+                    batch_id=(
+                        f"{prefix}-{_id_segment(signature, discriminator)}-"
+                        f"{chunk_index // effective_size:04d}"
+                    ),
                     prompts=chunk,
                     sampling=chunk[0].sampling,
                 )

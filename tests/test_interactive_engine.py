@@ -390,3 +390,162 @@ def test_vivabench_scores_only_a_committed_diagnosis():
     assert committed.metrics["committed"] == 1.0
     assert committed.prediction == gold
     assert adapter.judge_request(sample, final, committed)["candidate"] == gold
+
+
+def test_turns_are_logged_per_request_without_becoming_evaluated_samples(
+    fake_server, write_run_config, tmp_path, monkeypatch
+):
+    """A multi-turn, multi-sample episode run, end to end.
+
+    Checks the whole contract at once: batch ids carry no turn prefix and do not
+    collide, the episode's sample_id is constant while turn_id/turn_number
+    identify each request, raw payloads keep their shape and gain only the two
+    aligned keys, the turn workbook has one row per turn, and none of it reaches
+    records.jsonl -- where an extra row would make one episode look like several
+    evaluated samples.
+    """
+    import asyncio
+    import json
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.engine import EvaluationEngine
+
+    turns_seen = {"n": 0}
+
+    def responder(conversation, max_tokens):
+        # Three questions, then an answer: every episode runs four turns.
+        turns_seen["n"] += 1
+        asked = sum(1 for m in conversation if m.get("role") == "assistant")
+        if asked < 3:
+            return f'{{"action": "ask", "query": "question {asked + 1}"}}'
+        return '{"action": "answer", "query": "the sprinkler"}'
+
+    fake_server.state.responder = responder
+
+    adapter_module = tmp_path / "turnlog_adapter.py"
+    adapter_module.write_text(
+        '''
+from typing import Any, Sequence
+
+from abductionbench.core.adapter import DatasetAdapter
+from abductionbench.core.metrics import aggregate_mean_metrics
+from abductionbench.core.types import AdapterDocumentation, ChatMessage, SampleScore, SampleSpec
+from abductionbench.adapters._interactive import parse_action
+
+
+class TurnLogAdapter(DatasetAdapter):
+    primary_metric = "accuracy"
+    system_prompt = "You investigate."
+    data_delivery_mode = "interactive"
+    # Mechanically scored, so the run needs no judge.
+    objective_metrics = True
+    max_turns = 6
+
+    def build_samples(self):
+        return [
+            SampleSpec(sample_id=f"ep{i}", fields={"observation": f"case {i}"},
+                       reference={"gold": "the sprinkler"}, max_tokens=64)
+            for i in range(3)
+        ]
+
+    def build_messages(self, sample):
+        return ([ChatMessage(role="system", content=self.system_prompt),
+                 ChatMessage(role="user", content=str(sample.fields["observation"]))],
+                {"answer_prefix": "Answer:"})
+
+    def interactive_start(self, sample):
+        return ([ChatMessage(role="system", content=self.system_prompt),
+                 ChatMessage(role="user", content=str(sample.fields["observation"]))],
+                {"asked": 0, "final": None})
+
+    def interactive_step(self, sample, state, assistant_text):
+        action = parse_action(assistant_text, actions=("ask", "answer"))
+        if action.action == "answer":
+            state["final"] = action.query
+            return None
+        state["asked"] += 1
+        return f"answer to {action.query}"
+
+    def score(self, sample, response, *, output_contract=None):
+        return SampleScore(metrics={"accuracy": 1.0}, prediction="the sprinkler")
+
+    def aggregate(self, scores: Sequence[SampleScore]):
+        return aggregate_mean_metrics([s.metrics for s in scores])
+
+    def documentation(self):
+        return AdapterDocumentation(dataset_id=self.dataset_id, name="turnlog", domain="t",
+                                    source_url="n/a", processing_mode="Generation (interactive)",
+                                    primary_metric="accuracy")
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[{"id": "turnlog", "impl": "turnlog_adapter:TurnLogAdapter", "sample_size": 3}],
+    )
+    result = asyncio.run(EvaluationEngine(load_run_config(config_path)).run())
+    task = result.tasks[0]
+
+    # -- turn log ---------------------------------------------------------- #
+    turns = [json.loads(line) for line in
+             (task.output_dir / "turns.jsonl").read_text().splitlines() if line.strip()]
+    assert turns, "no turns were logged"
+    by_episode: dict[str, list[int]] = {}
+    for row in turns:
+        by_episode.setdefault(row["sample_id"], []).append(row["turn_number"])
+    for sample_id, numbers in by_episode.items():
+        assert numbers == sorted(numbers), sample_id
+        assert numbers[0] == 1, "turn numbering starts at 1"
+        assert numbers == list(range(1, len(numbers) + 1)), "turn numbers are consecutive"
+        for number in numbers:
+            assert any(r["turn_id"] == f"{sample_id}-t{number}" for r in turns)
+    assert len(by_episode) == 3, "every episode should be logged"
+    assert max(len(v) for v in by_episode.values()) > 1, "this must be a multi-turn run"
+
+    # -- records.jsonl is still one row per episode ------------------------ #
+    records = [json.loads(line) for line in
+               (task.output_dir / "records.jsonl").read_text().splitlines() if line.strip()]
+    assert len({r["sample_id"] for r in records}) == 3
+    assert len(records) == 3, "a turn must not become an evaluated sample"
+    assert all("turn_id" not in r for r in records)
+
+    # -- raw payloads: no turn prefix, unique ids, aligned additions -------- #
+    raw_files = sorted((task.output_dir / "raw").glob("*.json"))
+    assert raw_files, "no raw payloads"
+    # The old naming was turn<N>-<sig>-<chunk>. A dataset id may legitimately
+    # begin with "turn", so match the pattern rather than the prefix.
+    import re as _re
+
+    assert not any(_re.match(r"turn\d+-", f.name) for f in raw_files), [
+        f.name for f in raw_files
+    ]
+    assert len({f.name for f in raw_files}) == len(raw_files), "batch ids collided"
+    for path in raw_files:
+        payload = json.loads(path.read_text())
+        request = payload["request"]
+        # Existing shape untouched...
+        assert "sample_ids" in request and "messages" in request
+        assert len(request["messages"]) == len(request["sample_ids"])
+        assert "choices" in payload["response"] and "retry" in payload
+        # ...plus exactly the two additions, aligned index for index.
+        assert len(request["turn_ids"]) == len(request["sample_ids"])
+        assert len(request["turn_numbers"]) == len(request["sample_ids"])
+        for sample_id, turn_id, number in zip(
+            request["sample_ids"], request["turn_ids"], request["turn_numbers"], strict=True
+        ):
+            assert turn_id == f"{sample_id}-t{number}"
+
+    # -- the per-dataset turn workbook ------------------------------------- #
+    from abductionbench.core.reporting import build_turns_frame
+
+    frame = build_turns_frame([task.output_dir], clip=200)
+    assert len(frame) == len(turns), "one row per turn"
+    finals = frame[frame.is_final_turn]
+    assert len(finals) == 3
+    # The episode's result sits on its last turn and nowhere else.
+    assert finals["prediction"].notna().all()
+    assert frame[~frame.is_final_turn]["prediction"].isna().all()
+    assert frame[~frame.is_final_turn]["parse_ok"].isna().all()
+    assert (result.run_dir / "datasets" / "turnlog" / "turns.xlsx").exists()

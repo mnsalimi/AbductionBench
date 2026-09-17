@@ -276,6 +276,29 @@ class RecordStore:
         _atomic_write(self.raw_dir / f"{safe}.json", orjson.dumps(payload, default=str))
         self._raw_written += 1
 
+    def append_turns(self, rows: list[dict[str, Any]]) -> None:
+        """Append interactive turn rows to ``turns.jsonl``.
+
+        Deliberately a separate file from ``records.jsonl``.  That one is read
+        by scoring, by resume's fingerprint lookup and by the coverage report,
+        and all three count its rows -- so a per-turn row in it would inflate
+        every denominator and make an episode look like twenty samples. Here the
+        turns are a log: nothing scores them, nothing resumes from them, and an
+        episode stays one evaluated sample by construction rather than by a
+        filter somebody has to remember.
+        """
+        if not rows:
+            return
+        blob = b"".join(orjson.dumps(row, default=str) + b"\n" for row in rows)
+        path = self.directory / "turns.jsonl"
+        with self._lock:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                os.write(fd, blob)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
     def write_json(self, filename: str, payload: Any) -> Path:
         """Write a JSON sidecar (metrics, documentation data) atomically."""
         path = self.directory / filename

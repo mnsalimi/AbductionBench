@@ -239,6 +239,82 @@ def _rows_per_task(task_records: list[list[dict[str, Any]]], limit: int) -> list
     return allowed
 
 
+def _by_dataset(result: RunResult) -> dict[str, list[Path]]:
+    """Task directories grouped by the dataset they belong to."""
+    grouped: dict[str, list[Path]] = {}
+    for task in result.tasks:
+        grouped.setdefault(task.identity.dataset_id, []).append(task.output_dir)
+    return grouped
+
+
+def build_turns_frame(task_dirs: list[Path], *, clip: int) -> pd.DataFrame:
+    """One row per interactive request, with the episode's final result on its last turn.
+
+    The dialogue is the thing an interactive benchmark actually produces, and
+    until now only its last line was visible: one record per episode, the
+    intermediate questions and answers reachable only by reading raw payloads by
+    hand.  This is the whole exchange, ordered.
+
+    It is a *log*, not an evaluation.  ``prediction``, ``parse_ok`` and the
+    metrics stay empty on every turn but the last, because there is no answer to
+    score until the episode submits one -- and an episode that ends without
+    submitting (a turn limit, a context exhaustion, an error) leaves them empty
+    everywhere, which is the honest record of what happened rather than the last
+    thing said being promoted to an answer it never was.
+    """
+    rows: list[dict[str, Any]] = []
+    for directory in task_dirs:
+        turns = load_records(directory / "turns.jsonl")
+        if not turns:
+            continue
+        # The episode records carry the score; index them to attach to last turns.
+        episodes = {
+            str(record.get("sample_id")): record
+            for record in dedupe_records(load_records(directory / "records.jsonl"))
+        }
+        last_turn: dict[str, int] = {}
+        for turn in turns:
+            sample_id = str(turn.get("sample_id"))
+            last_turn[sample_id] = max(last_turn.get(sample_id, 0), int(turn.get("turn_number") or 0))
+        for turn in turns:
+            sample_id = str(turn.get("sample_id"))
+            number = int(turn.get("turn_number") or 0)
+            response = turn.get("response") or {}
+            terminal = number == last_turn.get(sample_id)
+            episode = episodes.get(sample_id, {}) if terminal else {}
+            row: dict[str, Any] = {
+                "dataset_id": turn.get("dataset_id"),
+                "model_id": turn.get("model_id"),
+                "prompt_mode": turn.get("prompt_mode"),
+                "selection_mode": turn.get("selection_mode"),
+                "task_kind": turn.get("task_kind"),
+                "sample_id": sample_id,
+                "turn_id": turn.get("turn_id"),
+                "turn_number": number,
+                "is_final_turn": terminal,
+                "status": turn.get("status"),
+                "input_tokens_est": turn.get("input_tokens_est"),
+                "max_tokens": turn.get("max_tokens"),
+                "finish_reason": response.get("finish_reason"),
+                # What the model was sent this turn, and what it said back.
+                "request": _clip(turn.get("request"), clip),
+                "response": _clip(response.get("content"), clip),
+                "reasoning": _clip(response.get("reasoning"), clip),
+                "error": _clip(response.get("error"), 300),
+                "batch_id": response.get("batch_id"),
+                "batch_size": response.get("batch_size"),
+                "latency_s": response.get("latency_s"),
+                "reference": _clip(turn.get("reference"), clip),
+                # Episode-level, and only on the turn the episode ended at.
+                "prediction": _clip(episode.get("prediction"), clip) if episode else None,
+                "parse_ok": episode.get("parse_ok") if episode else None,
+            }
+            for metric, value in (episode.get("metrics") or {}).items():
+                row[f"metric.{metric}"] = _fmt(value)
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def build_coverage_frame(result: RunResult) -> pd.DataFrame:
     """Per dataset and metric: how many records carry a value, and how many do not.
 
@@ -485,6 +561,26 @@ def write_reports(result: RunResult) -> dict[str, Path]:
     except Exception as exc:  # noqa: BLE001 - never lose a run over a report
         staged.unlink(missing_ok=True)
         logger.exception("failed to write Excel workbook: %s", exc)
+
+    # One workbook per dataset that has an interactive task, written into that
+    # dataset's own folder so it rides to the backup with the rest of it. It is
+    # kept out of the main workbook deliberately: an episode is up to twenty
+    # turns, so per-turn rows there would crowd every other dataset out of the
+    # row budget and put rows in the sample sheet that are not evaluated
+    # samples. Nothing in the main workbook changes.
+    for dataset_id, directories in sorted(_by_dataset(result).items()):
+        try:
+            turns = build_turns_frame(directories, clip=reporting.response_clip_chars)
+            if turns.empty:
+                continue
+            target = result.run_dir / "datasets" / dataset_id / "turns.xlsx"
+            staged_turns = target.with_name(target.name + ".partial")
+            with pd.ExcelWriter(staged_turns, engine="xlsxwriter") as writer:
+                _write_sheet(writer, turns, "Turns")
+            os.replace(staged_turns, target)
+            written[f"turns:{dataset_id}"] = target
+        except Exception as exc:  # noqa: BLE001 - a log must not fail the run
+            logger.warning("could not write the turn log for %s: %s", dataset_id, exc)
 
     if reporting.write_run_documentation:
         for task in result.tasks:

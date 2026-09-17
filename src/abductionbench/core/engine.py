@@ -85,9 +85,29 @@ from .types import (
     SampleSpec,
     SamplingParams,
     TaskIdentity,
+    stable_hash,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _turn_identity(prompts: list[RenderedPrompt]) -> dict[str, list[Any]]:
+    """``turn_ids``/``turn_numbers`` for an interactive batch, or nothing.
+
+    An episode is one sample and keeps one ``sample_id`` throughout; what these
+    add is which request within it a given entry is.  A static task has no turns
+    and gets neither key, so its payloads keep exactly the shape they had.
+    """
+    turns = [prompt.sample.metadata.get("_turn") for prompt in prompts]
+    if not any(turn is not None for turn in turns):
+        return {}
+    return {
+        "turn_ids": [
+            f"{prompt.sample_id}-t{turn}" if turn is not None else prompt.sample_id
+            for prompt, turn in zip(prompts, turns, strict=True)
+        ],
+        "turn_numbers": list(turns),
+    }
 
 __all__ = ["EvaluationEngine", "RunResult", "TaskResult", "DatasetBundle", "PromptSet"]
 
@@ -1407,6 +1427,7 @@ class EvaluationEngine:
                 pairs = await self._run_episodes(
                     adapter, pending, client=client, store=store, use_batch=use_batch,
                     checkpoint=checkpoint, model=model, group_size=group_size,
+                    identity=identity,
                     max_output_tokens=bundle.config.max_output_tokens,
                 )
             records = await self._score_batch(
@@ -1738,6 +1759,7 @@ class EvaluationEngine:
         checkpoint: TaskCheckpoint,
         model: ModelConfig,
         group_size: int,
+        identity: TaskIdentity,
         max_output_tokens: int | None = None,
     ) -> list[tuple[RenderedPrompt, ModelResponse]]:
         """Drive an interactive benchmark to completion, one turn at a time.
@@ -1829,6 +1851,10 @@ class EvaluationEngine:
                     exact_tokens=getattr(self.token_counter, "exact", False),
                     max_output_tokens=max_output_tokens,
                 )
+                # Underscore-prefixed, so it stays out of the record metadata
+                # (_make_record drops those) while the raw writer and the turn
+                # log can both see it. The episode's sample_id is untouched.
+                base.sample.metadata["_turn"] = turn
                 turn_prompts.append(
                     RenderedPrompt(
                         sample=base.sample,
@@ -1857,12 +1883,57 @@ class EvaluationEngine:
                 turn_prompts,
                 group_size=group_size if use_batch else 1,
                 batching=self.engine_cfg.batching,
-                prefix=f"turn{turn}",
+                # The same prefix a static task uses: the turn does not belong
+                # in a batch's name. What keeps two turns' batches apart is the
+                # discriminator -- the conversations themselves -- because the
+                # sampling signature the id is otherwise built from is identical
+                # on every turn, so turn 2's first batch used to be named
+                # exactly what turn 1's was and overwrote its raw payload.
+                prefix=identity.dataset_id[:12],
+                discriminator=stable_hash(
+                    [[m.to_dict() for m in p.messages] for p in turn_prompts]
+                ),
             )
             for batch in batches:
                 results.extend(
                     await self._execute_batch(batch, client, store, use_batch, checkpoint)
                 )
+
+            # One log row per request, written before the episode is advanced so
+            # a turn is recorded even if the episode dies on this turn. These
+            # never reach records.jsonl: an episode is one evaluated sample.
+            store.append_turns(
+                [
+                    {
+                        **identity.as_dict(),
+                        "sample_id": turn_prompt.sample_id,
+                        "turn_id": f"{turn_prompt.sample_id}-t{turn}",
+                        "turn_number": turn,
+                        "status": response.status.value,
+                        "input_tokens_est": turn_prompt.input_tokens_est,
+                        "max_tokens": turn_prompt.sampling.max_tokens,
+                        "request": [m.to_dict() for m in turn_prompt.messages],
+                        "response": {
+                            "content": response.content,
+                            "reasoning": response.reasoning,
+                            "finish_reason": response.finish_reason,
+                            "error": response.error,
+                            "error_class": response.error_class,
+                            "attempts": response.attempts,
+                            "latency_s": round(response.latency_s, 3),
+                            "batch_id": response.batch_id,
+                            "batch_size": response.batch_size,
+                            "batch_index": response.batch_index,
+                            "usage": response.usage,
+                            "completion_tokens_est": response.completion_tokens_est,
+                        },
+                        "reference": index[turn_prompt.sample_id]["prompt"].sample.reference
+                        if "prompt" in index[turn_prompt.sample_id]
+                        else turn_prompt.sample.reference,
+                    }
+                    for turn_prompt, response in results
+                ]
+            )
 
             still_live: list[dict[str, Any]] = []
             for turn_prompt, response in results:
@@ -2051,6 +2122,11 @@ class EvaluationEngine:
                         "messages": [
                             [m.to_dict() for m in prompt.messages] for prompt in batch.prompts
                         ],
+                        # Only for an interactive task, and only additive: the
+                        # episode ids above are unchanged, and these name which
+                        # request inside each episode this is. Aligned with
+                        # sample_ids, index for index.
+                        **_turn_identity(batch.prompts),
                     },
                     "response": {
                         "id": batch_result.response_id,
