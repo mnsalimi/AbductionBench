@@ -144,10 +144,6 @@ class PooledDatasetAdapter(DatasetAdapter):
     #: than "on the last line", which such an answer cannot satisfy.
     answer_is_a_block: bool = False
 
-    #: What may appear inside that block, for a dataset the default sentence
-    #: ("one item per line") does not describe -- a fenced Python function, say.
-    answer_block_note: str = ""
-
     #: Heading above the candidate list, in the dataset's own words.
     options_heading: str = ""
 
@@ -173,7 +169,6 @@ class PooledDatasetAdapter(DatasetAdapter):
             options_heading=str(fields.get("options_heading") or self.options_heading or ""),
             requirements=[str(c) for c in (requirements or self.task_requirements)],
             answer_is_block=self.answer_is_a_block,
-            answer_block_note=self.answer_block_note,
         )
 
     def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:

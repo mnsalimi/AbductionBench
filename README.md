@@ -497,8 +497,6 @@ needed four times as many investigations.
 | Med-Inquire | asks the patient, orders tests, submits a diagnosis | the case file's sections; `NOT AVAILABLE` for tests it does not record |
 | MedQDx | asks about symptoms, then names the condition | the case's symptom list |
 | Cloud-OpsBench | issues `kubectl`-style tool calls, then finalises a root cause | the release's recorded `tool_cache.json` — a real cluster, replayed |
-| Alien Abduction (Active-Output) | probes a hidden Python function with `TEST: <input>`, then submits it with `SOLVE:` | the target function itself, called as an oracle — the only environment here that computes its answers rather than looking them up |
-| Alien Abduction (Passive-Output) | spends turns on `NEXT:` to be shown one more input/output pair, then submits | the same target's test suite, revealed one pair per turn in a fixed order (`sequential`, not `interactive`: the model asks for more evidence but does not choose it) |
 
 Requests are matched to findings **lexically**, not by a second model. Several
 of these benchmarks resolve a free-text request with an LLM mapper; doing that
@@ -508,38 +506,7 @@ is reproducible and its misses are visible in the transcript. Each adapter says
 so in its own caveats.
 
 `options.delivery: static` runs an interactive benchmark in its single-turn form
-as an ablation — useful for asking what the interaction actually buys. Alien
-Abduction does not need the ablation because the paper it comes from *is* that
-comparison: `alien_abduction` (single-turn), `alien_abduction_passive`
-(sequential) and `alien_abduction_active` (interactive) are three of its six
-game modes, run on the identical 50 targets so the difference between them is
-the interaction and nothing else. Its two multi-turn modes quote the release's
-own protocol prompt and so run `io` only; its single-turn mode is written in
-this suite's house style and gets both prompt modes.
-
-**Alien Abduction generates its own data.** Its authors released no code and
-no test instances, so the 50 targets are Python functions in
-`adapters/_alien_targets.py` and the suites are computed by running them. They
-are still written to `data/alien_abduction*/` like any other dataset's source —
-`targets.json` (names, signatures, bodies, and the reading behind each ambiguous
-name), `test_cases.jsonl` (every suite plus its reveal order) and
-`MANIFEST.json` (a fingerprint over the generator version and every target
-body). `python tools/alien_abduction_data.py` writes them ahead of a run; the
-adapters write them on `prepare()` anyway, and regenerate whenever the
-fingerprint stops matching, so an edited target body can never leave a run
-scoring against the previous suite.
-
-**Alien Abduction executes model output.** It is the only dataset here that
-does: the paper's criterion is that the submitted function agrees with the
-hidden one on a held-out suite, and there is no way to check that without
-running it. Each submission runs in a fresh isolated interpreter under
-`RLIMIT_CPU`, `RLIMIT_AS` and `RLIMIT_FSIZE`, in its own session and process
-group, with a wall-clock deadline (`core/sandbox.py`). That bounds what goes
-wrong in practice — infinite loops, allocation blow-ups, a crash — but it is
-**not a security boundary**: the paper's own harness uses an ephemeral
-container, which an unprivileged container cannot nest. Drop the three
-`alien_abduction*` configs if you are not willing to run code from the model
-under test.
+as an ablation — useful for asking what the interaction actually buys.
 
 VivaBench was for a time configured `data_delivery_mode = "static"` and run as
 selection over the differentials the release records, with the finding-request
@@ -1104,11 +1071,11 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **47 datasets configured, all 47
+decisions cannot drift from the code. Current state: **44 datasets configured, all 44
 evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
 accepted its gate.
 
-Seven benchmarks run a real multi-turn environment; see
+Five of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
 Interactivity is no longer a reason to skip anything.
 
