@@ -98,9 +98,15 @@ class XCopaAdapter(PooledDatasetAdapter):
             sample_id=C.stable_id("xcopa", language, item.get("idx", index)),
             fields={
                 "observation": premise,
+                # No "answer with a label only" here. The question is rendered in
+                # every prompt mode, so a clause about the answer's shape in it
+                # tells a cot model not to explain at the same moment the mode
+                # instruction asks it to. The closing already names the labels
+                # and where to put them; what belongs here is the language,
+                # which the model genuinely needs and no other layer carries.
                 "question": (
                     "Which alternative is the more plausible CAUSE of the observation? "
-                    f"(The text is in language code '{language}'; answer with a label only.)"
+                    f"(The text is in language code '{language}'.)"
                 ),
                 "options": choices,
                 "option_labels": LABELS,

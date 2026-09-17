@@ -72,6 +72,13 @@ _COT_INSTRUCTION_BOV = (
 
 _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
 
+#: The closing for a dataset whose answer is genuinely several lines.  "On the
+#: last line" and "one fact per line" cannot both be obeyed, and the dataset that
+#: asks for both was telling the model to do two incompatible things; the parser
+#: was never the problem -- ``extract_answer_span`` already returns everything
+#: after the final marker, newlines included.
+_ANSWER_BLOCK_ONLY = "Put nothing in that block but the answer itself, one item per line."
+
 #: The one sentence that replaces the seventeen per-dataset "output only the
 #: diagnosis name" / "output only the formula" clauses.  Said once, in shared
 #: wording, and scoped to the marker rather than to the response -- which is
@@ -164,6 +171,11 @@ class PromptParts:
     #: ("Answer options:", "Candidate diagnoses:").  Defaults to
     #: "Candidate hypotheses:".
     options_heading: str = ""
+    #: Whether the answer is several lines rather than one.  A dataset whose
+    #: answer is a list of facts cannot put it "on the last line", so it closes
+    #: with a block instead.  Off by default: one line is the right shape for
+    #: every other dataset here, and it is the shape the marker was designed for.
+    answer_is_block: bool = False
     #: What the *task* requires, one clause per item, rendered as a
     #: "Requirements:" list inside the task block -- "use only the allowed
     #: predicates", "do not restate the observation", "if no single fact works,
@@ -302,6 +314,11 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
 
     contract.update({"style": "free_form"})
     shape = parts.answer_format or "your answer"
+    if parts.answer_is_block:
+        return (
+            f"End your reply with the answer block:\n{ANSWER_PREFIX}\n<{shape}>\n"
+            f"{_ANSWER_BLOCK_ONLY}"
+        ), contract
     return (
         f"On the last line, give your final answer as:\n{ANSWER_PREFIX} <{shape}>\n"
         f"{_ANSWER_LINE_ONLY}"

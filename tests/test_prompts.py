@@ -712,3 +712,121 @@ def test_the_harness_written_interview_prompt_actually_varies_by_mode():
     assert "step by step" in cot
     # self-consistency is cot sampled k times, so it renders the cot line.
     assert mode_instruction(TaskModes(prompt_mode="self-consistency")) == cot
+
+
+# --------------------------------------------------------------------------- #
+# three prompts that contradicted themselves
+# --------------------------------------------------------------------------- #
+
+
+def test_no_dataset_question_dictates_the_answer_shape():
+    """The question renders in every mode; the answer's shape is the closing's.
+
+    XCOPA's question carried "answer with a label only", so a cot prompt asked
+    the model to reason and, in the same breath, not to. The closing already
+    names the admissible labels and where to put them.
+    """
+    import re
+
+    from abductionbench.core.adapter import AdapterContext
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    import pytest
+
+    shape = re.compile(
+        r"answer with a label only|label only|\bone word\b|\ba single letter\b"
+        r"|answer with only",
+        re.IGNORECASE,
+    )
+    config_path = Path("configs/runs/full.yaml")
+    if not config_path.is_file():
+        pytest.skip("run configs unavailable")
+    try:
+        config = load_run_config(config_path)
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"cannot load the run config: {exc}")
+
+    offenders, checked = [], 0
+    for dataset in config.datasets:
+        try:
+            adapter_cls = resolve_adapter(dataset.impl)
+        except Exception:  # pragma: no cover - optional dependency
+            continue
+        try:
+            context = AdapterContext(
+                dataset_id=dataset.id,
+                data_dir=Path(config.engine.data_root) / dataset.id,
+                sample_size=3, seed=config.seed, options=dict(dataset.options),
+                offline=True, modes=TaskModes(prompt_mode="cot"),
+            )
+            adapter = adapter_cls(context)
+            adapter.prepare()
+            samples = adapter.build_samples()[:3]
+        except Exception:      # not materialized on this machine
+            continue
+        for sample in samples:
+            checked += 1
+            found = shape.search(str(sample.fields.get("question") or ""))
+            if found:
+                offenders.append((dataset.id, found.group(0)))
+                break
+    if not checked:
+        pytest.skip("no datasets are materialized on this machine")
+    assert not offenders, f"a dataset question dictates the answer shape: {offenders}"
+
+
+def test_commonwhy_does_not_assert_a_polarity_the_data_does_not_have():
+    """Most of its questions are not impossibilities.
+
+    Of 400 sampled items, 220 carry no negation at all -- "Why is it likely that
+    X celebrates Christmas?", "Why must X understand economic systems?". The
+    prompt asserted the model had been told an entity *could not* do something,
+    which on the majority of the dataset states the opposite of the question
+    asked, and a model obeying it answers a question nobody put.
+    """
+    import re
+
+    from abductionbench.core.registry import resolve_adapter
+
+    cls = resolve_adapter("abductionbench.adapters.commonwhy:CommonWhyAdapter")
+    asserts_negative = re.compile(
+        r"could not do something|explain why not|the impossibility|makes it impossible",
+        re.IGNORECASE,
+    )
+    assert not asserts_negative.search(cls.system_prompt), cls.system_prompt
+
+
+def test_a_multi_line_answer_closes_with_a_block_not_a_last_line():
+    """"one fact per line" and "on the last line" cannot both be obeyed."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.metrics import extract_answer_span
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    assert resolve_adapter(
+        "abductionbench.adapters.proof_writer:ProofWriterAdapter"
+    ).answer_is_a_block is True
+
+    block = build_messages(
+        PromptParts(system="s", observation="o", answer_format="one fact per line, or None",
+                    answer_is_block=True),
+        TaskModes(prompt_mode="cot"),
+    )[0][-1].content
+    assert "End your reply with the answer block" in block
+    assert "On the last line" not in block
+
+    # Every other dataset keeps the single-line closing.
+    one_line = build_messages(
+        PromptParts(system="s", observation="o", answer_format="a single diagnosis"),
+        TaskModes(prompt_mode="cot"),
+    )[0][-1].content
+    assert "On the last line" in one_line
+    assert "answer block" not in one_line
+
+    # And the parser already handles the block -- it was never the obstacle.
+    parsed = extract_answer_span(
+        "Reasoning.\nAnswer:\nAnna is kind.\nBob is round.", {"answer_prefix": "Answer:"}
+    )
+    assert parsed == "Anna is kind.\nBob is round."

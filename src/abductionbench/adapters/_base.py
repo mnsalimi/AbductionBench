@@ -139,6 +139,11 @@ class PooledDatasetAdapter(DatasetAdapter):
     #: selection mode, so anything mode-specific does not belong in it.
     task_requirements: tuple[str, ...] = ()
 
+    #: Set by a dataset whose answer is several lines (see
+    #: PromptParts.answer_is_block); it then closes with an answer block rather
+    #: than "on the last line", which such an answer cannot satisfy.
+    answer_is_a_block: bool = False
+
     #: Heading above the candidate list, in the dataset's own words.
     options_heading: str = ""
 
@@ -163,6 +168,7 @@ class PooledDatasetAdapter(DatasetAdapter):
             option_labels=[str(o) for o in (fields.get("option_labels") or [])],
             options_heading=str(fields.get("options_heading") or self.options_heading or ""),
             requirements=[str(c) for c in (requirements or self.task_requirements)],
+            answer_is_block=self.answer_is_a_block,
         )
 
     def build_messages(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:

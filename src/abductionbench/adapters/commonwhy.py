@@ -2,10 +2,20 @@
 
 Source: https://github.com/faezemoradik/CommonWhyDataset
 
-Questions of the form *"Why couldn't <entity> have <done X>?"* paired with the
-explanation that resolves them ("Because <entity> died before <year>, while X
-occurred in <year>") and the general inference rule behind it.  Answering
-requires abducing the entity-specific fact that makes the impossibility hold.
+Why-questions about an entity, paired with the explanation that resolves them
+("Because <entity> died before <year>, while X occurred in <year>") and the
+general inference rule behind it.  Answering requires abducing the
+entity-specific fact that settles the question.
+
+**The questions are not all impossibilities.**  Many are -- *"Why couldn't
+<entity> have <done X>?"* -- but of 400 sampled items 220 carry no negation at
+all: *"Why is it likely that <entity> celebrates Christmas?"*, *"Why must
+<entity> understand economic systems?"*, *"Why would the top of <building> be
+visible if you submerge it?"*.  The prompt therefore does not assert a polarity.
+It used to say the model had been told an entity *could not* do something and to
+explain why not, which on most of the dataset asserted the opposite of the
+question actually asked -- and a model that obeyed it answered a question nobody
+put, against a gold for the real one.
 
 The release provides two popularity strata: ``Head.json`` (popular entities) and
 ``Longtail.json`` (rare ones).  Both are pooled and the stratum is recorded, so
@@ -30,15 +40,17 @@ STRATA = ("Head", "Longtail")
 
 
 class CommonWhyAdapter(PooledDatasetAdapter):
-    """Explain why an entity could not have done something."""
+    """Answer a why-question about an entity from a fact about it."""
 
     adapter_version = "1.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
-        "would best account for the evidence you are given. You are told that an entity could "
-        "not do something. Explain why not, using what is commonly known about that kind of "
-        "entity. The explanation should be the property that actually rules the action out."
+        "would best account for the evidence you are given. You are asked a why-question "
+        "about an entity. Answer it using what is commonly known about that kind of entity, "
+        "and answer the question as asked -- keep whatever it claims about the entity, "
+        "whether that is that something could not happen, would likely happen, or must be "
+        "so. The explanation should be the property that actually settles it."
     )
     data_delivery_mode = "static"
 
@@ -89,8 +101,8 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             fields={
                 "observation": question,
                 "instructions": (
-                    "Explain the impossibility by naming the specific fact about the entity "
-                    "that makes it impossible, and how it conflicts with the event."
+                    "Give the reason the question asks for: the relevant fact about "
+                    "the entity, and how that fact bears on the event."
                 ),
             },
             reference={"gold": answer, "rule": C.normalize_whitespace(item.get("rule"))},
@@ -162,7 +174,9 @@ class CommonWhyAdapter(PooledDatasetAdapter):
             split_used=self.split_used,
             abductive_subset=(
                 "The grounded question/answer pairs in Head.json and Longtail.json: each requires "
-                "abducing the entity fact that makes an event impossible. The repository's "
+                "abducing the entity fact that settles the question -- which is not always an "
+                "impossibility: of 400 sampled items 220 carry no negation, asking instead why "
+                "something is likely, would happen, or must be so. The repository's "
                 "SPARQL/rule-construction files are dataset-building artifacts, not evaluation "
                 "items, and are ignored."
             ),

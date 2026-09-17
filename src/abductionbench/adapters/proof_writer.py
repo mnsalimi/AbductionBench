@@ -54,6 +54,10 @@ class ProofWriterAdapter(PooledDatasetAdapter):
     data_delivery_mode = "static"
 
     answer_format = "one fact per line, or None"
+    #: The answer is a list of facts, so it closes with a block: "one fact per
+    #: line" and "on the last line" cannot both be obeyed, and this dataset was
+    #: asking for both.
+    answer_is_a_block = True
     task_requirements = (
         "each missing fact must be a single fact, not a rule",
         "if several single facts would each work, output all of them",
