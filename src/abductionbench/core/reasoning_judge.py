@@ -48,7 +48,7 @@ from .batching import iter_chunks
 from .client import ModelClient
 from .config import ReasoningJudgeConfig
 from .errors import ConfigError, EndpointError
-from .judge import clip_middle
+from .judge import clip_middle, exceeds_budget
 from .modes import BOV, COT, SELF_CONSISTENCY
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .retry import RetryPolicy, with_retry
@@ -501,7 +501,21 @@ class ReasoningJudgeStage:
                 self._mark(updated, index, "not_applicable:prompt_unavailable")
                 continue
             question, reasoning = self._question_and_reasoning(prompt, response)
-            question, reasoning = self._clip_chain(question), self._clip_chain(reasoning)
+            too_big = exceeds_budget(
+                {"question": question, "reasoning_chain": reasoning},
+                {
+                    "question": self.config.max_chain_chars,
+                    "reasoning_chain": self.config.max_chain_chars,
+                },
+            )
+            if too_big:
+                # A judge shown a chain with its middle removed is answering a
+                # different question -- "how many steps are there" least of all
+                # survives it -- and the answer would be averaged in beside
+                # verdicts read from whole chains. Skipped, counted, reported.
+                self.stats["skipped_oversize"] = self.stats.get("skipped_oversize", 0) + 1
+                self._mark(updated, index, f"not_applicable:oversize:{too_big}")
+                continue
             if not reasoning.strip():
                 self._mark(updated, index, "not_applicable:no_reasoning_chain")
                 continue
@@ -928,7 +942,7 @@ class ReasoningJudgeStage:
             return ()
         return (("reasoning_effort", self.config.reasoning_effort),)
 
-    def _clip_chain(self, chain: str) -> str:
+    def _clip_chain(self, chain: str) -> str:  # noqa: D401 - kept for the short fields
         """Keep a chain inside the judge's own context window.
 
         Clipped from the middle rather than the end: the opening says what the

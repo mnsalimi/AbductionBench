@@ -39,7 +39,24 @@ from .types import ModelResponse, SampleScore, SampleSpec, SamplingParams, stabl
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["JudgeVerdict", "JudgeStage", "clip_middle"]
+__all__ = ["JudgeVerdict", "JudgeStage", "clip_middle", "exceeds_budget"]
+
+
+def exceeds_budget(parts: dict[str, str], limits: dict[str, int]) -> str | None:
+    """Why this exchange is too big to judge, or ``None`` if it fits.
+
+    Skipping beats clipping. A clipped exchange still gets a verdict, and that
+    verdict is reported beside verdicts read from complete ones as though the
+    two were the same measurement -- a judge shown the middle of a chain removed
+    is being asked a different question, and nothing downstream can tell. A
+    skipped record has no verdict, is counted, and is named in the coverage
+    report, so the gap is visible instead of silently averaged in.
+    """
+    for name, limit in limits.items():
+        text = parts.get(name) or ""
+        if limit and len(text) > limit:
+            return f"{name}_exceeds_{limit}_chars_at_{len(text)}"
+    return None
 
 
 def clip_middle(text: str, limit: int) -> str:
@@ -134,6 +151,9 @@ class JudgeStage:
         #: a dataset with no verifiable answer the judge *is* the score, so a
         #: missing verdict has to be a task failure rather than a zero.
         self.unavailable: int = 0
+        #: Samples not judged because the exchange was too big for the judge's
+        #: window. Reported, never averaged in as a zero.
+        self.skipped_oversize: int = 0
         self.last_error: str = ""
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
@@ -193,7 +213,22 @@ class JudgeStage:
                 continue
             if not request:
                 continue
-            request = {**self._whole_exchange(by_id.get(sample.sample_id), response), **request}
+            exchange = self._whole_exchange(by_id.get(sample.sample_id), response)
+            too_big = exceeds_budget(
+                exchange,
+                {
+                    "full_prompt": self.config.max_prompt_chars,
+                    "full_response": self.config.max_response_chars,
+                },
+            )
+            if too_big:
+                # No verdict rather than a verdict on a cut-down exchange: the
+                # two would be reported as the same measurement.
+                self.skipped_oversize += 1
+                score.details.setdefault("judge_skipped", too_big)
+                logger.debug("judge: skipping %s -- %s", sample.sample_id, too_big)
+                continue
+            request = {**exchange, **request}
             key = stable_hash({"template": self.template.ref, "fields": request})
             pending.append((index, request, key))
 
@@ -315,11 +350,8 @@ class JudgeStage:
         """
         fields: dict[str, Any] = {}
         if prompt is not None:
-            fields["full_prompt"] = clip_middle(
-                "\n\n".join(
-                    f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
-                ),
-                self.config.max_prompt_chars,
+            fields["full_prompt"] = "\n\n".join(
+                f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
             )
         whole = response.content or ""
         if response.reasoning:
@@ -327,7 +359,7 @@ class JudgeStage:
             # of what the model produced and the judge should see it.
             whole = f"[REASONING]\n{response.reasoning}\n\n[ANSWER]\n{whole}"
         if whole:
-            fields["full_response"] = clip_middle(whole, self.config.max_response_chars)
+            fields["full_response"] = whole
         return fields
 
     def _parse(self, text: str) -> JudgeVerdict:

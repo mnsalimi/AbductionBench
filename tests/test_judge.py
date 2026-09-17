@@ -296,3 +296,22 @@ def test_output_budget_is_not_the_constraint_on_a_judge():
         )
         # Generous against a 62-token verdict, and small against the window.
         assert config.max_tokens <= 8192
+
+
+def test_an_exchange_too_big_for_the_window_is_skipped_not_clipped():
+    """A verdict on a cut-down exchange is not the same measurement.
+
+    Clipping keeps the number and loses the fact that it was computed on less --
+    and it is then averaged in beside verdicts read from whole exchanges, with
+    nothing downstream able to tell them apart. Skipping loses the number and
+    keeps the fact, which is the honest trade: the record is counted and named
+    in the coverage report.
+    """
+    from abductionbench.core.judge import exceeds_budget
+
+    limits = {"full_prompt": 100, "full_response": 100}
+    assert exceeds_budget({"full_prompt": "x" * 50, "full_response": "y" * 50}, limits) is None
+    reason = exceeds_budget({"full_prompt": "x" * 500, "full_response": "y"}, limits)
+    assert reason and "full_prompt" in reason and "500" in reason
+    # A missing field is not an oversize field.
+    assert exceeds_budget({}, limits) is None

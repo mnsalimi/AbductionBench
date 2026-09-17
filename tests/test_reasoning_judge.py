@@ -701,3 +701,50 @@ def test_an_over_long_chain_is_clipped_from_the_middle(tmp_path):
     assert stage.stats["clipped"] == 1
     # A chain that fits is returned untouched.
     assert stage._clip_chain("short") == "short"
+
+
+def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):
+    """A mean says what the scored records were worth, not how many there were.
+
+    They are different questions the moment a metric can be absent -- an
+    exchange too big to judge, a chain no step count could be read from, a
+    metric that does not apply to the task -- and reading the first without the
+    second is how a number computed over a third of a dataset gets quoted as
+    the dataset's score.
+    """
+    import json
+
+    from abductionbench.core.engine import RunResult, TaskResult
+    from abductionbench.core.reporting import build_coverage_frame
+    from abductionbench.core.types import TaskIdentity
+
+    task_dir = tmp_path / "datasets" / "d" / "m" / "cot"
+    task_dir.mkdir(parents=True)
+    records = [
+        {"sample_id": "a", "prompt_fingerprint": "1",
+         "metrics": {"accuracy": 1.0, "reasoning_total_steps": 5.0}},
+        {"sample_id": "b", "prompt_fingerprint": "1",
+         "metrics": {"accuracy": 0.0}},                      # judge skipped this one
+        {"sample_id": "c", "prompt_fingerprint": "1",
+         "metrics": {"accuracy": 1.0, "reasoning_total_steps": 3.0}},
+    ]
+    (task_dir / "records.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+    identity = TaskIdentity(
+        run_id="r", dataset_id="d", model_id="m", template_id="cot", template_version="1.0",
+        prompt_mode="cot", selection_mode="n/a", task_kind="generation",
+        data_delivery_mode="static",
+    )
+    result = RunResult(run_id="r", run_dir=tmp_path, config=None, started_at=0.0)
+    result.tasks = [TaskResult(identity=identity, output_dir=task_dir)]
+
+    frame = build_coverage_frame(result)
+    by_metric = {row["metric"]: row for _, row in frame.iterrows()}
+    assert by_metric["accuracy"]["kept"] == 3
+    assert by_metric["accuracy"]["skipped"] == 0
+    assert by_metric["accuracy"]["coverage"] == 1.0
+    # The metric one record never produced is visible as a gap, not as a zero.
+    assert by_metric["reasoning_total_steps"]["kept"] == 2
+    assert by_metric["reasoning_total_steps"]["skipped"] == 1
+    assert by_metric["reasoning_total_steps"]["coverage"] == round(2 / 3, 4)

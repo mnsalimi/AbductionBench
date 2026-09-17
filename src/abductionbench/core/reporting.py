@@ -239,6 +239,49 @@ def _rows_per_task(task_records: list[list[dict[str, Any]]], limit: int) -> list
     return allowed
 
 
+def build_coverage_frame(result: RunResult) -> pd.DataFrame:
+    """Per dataset and metric: how many records carry a value, and how many do not.
+
+    A mean says what the records that produced a number were worth; it does not
+    say how many did.  Those are different questions whenever a metric can be
+    absent -- a judge skipping an exchange too big for its window, a chain no
+    step count could be read from, a metric that does not apply to the task at
+    all -- and reading a mean without the second one is how a number computed
+    over a third of a dataset gets quoted as the dataset's score.
+
+    ``kept`` counts records that produced a value for that metric, ``skipped``
+    the rest of the task's records, and ``coverage`` is the ratio.  The reasons
+    are in the sample sheet's status columns, per record.
+    """
+    rows: list[dict[str, Any]] = []
+    for task in result.tasks:
+        records = dedupe_records(load_records(task.output_dir / "records.jsonl"))
+        if not records:
+            continue
+        total = len(records)
+        counts: dict[str, int] = {}
+        for record in records:
+            for name, value in (record.get("metrics") or {}).items():
+                if value is not None:
+                    counts[name] = counts.get(name, 0) + 1
+        for name in sorted(counts):
+            kept = counts[name]
+            rows.append(
+                {
+                    "dataset_id": task.identity.dataset_id,
+                    "model_id": task.identity.model_id,
+                    "prompt_mode": task.identity.prompt_mode,
+                    "selection_mode": task.identity.selection_mode,
+                    "metric": name,
+                    "records": total,
+                    "kept": kept,
+                    "skipped": total - kept,
+                    "coverage": round(kept / total, 4) if total else 0.0,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.DataFrame:
     task_records = [
         dedupe_records(load_records(directory / "records.jsonl")) for directory in task_dirs
@@ -388,6 +431,11 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             path = reports_dir / "metrics_long.csv"
             metrics.to_csv(path, index=False)
             written["metrics_csv"] = path
+        coverage = build_coverage_frame(result)
+        if not coverage.empty:
+            path = reports_dir / "coverage.csv"
+            coverage.to_csv(path, index=False)
+            written["coverage_csv"] = path
 
     excel_path = reports_dir / reporting.excel_filename
     # Written to a sibling temp file and renamed into place.  Reports are now
@@ -412,6 +460,9 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             _write_sheet(
                 writer, _build_introduced_modes_frame(result),
                 _safe_sheet_name("Introduced_modes", used),
+            )
+            _write_sheet(
+                writer, build_coverage_frame(result), _safe_sheet_name("Coverage", used)
             )
             _write_sheet(writer, models, _safe_sheet_name("Models", used))
             if reporting.include_sample_sheets:
