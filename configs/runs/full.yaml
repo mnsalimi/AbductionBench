@@ -37,7 +37,15 @@ engine:
     #
     # The global ceiling has to cover what the per-model limits ask for --
     # qwen 4 + judge 2 = 6 -- or it silently becomes the real limit.
-    max_parallel_tasks: 3
+    # 3 -> 8, measured rather than guessed. Sampled mid-run, the two servers were
+    # running 6 and 1 sequences against --max-num-seqs 64 apiece: ~5% utilisation.
+    # Nothing was throttling them -- there simply were not enough tasks in flight
+    # to keep them fed, because a task alternates between asking the model and
+    # waiting on the judge, and with three at a time they can all be waiting at
+    # once. The per-model caps below are what actually bound the load (qwen: 4
+    # batches x group 16 = its 64 sequences; the judge: 8 calls x group 8 = its
+    # 64), so this only decides how many tasks compete to fill them.
+    max_parallel_tasks: 8
     max_parallel_batches_global: 8
   sync:
     # Mirror results and logs to Google Drive every minute while the run

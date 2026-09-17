@@ -60,7 +60,13 @@ engine:
     resume_policy: strict   # strict | sample_id | off
     fsync_every: 1
     store_raw_payloads: true
-    max_raw_payloads: 0     # 0 = keep every batch payload
+    # Keep this many request/response payloads per task, so the sample prompts
+    # and the model's answers are visible for every dataset without writing the
+    # ~1,100 files an uncapped run produces. Each file is one whole batch (16
+    # conversations), so 3 is ~48 prompt/response pairs per task. 0 = keep them
+    # all, in which case exclude raw/ from sync below or the upload will exhaust
+    # a Drive-style request quota.
+    max_raw_payloads: 3
 
   tokenizer:
     backend: auto           # auto | hf | tiktoken | heuristic | endpoint
@@ -169,18 +175,12 @@ engine:
     checkers: 8
     timeout_s: 300
     bandwidth_limit: ""       # e.g. "8M" to leave headroom for other traffic
-    # Patterns to leave out. raw/ is the bulky part of a run -- every batch's
-    # request/response payload, kept locally for auditing -- and in a full run it
-    # is 1,096 of 1,201 files and ~95% of the bytes. Uploading it exhausts Google
-    # Drive's per-minute request quota (which is per *project*, shared across
-    # every rclone user) and starves the files that matter. Everything else is
-    # still backed up: records, metrics, reasoning_metrics.jsonl, judge caches,
-    # checkpoints, logs and reports.
-    #
-    # Measured: 636 MB of run directory against 684 KB of metrics, 43 MB in ten
-    # minutes before the quota cut it off. Set to [] to back up raw payloads too,
-    # and expect the upload to take hours.
-    exclude: ["raw/"]
+    # Patterns to leave out. Empty on purpose: max_raw_payloads above bounds the
+    # bulky part where it is *written*, so the sample prompts and responses ride
+    # along to the backup instead of being hidden from it -- which is where
+    # anyone reviewing a run goes looking for them. Add "raw/" here if you set
+    # max_raw_payloads: 0.
+    exclude: []
     # No pass starts within this many seconds of the last one finishing, whoever
     # asked. The interval spaces scheduled uploads; this spaces the requested
     # ones, so several datasets finishing together produce one upload, not five.

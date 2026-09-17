@@ -372,7 +372,14 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         if sample.task_kind != "generation" or not response.text:
             return None
         return {
-            "candidate": extract_answer_span(response.text, None)[:400],
+            # score.prediction is what this dataset's own scorer already read
+            # out of the response *with the answer contract* -- i.e. the text
+            # after the Answer: marker. Re-parsing here without that contract is
+            # what sent the judge the chain of reasoning instead of the answer:
+            # extract_answer_span falls back to the whole response when no marker
+            # is supplied, so under cot the judge graded the model's thinking,
+            # on 79% of house_md's records and 48-70% of the other four.
+            "candidate": (score.prediction or extract_answer_span(response.text, None))[:400],
             "gold": sample.reference["gold"],
             "criteria": "Equivalent condition names (synonyms, abbreviations) count as correct.",
         }

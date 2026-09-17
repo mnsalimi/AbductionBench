@@ -641,3 +641,63 @@ def test_a_failed_inventory_never_leaves_another_task_waiting():
     # The waiter is released with "no inventory" rather than hanging forever.
     assert results[1] == {"q": None}
     assert not stage._inventories_inflight
+
+
+# --------------------------------------------------------------------------- #
+# cost: a verdict is a reading task, not a research budget
+# --------------------------------------------------------------------------- #
+
+
+def test_the_judge_is_told_how_hard_to_think(tmp_path):
+    """reasoning_effort rides on every call, and is omitted when unset.
+
+    Measured on this suite's chains at the same budget: default effort 30.2s /
+    1,484 completion tokens, low effort 4.0s / 231 -- same verdict. On a long
+    chain the default runs to the budget and returns empty content, losing the
+    call: 793 of one run's 802 unparseable replies were that.
+    """
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    def stage(**overrides):
+        return ReasoningJudgeStage(
+            config=ReasoningJudgeConfig(enabled=True, model="m", **overrides),
+            registry=_FakeRegistry(),
+            renderer=None,
+            clients={"m": object()},
+            retry_policy=None,
+            cache_dir=tmp_path,
+        )
+
+    assert stage()._sampling_extra() == (("reasoning_effort", "low"),)
+    assert stage(reasoning_effort="high")._sampling_extra() == (("reasoning_effort", "high"),)
+    assert stage(reasoning_effort=None)._sampling_extra() == ()
+
+
+def test_an_over_long_chain_is_clipped_from_the_middle(tmp_path):
+    """Better to lose the middle of a chain than the whole call.
+
+    A chain plus its question can exceed the judge's own context window -- seen
+    at 65,621 tokens against a 65,536 limit -- and the request is then rejected
+    outright, so the sample gets no metrics at all. Both ends are kept: the
+    opening says what the model set out to do, the close is where it commits,
+    and every metric here reads one or both.
+    """
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    stage = ReasoningJudgeStage(
+        config=ReasoningJudgeConfig(enabled=True, model="m", max_chain_chars=1000),
+        registry=_FakeRegistry(),
+        renderer=None,
+        clients={"m": object()},
+        retry_policy=None,
+        cache_dir=tmp_path,
+    )
+    chain = "START" + ("x" * 5000) + "END"
+    clipped = stage._clip_chain(chain)
+    assert len(clipped) < len(chain)
+    assert clipped.startswith("START")
+    assert clipped.endswith("END")
+    assert "characters of the chain omitted" in clipped
+    assert stage.stats["clipped"] == 1
+    # A chain that fits is returned untouched.
+    assert stage._clip_chain("short") == "short"

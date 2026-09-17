@@ -500,6 +500,7 @@ class ReasoningJudgeStage:
                 self._mark(updated, index, "not_applicable:prompt_unavailable")
                 continue
             question, reasoning = self._question_and_reasoning(prompt, response)
+            question, reasoning = self._clip_chain(question), self._clip_chain(reasoning)
             if not reasoning.strip():
                 self._mark(updated, index, "not_applicable:no_reasoning_chain")
                 continue
@@ -817,7 +818,9 @@ class ReasoningJudgeStage:
                 messages, _contract = self.renderer.render(sample, template)
                 conversations.append(messages)
             sampling = SamplingParams(
-                max_tokens=self.config.max_tokens, temperature=self.config.temperature
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                extra=self._sampling_extra(),
             )
             async with self._calls:
                 if can_batch and len(conversations) > 1:
@@ -894,6 +897,33 @@ class ReasoningJudgeStage:
             *(run_chunk(chunk) for chunk in iter_chunks(keyed, self.config.group_size))
         )
         return out
+
+    def _sampling_extra(self) -> tuple[tuple[str, Any], ...]:
+        """Vendor knobs sent with every judge call."""
+        if not self.config.reasoning_effort:
+            return ()
+        return (("reasoning_effort", self.config.reasoning_effort),)
+
+    def _clip_chain(self, chain: str) -> str:
+        """Keep a chain inside the judge's own context window.
+
+        Clipped from the middle rather than the end: the opening says what the
+        model set out to do and the close is where it commits, and both matter
+        to every metric here.  A chain long enough to need this is one where
+        losing the middle costs less than losing the whole call, which is what
+        happens otherwise -- the request is rejected for length and the sample
+        gets no metrics at all.
+        """
+        limit = self.config.max_chain_chars
+        if len(chain) <= limit:
+            return chain
+        half = limit // 2
+        self.stats["clipped"] = self.stats.get("clipped", 0) + 1
+        return (
+            chain[:half]
+            + f"\n\n[... {len(chain) - limit} characters of the chain omitted ...]\n\n"
+            + chain[-half:]
+        )
 
     # -- parsing -------------------------------------------------------------- #
 

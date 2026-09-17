@@ -18,6 +18,7 @@ Composition rules
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -29,6 +30,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .errors import ConfigError
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ConcurrencyConfig",
@@ -396,7 +399,14 @@ class CheckpointConfig(_Base):
     #: Persist the exact request/response JSON of each batch call for audit.
     store_raw_payloads: bool = True
     #: Keep at most this many raw payload files per task (0 = unlimited).
-    max_raw_payloads: int = Field(0, ge=0)
+    #:
+    #: Bounded by default so the payloads can actually be *backed up*: each file
+    #: holds a whole batch, so three of them is ~48 prompt/response pairs per
+    #: task -- enough to read what the model was asked and what it said for
+    #: every dataset -- for ~0.3 MB instead of the ~1,100 files an uncapped run
+    #: writes, which is what exhausted Drive's request quota.  Set to 0 for the
+    #: complete audit trail, and exclude ``raw/`` from sync if you do.
+    max_raw_payloads: int = Field(3, ge=0)
 
 
 class TokenizerConfig(_Base):
@@ -486,6 +496,12 @@ class JudgeConfig(_Base):
     template: str = "judge_binary_v1"
     max_tokens: int = Field(512, ge=1)
     temperature: float = Field(0.0, ge=0)
+    #: How hard a reasoning judge is allowed to think before answering
+    #: ("low"/"medium"/"high"; ``None`` leaves the server's default).  A judge
+    #: verdict is a short, well-defined classification, not a research problem,
+    #: and an unbounded chain on one is pure cost -- see ReasoningJudgeConfig,
+    #: where it was measured.
+    reasoning_effort: str | None = "low"
     group_size: int = Field(8, ge=1)
     #: How many judge calls may be in flight at once.  In-flight sequences are
     #: ``group_size x max_parallel_calls``, so these two size the judge server
@@ -534,8 +550,27 @@ class ReasoningJudgeConfig(_Base):
     #: hidden chain as well as the JSON: a judge whose chain eats the whole
     #: budget returns empty content, and every metric in that call is lost.  A
     #: ceiling, not an allocation -- the reply still ends at the JSON.
-    max_tokens: int = Field(8192, ge=1)
+    max_tokens: int = Field(4096, ge=1)
     temperature: float = Field(0.0, ge=0)
+    #: How hard the judge may think before answering.
+    #:
+    #: This is the single most expensive setting in the stage, and "low" is not
+    #: a quality compromise -- measured against gpt-oss-20b on this suite's
+    #: chains, at the *same* budget:
+    #:
+    #:   default effort   30.2 s, 1,484 completion tokens
+    #:   low effort        4.0 s,   231 completion tokens, same verdict
+    #:
+    #: and on a long chain the default runs to the budget and returns *empty
+    #: content*, losing the call outright: 793 of one run's 802 unparseable
+    #: replies were exactly that.  Counting steps in a chain is a reading task;
+    #: it does not need a research budget.  ``None`` leaves the server default.
+    reasoning_effort: str | None = "low"
+    #: Longest chain (in characters) shown to a judge; longer ones are clipped
+    #: in the middle, keeping both ends.  Without this the prompt can exceed the
+    #: judge's own context window -- observed at 65,621 tokens against a 65,536
+    #: limit -- and the call is rejected outright rather than degraded.
+    max_chain_chars: int = Field(60000, ge=1000)
     #: Conversations per batch call.  In-flight sequences are
     #: ``group_size x max_parallel_calls``; together they should fill the judge
     #: server's ``--max-num-seqs`` and not exceed it, since the surplus only
@@ -594,12 +629,13 @@ class SyncConfig(_Base):
     #: e.g. "8M" to cap upload bandwidth; empty means unlimited.
     bandwidth_limit: str = ""
     #: Patterns to leave out (rsync syntax when snapshotting, rclone otherwise).
-    #: ``raw/`` is excluded by default: in a full run it is 1,096 of 1,201 files
-    #: -- per-batch request/response payloads kept for auditing -- and uploading
-    #: them exhausts Drive's per-minute request quota while starving the records,
-    #: metrics, checkpoints, logs and reports, which are all still backed up.
-    #: Set to ``[]`` to back up everything including raw payloads.
-    exclude: list[str] = Field(default_factory=lambda: ["raw/"])
+    #: Empty by default, because ``checkpoint.max_raw_payloads`` now bounds the
+    #: bulky part at the point where it is *written* rather than hiding it at
+    #: the point where it is uploaded -- so the sample prompts and responses
+    #: reach the backup, which is where anyone reviewing a run looks for them.
+    #: An uncapped run (``max_raw_payloads: 0``) should put ``raw/`` back here;
+    #: :meth:`RunConfig._check` says so if it does not.
+    exclude: list[str] = Field(default_factory=list)
     extra_args: list[str] = Field(default_factory=list)
     #: If the destination is unusable at startup (e.g. credentials not set up
     #: yet), re-check this often and begin uploading once it works.  0 disables
@@ -1009,6 +1045,22 @@ class RunConfig(_Base):
         if self.engine.reasoning_judge.enabled and not self.engine.reasoning_judge.model:
             raise ConfigError(
                 "engine.reasoning_judge.enabled requires engine.reasoning_judge.model"
+            )
+        if (
+            self.engine.sync.enabled
+            and self.engine.checkpoint.store_raw_payloads
+            and self.engine.checkpoint.max_raw_payloads == 0
+            and not any("raw" in pattern for pattern in self.engine.sync.exclude)
+        ):
+            # Not fatal -- it is a legitimate thing to want -- but it is the
+            # combination that exhausted Drive's request quota, and it is easy
+            # to reach by setting max_raw_payloads: 0 and forgetting the other
+            # half.
+            logger.warning(
+                "engine.checkpoint.max_raw_payloads is 0 (unlimited) while engine.sync "
+                "is on and does not exclude raw/: a full run writes ~1,100 payload "
+                "files and uploading them all exhausts a Drive-style request quota. "
+                "Either cap max_raw_payloads or add 'raw/' to engine.sync.exclude."
             )
         return self
 

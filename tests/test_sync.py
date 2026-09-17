@@ -268,8 +268,11 @@ def test_uploads_a_snapshot_so_growing_files_are_stable(tmp_path: Path):
     assert stats.failures == 0
     assert (remote / "run-1" / "engine.log").exists()
 
-    # Opting out uploads the live directory instead, and says so in the command.
-    direct = ArtifactSync(_config(remote, snapshot_before_upload=False), run, "run-1")
+    # Opting out uploads the live directory instead, and says so in the command:
+    # with no snapshot to filter, rclone has to do the excluding itself.
+    direct = ArtifactSync(
+        _config(remote, snapshot_before_upload=False, exclude=["raw/"]), run, "run-1"
+    )
     assert direct._snapshot() == run                     # noqa: SLF001
     assert "--exclude" in direct._command(run)           # rclone filters instead
     assert "--exclude" not in direct._command(direct.stage_dir)
@@ -285,23 +288,31 @@ def test_api_calls_are_throttled(tmp_path: Path):
     assert "--tpslimit" not in unthrottled._command(unthrottled.stage_dir)  # noqa: SLF001
 
 
-def test_raw_payloads_are_excluded_by_default(tmp_path: Path):
-    """1,096 of a run's 1,201 files are debug payloads; results must not starve."""
+def test_raw_payloads_are_backed_up_by_default_and_can_still_be_excluded(tmp_path: Path):
+    """They are the sample prompts and responses; a backup without them is thin.
+
+    They used to be excluded by default, because an uncapped run writes ~1,100
+    of them and uploading that exhausts a Drive-style request quota. The bound
+    now lives where they are *written* (checkpoint.max_raw_payloads), so the
+    quota is safe and the payloads are still visible -- which is what anyone
+    reviewing a run actually wants from the backup.
+    """
     run, remote = _run_dir(tmp_path), tmp_path / "remote"
     raw = run / "datasets/ds/model/tpl/raw"
     raw.mkdir()
-    for index in range(5):
+    for index in range(3):
         (raw / f"batch-{index}.json").write_text("{}", encoding="utf-8")
 
-    syncer = ArtifactSync(_config(remote), run, "run-1")  # default exclude
+    syncer = ArtifactSync(_config(remote), run, "run-1")  # default exclude: none
     syncer.flush()
     assert (remote / "run-1" / "datasets/ds/model/tpl/records.jsonl").exists()
-    assert not (remote / "run-1" / "datasets/ds/model/tpl/raw").exists()
+    assert (remote / "run-1" / "datasets/ds/model/tpl/raw/batch-0.json").exists()
 
-    # ... and everything can be backed up when asked for explicitly.
-    everything = ArtifactSync(_config(remote, exclude=[]), run, "run-2")
-    everything.flush()
-    assert (remote / "run-2" / "datasets/ds/model/tpl/raw/batch-0.json").exists()
+    # ...and a run that keeps every payload can still opt out.
+    lean = ArtifactSync(_config(remote, exclude=["raw/"]), run, "run-2")
+    lean.flush()
+    assert (remote / "run-2" / "datasets/ds/model/tpl/records.jsonl").exists()
+    assert not (remote / "run-2" / "datasets/ds/model/tpl/raw").exists()
 
 
 def test_a_file_growing_during_upload_still_reaches_the_remote(tmp_path: Path):
@@ -583,3 +594,58 @@ def test_tightening_exclude_drops_what_the_stage_already_holds(tmp_path: Path):
     # copy never deletes from the remote, so what is already there stays -- the
     # point is that it is not re-sent from here on.
     assert (remote / "run-1" / "engine.log").exists()
+
+
+def test_sample_prompts_and_responses_reach_the_backup(tmp_path: Path):
+    """The raw payloads are what "show me what the model was asked" means.
+
+    They were excluded from sync because an uncapped run writes ~1,100 of them
+    and uploading that exhausts a Drive-style request quota. Bounding them where
+    they are *written* is the fix that keeps them visible; hiding them from the
+    upload made the backup useless for reviewing a run.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    raw = run / "datasets" / "ds" / "model" / "tpl" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "batch-0.json").write_text('{"request": {"messages": []}}', encoding="utf-8")
+
+    syncer = ArtifactSync(_config(remote), run, "run-1")   # default exclude
+    syncer.flush()
+    assert (remote / "run-1" / "datasets/ds/model/tpl/raw/batch-0.json").exists()
+
+
+def test_an_uncapped_run_with_sync_on_is_warned_about(tmp_path: Path, caplog):
+    """The combination that exhausted the quota is easy to reach by halves.
+
+    Setting max_raw_payloads: 0 for a full audit trail is legitimate; forgetting
+    to exclude raw/ from the backup at the same time is how a run ends up trying
+    to upload ~1,100 files and starving the results behind them.
+    """
+    import logging
+
+    from abductionbench.core.config import RunConfig
+
+    payload = {
+        "name": "t",
+        "prompts": {},
+        "datasets": [{"id": "d", "impl": "x:Y"}],
+        "models": [
+            {"id": "m", "model_name": "m", "endpoint": {"base_url": "http://x"}}
+        ],
+        "engine": {
+            "checkpoint": {"max_raw_payloads": 0},
+            "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
+        },
+    }
+    with caplog.at_level(logging.WARNING):
+        RunConfig.model_validate(payload)
+    assert any("max_raw_payloads" in record.message for record in caplog.records)
+
+    # Capping it, or excluding raw/, is enough on its own.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        RunConfig.model_validate({**payload, "engine": {
+            "checkpoint": {"max_raw_payloads": 3},
+            "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
+        }})
+    assert not any("max_raw_payloads" in record.message for record in caplog.records)

@@ -186,7 +186,15 @@ class JudgeStage:
                 messages, _ = self.renderer.render(spec, self.template)
                 conversations.append(messages)
             sampling = SamplingParams(
-                max_tokens=self.config.max_tokens, temperature=self.config.temperature
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                # A verdict is a short classification; an unbounded reasoning
+                # chain on one costs time and buys nothing.
+                extra=(
+                    (("reasoning_effort", self.config.reasoning_effort),)
+                    if self.config.reasoning_effort
+                    else ()
+                ),
             )
             async with self._calls:
                 try:
