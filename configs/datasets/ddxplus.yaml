@@ -2,8 +2,12 @@ dataset:
   id: ddxplus
   impl: abductionbench.adapters.ddxplus:DDXPlusAdapter
   options:
-    subtask: generation   # generation (default) | selection (uses the case's own differential)
-    n_options: 6
+    n_options: 6        # size of the shortlist drawn from the case's own differential
   notes: >-
     Official test split from figshare; coded evidences decoded to English
-    question/answer lines.
+    question/answer lines. Run as one task only -- the model interviews the
+    patient and then selects from that patient's own DIFFERENTIAL_DIAGNOSIS,
+    which is the shape of the paper's own baselines. There is deliberately no
+    `subtask` knob here: the adapter pins the subtask to selection through
+    hypothesis_mode_options, so a value set at this level would be silently
+    overridden.

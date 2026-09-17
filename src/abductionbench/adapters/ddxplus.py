@@ -11,13 +11,24 @@ of candidate conditions with probabilities).
 
 The adapter decodes the coded evidences into readable question/answer pairs via
 the evidence dictionary -- otherwise the prompt would be strings like
-``E_55_@_V_89`` -- and evaluates two modes:
+``E_55_@_V_89``.  English surface forms are used throughout (``question_en``,
+``cond-name-eng``); the dataset is bilingual and the French fields are ignored,
+which is recorded below.
 
-* ``generation`` (default) -- name the pathology that explains the answers;
-* ``selection`` -- choose among the case's own differential candidates.
+**One task: an interview that ends in a selection.**  The episode opens with the
+patient's age, sex and presenting complaint; the model interviews the patient one
+question at a time, and commits by choosing a condition from that patient's own
+``DIFFERENTIAL_DIAGNOSIS``.  That is the shape of the benchmark's own evaluation
+-- both baselines in the paper (AARLC and BASD) interview the patient for up to
+``T = 30`` turns and predict a differential at the end (Section 4.2); neither is
+given the full evidence set up front.
 
-Both use English surface forms (``question_en``, ``cond-name-eng``); the dataset
-is bilingual and the French fields are ignored, which is recorded below.
+There is therefore **no free-text generation variant and no static variant**.
+``hypothesis_modes`` offers ``selection`` alone, ``hypothesis_mode_options``
+pins the subtask to it, and ``data_delivery_mode`` is ``interactive``, so every
+task this dataset plans is the same one.  Recovering the ground-truth
+``PATHOLOGY`` from a finished questionnaire is a different and easier task than
+the benchmark poses, and is not run.
 """
 
 from __future__ import annotations
@@ -411,12 +422,16 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
             name="DDXPlus",
             domain="Healthcare: Differential Diagnosis",
             source_url=SOURCE_URL,
-            processing_mode="Generation (default) / Selection",
+            processing_mode="Selection (interactive)",
             split_used=self.split_used,
             abductive_subset=(
-                "The diagnosis itself: infer the condition that explains the questionnaire "
-                "answers. DDXPlus's simulated interview (which question to ask next) is a policy "
-                "problem, not abduction, and is not evaluated."
+                "The diagnosis, abduced over an interview the model conducts itself: it asks the "
+                "release's own questionnaire questions one at a time and then commits to a "
+                "condition from that patient's own DIFFERENTIAL_DIAGNOSIS. Choosing which "
+                "question to ask next is a control policy rather than abduction and is not "
+                "scored on its own -- but it is run, because the evidence the model chose to "
+                "gather is what its diagnosis then has to be abduced from, and that is how the "
+                "benchmark's own baselines are evaluated."
             ),
             sampling_procedure=self.sampling_note(),
             metrics_description={
@@ -424,15 +439,14 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "Every metric also gets a self_consistency_ counterpart: the plurality answer over "
                 "modes.repeats samples of the same record, read off those samples rather than bought "
                 "again. Available because this dataset's answers are checkable and so can coincide.",
-                "diagnosis_match": "(PRIMARY, higher is better) 1 if the answer names the gold condition (primary)",
-                "exact_match": "strict normalized equality with the gold condition name",
-                "token_f1": "bag-of-tokens F1 against the gold condition name",
-                "rouge_l": "LCS F-measure against the gold condition name",
-                "accuracy": "(PRIMARY, higher is better) selection subtask: 1 if the chosen candidate is the gold condition",
-                "diagnosis_match_judged": "LLM-judge equivalence verdict (only when "
-                "engine.judge.enabled)",
+                "accuracy": "(PRIMARY, higher is better, 0-1) 1 if the condition committed to at "
+                "the end of the interview is the patient's ground-truth PATHOLOGY. Checked "
+                "mechanically against the label, never by a judge: the candidates are the case's "
+                "own condition names, so equivalence is decidable.",
+                "parse_failure_rate": "(lower is better, 0-1) fraction of episodes no choice could "
+                "be read from -- the model never committed, or committed unreadably",
             },
-            primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_match",
+            primary_metric="accuracy",
             decisions=[
                 "Decoded the coded evidences through release_evidences.json into English "
                 "question/answer lines; presenting raw codes would test cipher-breaking, not "
@@ -441,9 +455,13 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "bilingual French/English and the French fields are ignored.",
                 "Used the official test split, falling back to validate only if the test archive "
                 "cannot be downloaded (this is reported in split_used).",
-                "The selection subtask draws its options from the patient's own "
-                "DIFFERENTIAL_DIAGNOSIS list, so distractors are clinically plausible and are "
-                "never invented.",
+                "Draws the options from the patient's own DIFFERENTIAL_DIAGNOSIS list, so the "
+                "distractors are the clinician-plausible conditions the case itself raises and "
+                "are never invented.",
+                "Run as a single task -- an interview ending in a selection -- rather than as a "
+                "generation/selection pair. The paper's own baselines both interview the patient "
+                "and predict at the end of the interaction (Section 4.2), so a variant handed the "
+                "finished questionnaire would be a task the benchmark does not pose.",
             ],
             caveats=[
                 "NO AGENT PROMPT EXISTS TO ADOPT. DDXPlus is a dataset, not an agent "
@@ -457,6 +475,15 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "internally consistent in a way real cases are not.",
                 "Answers are a fixed questionnaire, so a diagnosis is often strongly determined; "
                 "high accuracy here does not transfer to open-ended clinical abduction.",
+                "THE METRIC IS NOT THE PAPER'S. The paper's baselines emit a ranked differential "
+                "over the whole condition set with no candidate list, scored by DDR/DDP/DDF1 plus "
+                "GTPA and GTPA@1; this adapter shows the model a shortlist built from the case's "
+                "differential and scores one choice as `accuracy`. That is a materially easier "
+                "task, and the closest published number to compare against is GTPA@1 (the "
+                "ground-truth pathology at the top of the predicted differential), not any of the "
+                "DD-based metrics.",
+                "The interview budget is this adapter's, not the release's: 20 turns with at most "
+                "15 questions, against the T = 30 the paper uses in all its experiments.",
             ],
             statistics={**self.base_statistics(), "subtask": self._subtask},
         )
