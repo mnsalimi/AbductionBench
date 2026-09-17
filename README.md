@@ -952,7 +952,7 @@ absence of a gold.** Two questions decide it:
   a listed topology, a closed predicate vocabulary, the symbols of an axiom
   system? Then the answer's surface form is fixed, a mechanical check asks a
   question with a right answer, and the dataset is **verifiable**. `climate_fever`,
-  `copa`, `causelogics` and the selection halves of `art` and `e-CARE` are
+  `b_copa`, `causelogics` and the selection halves of `art` and `e-CARE` are
   selection; `aiops2025` names an entity from the topology it was shown;
   `proof_writer` and `abductionrules` write a fact in the theory's own
   vocabulary. All mechanical, no judge.

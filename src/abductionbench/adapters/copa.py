@@ -1,4 +1,4 @@
-"""COPA and Balanced COPA: choose the more plausible cause of a premise.
+"""Balanced COPA: choose the more plausible cause of a premise.
 
 Source: https://huggingface.co/datasets/pkavumba/balanced-copa
         (original COPA: Roemmele et al. 2011; Balanced COPA: Kavumba et al. 2019)
@@ -10,16 +10,16 @@ the premise -- while the effect half is prediction in the other direction.
 Items with ``question == "effect"`` are dropped, which halves each split and is
 the same restriction the suite applies to XCOPA and e-CARE.
 
-**Two datasets, one release.**  The Hugging Face mirror carries both:
+**One dataset from this release.**  The Hugging Face mirror carries two splits;
+the suite uses one of them:
 
-``copa``    ``test.csv`` -- 500 original COPA items, no mirrored counterparts,
-            250 of them cause questions.
 ``b_copa``  ``train.csv`` -- 1,000 items, half original and half *mirrored*.
             A mirrored item keeps the premise and swaps which alternative is
             correct, so a model that has learned a surface cue between the two
             alternatives scores well on one and badly on its mirror. That is
-            the point of Balanced COPA, and it is why the two are reported
-            separately rather than pooled.
+            the point of Balanced COPA: a surface cue that works on an item
+            fails on its mirror, so the pair measures the cue rather than the
+            reasoning.
 
 **Scoring.**  Two alternatives, one correct, named by the release's ``label``
 column: accuracy, checked mechanically. No judge.
@@ -152,63 +152,6 @@ class _COPABase(PooledDatasetAdapter):
             # cues point the usual way.
             metrics["mirror_gap"] = original - mirrored
         return metrics
-
-
-class COPAAdapter(_COPABase):
-    """Original COPA, cause questions only."""
-
-    source_file = "test.csv"
-    includes_mirrored = False
-
-    def documentation(self) -> AdapterDocumentation:
-        return AdapterDocumentation(
-            dataset_id=self.dataset_id,
-            name="COPA",
-            domain="Commonsense: Causal Explanation",
-            source_url=f"https://huggingface.co/datasets/{REPO_ID}",
-            processing_mode="Selection",
-            split_used=getattr(self, "split_used", "test.csv"),
-            abductive_subset=(
-                "THE CAUSE QUESTIONS ONLY. Half of COPA asks what followed from the premise, "
-                "which is inference in the predictive direction; those rows are dropped on "
-                "the release's own `question` column. What remains asks which of two "
-                "alternatives more plausibly brought the premise about, which is selection "
-                "among candidate explanations."
-            ),
-            sampling_procedure=self.sampling_note(),
-            metrics_description={
-                "accuracy": (
-                    "(PRIMARY, higher is better, 0-1) 1.0 when the chosen alternative is the "
-                    "one the release marks correct. Two options, so chance is 0.5."
-                ),
-                "parse_failure_rate": (
-                    "(lower is better, 0-1) fraction of responses no option could be read "
-                    "from; these score 0 and are counted separately from being wrong."
-                ),
-                "self_consistency_<metric>":
-                "Every metric also gets a self_consistency_ counterpart: the plurality answer "
-                "over modes.repeats samples of the same record, read off those samples rather "
-                "than bought again. Available because this dataset's answers are checkable and "
-                "so can coincide.",
-            },
-            primary_metric="accuracy",
-            decisions=[
-                "Used the cause half only, filtered on the release's own question column.",
-                "Read test.csv, which carries the original items with no mirrored "
-                "counterparts; the balanced set is the separate b_copa dataset.",
-                "Presented the two alternatives in the release's own order, so no ordering "
-                "choice made here can favour either.",
-            ],
-            caveats=[
-                "Two options means a model that always guesses scores about 0.5; read "
-                "accuracy against that floor, not against zero.",
-                "COPA is old and widely reproduced, so it may sit in pretraining data.",
-            ],
-            statistics={
-                **self.base_statistics(),
-                "effect_questions_dropped": getattr(self, "dropped_effect", 0),
-            },
-        )
 
 
 class BalancedCOPAAdapter(_COPABase):
