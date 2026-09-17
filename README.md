@@ -1071,9 +1071,9 @@ python tools/dataset_catalogue.py                               # regenerate doc
 
 `docs/datasets.md` is the catalogue — **generated from the adapters themselves**
 (`python tools/dataset_catalogue.py`), so its numbers, splits and stated
-decisions cannot drift from the code. Current state: **44 datasets configured, all 44
-evaluable** — `researchbench` needs only `HF_TOKEN` from an account that has
-accepted its gate.
+decisions cannot drift from the code. Current state: **43 datasets configured, all 43
+evaluable** — including `researchbench`, whose gate an account has now accepted
+(see [ResearchBench: one manual step](#researchbench-one-manual-step)).
 
 Five of the interactive benchmarks run their real environment; see
 [Interactive and sequential benchmarks](#interactive-and-sequential-benchmarks).
@@ -1162,6 +1162,11 @@ abench run configs/runs/full.yaml -d researchbench
 
 Until then the adapter reports itself skipped with that URL and the account name
 in the reason, rather than failing obscurely. Nothing else needs changing.
+
+On this instance that step is done: the token lives in `/workspace/.env`, which
+is outside the repository and is sourced by login shells and supervisor services,
+and in the `huggingface_hub` credential store, which the adapter falls back to
+when `HF_TOKEN` is not exported. Neither is in git, and neither should be.
 
 **Verified working** once an account has accepted: the gate check passes, the
 release's 20 files are readable, and all four tasks plan (io/cot x
