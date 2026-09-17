@@ -16,13 +16,15 @@ to a final diagnosis.  The environment answers only from that case's structured
 findings, so a request for something the case does not record is answered as not
 available rather than invented.
 
-The system prompt, the action vocabulary, the error message and the per-category
-limits are the release's own (``vivabench/prompts/examiner.py`` and
-``vivabench/examiner.py``, downloaded with the dataset), not written here.  What
-is not the release's is the *mapper*: VivaBench resolves a free-text request to a
-finding with an LLM, which would put a second model inside the evaluation of the
-first.  This adapter matches lexically instead -- deterministic, reproducible,
-and visible in the transcript when it misses.
+**The protocol prompt is this suite's, adapted rather than quoted.**  The six actions, the workflow order, the gate that closes the patient once the work-up begins, the per-category limits (read from the release's own ``configs/evaluate.yaml``) and the diagnosis payload shape are the release's and are reproduced in substance, because they are the benchmark.  Its *reasoning elicitation* is not: the ``"reasoning"`` field of its JSON contract, and its "include a short line of reasoning for your action", are dropped -- including from the parse-error message, which restated the schema and would otherwise have reintroduced the field on a retry.  This dataset runs ``io`` only (``io_only``), and an instruction to explain a choice would contradict the mode instruction sitting in the same prompt -- and, here, the parser as well.  The wording is therefore this harness's, in the same five layers every static prompt uses.
+
+The examiner's own replies -- the closed-patient notice, the limit notices, the
+provisional acknowledgement and the out-of-time warning -- are kept verbatim:
+they carry no reasoning request, and the wording is what tells the agent a door
+has closed.  What is also not the release's is the *mapper*: VivaBench resolves a
+free-text request to a finding with an LLM, which would put a second model inside
+the evaluation of the first.  This adapter matches lexically instead --
+deterministic, reproducible, and visible in the transcript when it misses.
 
 **What the model is shown is the release's own case stem**, not the release's
 ``vignette`` column.  ``vivabench/examiner.py`` builds the examinee's opening
@@ -49,7 +51,6 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ from ..core.types import (
 from . import _common as C
 from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 from ._interactive import EvidenceStore, InteractiveMixin, flatten, parse_action
+from ._prompting import ProtocolParts, build_protocol_messages
 
 REPO_ID = "chychiu/VivaBench"
 
@@ -146,9 +148,12 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: what it measures is which findings the model went looking for. Run as a
     #: one-shot it measures something else entirely.
     data_delivery_mode = "interactive"
-    #: The prompt below is the release's own, so there is one prompt set
-    #: and one prompt mode (see DatasetAdapter.authors_prompt).
-    authors_prompt = True
+    #: The protocol prompt below is this suite's, adapted from the release's
+    #: workflow rather than quoted from it, so this is False. It still runs one
+    #: prompt mode, for the reason io_only states: every turn has to be one
+    #: JSON action the examiner can execute.
+    authors_prompt = False
+    io_only = True
     #: The committed diagnosis is free text against a list of accepted
     #: diagnoses, so the judge scores it; there is no candidate list to check
     #: a label against.
@@ -293,21 +298,15 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "imaging": ("imaging",),
     }
 
-    def _release_prompts(self) -> dict[str, str]:
-        """The benchmark's own prompt text, read from the files it ships."""
-        if getattr(self, "_prompt_cache", None):
-            return self._prompt_cache
-        cache: dict[str, str] = {}
-        root = self.context.data_dir / "hf"
-        path = root / "vivabench" / "prompts" / "examiner.py"
-        if path.exists():
-            source = path.read_text(encoding="utf-8", errors="replace")
-            for name in ("ASSISTANT_BASE_PROMPT", "ERROR_RETURN_MSG"):
-                match = re.search(rf'{name}\s*=\s*"""(.*?)"""', source, re.S)
-                if match:
-                    cache[name] = match.group(1).strip()
-        self._prompt_cache = cache
-        return cache
+    #: What the examiner says to a turn it cannot read. The release's own
+    #: ERROR_RETURN_MSG restates its JSON schema *including* the reasoning
+    #: field; this one restates the schema this adapter actually asks for, so
+    #: the retry cannot reintroduce the field the opening removed.
+    _PARSE_ERROR_MSG = (
+        "That could not be read as an action. Reply with one JSON object and nothing "
+        'else: {"action": "<one of the allowed actions>", "query": "<your request>"}.\n'
+        "Your previous message:"
+    )
 
     def _evidence(self, item: dict[str, Any]) -> EvidenceStore:
         payload = self._case_json(item)
@@ -360,16 +359,78 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         lines.append("Please review and diagnose the patient.")
         return "\n".join(lines)
 
-    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
-        """Open the viva exactly as ``Examination.__init__`` does.
+    #: The release's action vocabulary with the release's own descriptions of
+    #: what each one is for, reworded into this suite's voice. The clinical
+    #: content is the benchmark's -- which bedside tests count as
+    #: investigations rather than imaging is a property of VivaBench, not a
+    #: stylistic choice -- and the examiner routes on exactly these names.
+    _ACTION_HELP = (
+        ("history", "interview the patient. One or two questions at a time; assume average "
+                    "medical literacy."),
+        ("examination", "perform a physical examination. Name the examination and the sign "
+                        "you are looking for."),
+        ("diagnosis_provisional", "give your provisional diagnosis, after reviewing the "
+                                  "patient and before any investigation or imaging."),
+        ("investigation", "order a test that is not imaging -- laboratory tests (name the "
+                          "specimen type if it is not serological), bedside tests such as "
+                          "ECG, and special tests such as EEG or pulmonary function tests."),
+        ("imaging", "order imaging performed by a radiologist, radiographer or nuclear "
+                    "medicine physician -- x-ray, ultrasound, CT, MRI, PET, VQ. Name both "
+                    "the modality and the anatomical region."),
+        ("diagnosis_final", "give your final diagnosis. This ends the consultation."),
+    )
 
-        System message is the release's ``ASSISTANT_BASE_PROMPT`` -- which is
-        where the workflow constraints, the action vocabulary and the required
-        JSON shape are all defined -- followed by the case stem as the first
-        human turn.
+    #: The diagnosis payload the scorer reads: a list whose first entry is the
+    #: model's own top-ranked condition. Kept exactly as the release defines it,
+    #: because `_committed_diagnosis` and the primary metric both depend on it.
+    _DIAGNOSIS_SHAPE = (
+        '[{"condition": "<name>", "icd_10_name": "<ICD-10 name>", '
+        '"icd_10": "<ICD-10 code>", "confidence": <0.0-1.0>}]'
+    )
+
+    def _protocol(self, sample: SampleSpec, payload: dict[str, Any]) -> ProtocolParts:
+        """This suite's opening prompt for one viva, in the shared five layers."""
+        return ProtocolParts(
+            system=self.system_prompt,
+            observation=self._stem(payload),
+            instructions=(
+                "Work this patient up and reach the diagnosis that accounts for their "
+                "presentation. You decide what to ask, what to examine and what to order."
+            ),
+            requirements=[
+                "take a history and examine the patient before ordering any test or imaging",
+                "give a provisional diagnosis after reviewing the patient and before "
+                "ordering any investigation or imaging",
+                "once you order an investigation or imaging, the patient is no longer "
+                "available for history or examination",
+                "perform exactly one action per turn",
+                "a diagnosis may list up to five conditions, each with its ICD-10 name and "
+                "code and a confidence between 0.0 and 1.0; list the one you consider most "
+                "likely first",
+                "the confidences do not have to sum to 1.0",
+                "give the final diagnosis once the evidence supports one",
+            ],
+            actions=list(self._ACTION_HELP),
+            output_format=(
+                "Reply with one JSON object and nothing else -- no markdown, no code fence, "
+                "no text outside the object:\n"
+                '{"action": "<one of the actions above>", "query": "<your request>"}\n'
+                "For either diagnosis action, the query is a list instead:\n"
+                f"{self._DIAGNOSIS_SHAPE}"
+            ),
+        )
+
+    def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
+        """Open the viva on this suite's own protocol prompt.
+
+        Everything the environment enforces is carried over from the release's
+        ``ASSISTANT_BASE_PROMPT``: the six actions, the order they have to come
+        in, the gate that closes the patient once the work-up starts, and the
+        shape of a diagnosis. What is not carried over is its reasoning
+        elicitation -- the ``"reasoning"`` JSON field and "include a short line
+        of reasoning for your action" -- because this task runs io only and
+        those would contradict the mode instruction in the same prompt.
         """
-        prompts = self._release_prompts()
-        system = prompts.get("ASSISTANT_BASE_PROMPT") or self.system_prompt
         payload = sample.metadata.get("_case") or {}
         state: dict[str, Any] = {
             "evidence": self._evidence({"clinicalcase": json.dumps(payload)}),
@@ -383,13 +444,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             "final": None,
             "provisional": None,
         }
-        return (
-            [
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=self._stem(payload)),
-            ],
-            state,
-        )
+        return build_protocol_messages(self._protocol(sample, payload), self.context.modes), state
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
@@ -412,10 +467,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             state["retries"] = state.get("retries", 0) + 1
             if state["retries"] > self._RETRY_LIMIT:
                 return None
-            error = self._release_prompts().get(
-                "ERROR_RETURN_MSG", "Unable to parse your response."
-            )
-            return f"{error}{assistant_text[:400]}"
+            return f"{self._PARSE_ERROR_MSG}{assistant_text[:400]}"
         state["retries"] = 0
 
         category = action.action
@@ -655,14 +707,18 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "version of this adapter ran it as static selection over the case's own "
                 "differentials -- a task the release never poses, and a much easier one, "
                 "since it replaces 'work out what to ask' with 'pick from five'.",
-                "The agent's system prompt is the release's own ASSISTANT_BASE_PROMPT, read "
-                "from vivabench/prompts/examiner.py in the snapshot rather than transcribed; "
-                "it is where the workflow constraints, the action vocabulary and the required "
-                "JSON response shape are defined.",
-                "The examiner's replies are the release's own strings -- the closed-patient "
-                "notice, the per-category limit notices, the provisional acknowledgement and "
-                "the out-of-time warning -- because the wording is what tells the agent a door "
-                "has closed.",
+                "THE PROTOCOL PROMPT IS LOCALLY ADAPTED, NOT THE AUTHORS'. The six actions, "
+                "the workflow order, the gate, the limits and the diagnosis payload shape come "
+                "from the release's ASSISTANT_BASE_PROMPT and are reproduced in substance; the "
+                "wording is this suite's, in its standard prompt layers. The release's "
+                "`reasoning` JSON field and its request for a line of reasoning per action are "
+                "dropped, here and in the parse-error retry, because this task runs io only.",
+                "The examiner's replies are still the release's own strings -- the "
+                "closed-patient notice, the per-category limit notices, the provisional "
+                "acknowledgement and the out-of-time warning -- because the wording is what "
+                "tells the agent a door has closed, and none of them asks for reasoning. The "
+                "one replaced is ERROR_RETURN_MSG, which restated the JSON schema including "
+                "its reasoning field.",
                 "The workflow gate is the release's: the first investigation, imaging or "
                 "provisional diagnosis sets `reviewed_patient`, after which history and "
                 "examination are refused.",

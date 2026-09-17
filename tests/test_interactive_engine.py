@@ -292,8 +292,14 @@ def test_vivabench_runs_the_releases_examiner_protocol():
     Every assertion here is a line of vivabench/examiner.py: the
     reviewed-patient gate that closes history once the work-up starts, the
     per-category limit notices, the provisional acknowledgement, and the fact
-    that a diagnosis_final ends the episode. The strings are the release's
-    because the wording is what tells the agent a door has shut.
+    that a diagnosis_final ends the episode. The examiner's strings are still
+    the release's because the wording is what tells the agent a door has shut.
+
+    The *prompt* is no longer the release's -- it was localised into this
+    suite's layers so the task could run io-only -- so what is checked here is
+    that localising it left the environment untouched. The turns below still
+    send the release's `reasoning` key, which the prompt no longer asks for: a
+    model that emits one anyway must still parse.
     """
     import json
 
@@ -301,10 +307,13 @@ def test_vivabench_runs_the_releases_examiner_protocol():
     sample = adapter.build_samples()[0]
     messages, state = adapter.interactive_start(sample)
 
-    # Opens with the release's agent prompt and its case stem.
-    assert "primary care medical AI assistant" in messages[0].content
-    assert messages[1].content.startswith("Clinical case stem:")
-    assert messages[1].content.rstrip().endswith("Please review and diagnose the patient.")
+    # Opens with this suite's protocol prompt, carrying the release's stem.
+    assert "abductive reasoning" in messages[0].content
+    assert "Clinical case stem:" in messages[1].content
+    assert "Please review and diagnose the patient." in messages[1].content
+    # The action vocabulary the examiner routes on is all present.
+    for action in adapter.ACTIONS:
+        assert action in messages[1].content
 
     def act(action, query="something"):
         return adapter.interactive_step(

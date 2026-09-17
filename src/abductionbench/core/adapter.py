@@ -184,6 +184,25 @@ class DatasetAdapter(ABC):
     #: the answers, but no prompt to frame the interview with).
     authors_prompt: bool = False
 
+    #: Whether this dataset admits the ``io`` prompt mode alone, for a reason
+    #: that is not "we quote the authors".
+    #:
+    #: An interactive benchmark is a protocol: every turn has to be a single
+    #: machine-readable action that the environment can execute, and the last
+    #: one has to be a submission the scorer can read.  A reasoning instruction
+    #: contradicts that directly -- "work through the evidence step by step"
+    #: against "return one JSON object and nothing else" is the same collision
+    #: this suite removed from the static prompts, and here it would also break
+    #: the parser rather than merely muddle the wording.
+    #:
+    #: Distinct from :attr:`authors_prompt`, which is a statement about
+    #: *provenance*.  A dataset whose interactive prompt this harness wrote --
+    #: which, after the protocol prompts were localised, is all of them -- sets
+    #: ``authors_prompt = False`` and ``io_only = True``: the wording is ours,
+    #: and there is still exactly one prompt mode, because the protocol admits
+    #: one.
+    io_only: bool = False
+
     #: Whether this dataset's metrics are objectively verifiable -- scorable
     #: statistically without an LLM judge.  Only these datasets offer the
     #: ``cot`` and ``self-consistency`` prompt modes, because a reasoning mode
@@ -467,6 +486,15 @@ class DatasetAdapter(ABC):
         # self-consistency stays restricted to datasets with a checkable
         # answer; the judged ones report Best-of-N over the same repeats
         # instead (see EvaluationEngine._best_of_n_metrics).
+        if cls.io_only and modes.prompt_mode != IO:
+            # One action per turn, in a shape the environment parses. There is
+            # no room for a reasoning mode that does not contradict it.
+            return (
+                "this benchmark is a turn-by-turn protocol: every turn must be a single "
+                "machine-readable action and the last must be a submission the scorer can "
+                "read, so a reasoning instruction would contradict the output contract and "
+                f"break the environment. It runs as {IO} only"
+            )
         if cls.authors_prompt and modes.prompt_mode != IO:
             # One prompt set means one task. IO is the label it runs under
             # because something has to go in the column; what it means for these

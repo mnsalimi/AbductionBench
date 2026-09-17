@@ -9,9 +9,9 @@ diagnoses with the correct letter.
 
 **What is abductive here.** Naming the diagnosis that best explains the findings.
 EvoClinician's own harness wraps this in an interactive inquiry loop where an
-agent asks for information before committing; the single-turn adaptation gives
-the model the case evidence and asks for the diagnosis, which is the abductive
-core of that loop.
+agent asks for information before committing, and that loop is what runs here:
+the model asks the patient, orders examinations and tests, and commits, with the
+environment answering only from the case's recorded work-up.
 
 Because the table asks for **generation**, the default asks the model to name the
 diagnosis in free text and scores it against ``final_diagnosis`` (with the
@@ -19,6 +19,14 @@ provided options ignored).  ``options.subtask = selection`` uses the four
 candidate diagnoses instead, and ``options.evidence`` controls how much of the
 work-up is revealed -- the case narrative alone is a much harder abduction than
 narrative + examination + tests.
+
+**The protocol prompt is this suite's, adapted rather than quoted.**  The
+Actor's three actions and their JSON shape, the budgets, the cost-awareness and
+differential-driven task rules, and the instruction to commit once the evidence
+supports a diagnosis are the release's and are reproduced in substance.  Its
+request that the actor *explain the decision value* of each proposed test is
+not: this dataset runs ``io`` only, and asking for an explanation would
+contradict the mode instruction in the same prompt.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from ._base import (
     selection_score,
 )
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
+from ._prompting import ProtocolParts, build_protocol_messages
 
 
 def _sentences(text: str, prefix: str = "") -> dict[str, str]:
@@ -79,9 +88,11 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         "the presenting picture you can see."
     )
     data_delivery_mode = "interactive"
-    #: The prompt below is the release's own, so there is one prompt set
-    #: and one prompt mode (see DatasetAdapter.authors_prompt).
-    authors_prompt = True
+    #: The protocol prompt below is this suite's, adapted from the release's
+    #: Actor rather than quoted from it, so this is False. One prompt mode
+    #: still, for the reason io_only states.
+    authors_prompt = False
+    io_only = True
     #: The generation subtask -- the only one run -- asks for a disease name with
     #: no candidate list, so a correct answer routinely differs from the gold in
     #: wording and only the judge can score it. prepare() flips this back to True
@@ -164,27 +175,14 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
     max_turns = 12
     category_limits = {"askquestion": 8, "ordertest": 6}
 
-    def _release_actor_prompt(self) -> str:
-        """The Actor system prompt as published, read from the cloned repo."""
-        if getattr(self, "_actor_prompt", None):
-            return self._actor_prompt
-        path = self.context.data_dir / "repo" / "evoclinician" / "agents" / "actor.py"
-        prompt = ""
-        if path.exists():
-            source = path.read_text(encoding="utf-8", errors="replace")
-            match = re.search(r"base_prompt: str = \(\n(.*?)\n    \)", source, re.S)
-            if match:
-                # The prompt is a run of adjacent string literals; evaluate just
-                # that expression so the text is the release's, character for
-                # character, rather than a transcription of it.
-                try:
-                    prompt = eval(  # noqa: S307 - a literal from a file we cloned
-                        "(" + match.group(1) + ")", {"__builtins__": {}}, {}
-                    )
-                except Exception:  # noqa: BLE001 - fall back to our own wording
-                    prompt = ""
-        self._actor_prompt = prompt or self.system_prompt
-        return self._actor_prompt
+    #: The release's action vocabulary, written out as the Actor's own three
+    #: choices. The names are the release's (``evoclinician/med_inquire/types.py``)
+    #: because the environment routes on them.
+    _ACTION_HELP = (
+        ("AskQuestion", "ask the patient one question about their history or symptoms."),
+        ("OrderTest", "order one physical examination or diagnostic test. Name it exactly."),
+        ("SubmitDiagnosis", "commit to the diagnosis. This ends the consultation."),
+    )
 
     def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
         case = sample.metadata.get("_case") or {}
@@ -197,17 +195,41 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             **_sentences(case.get("physical_examination", ""), prefix="exam"),
             **_sentences(case.get("diagnostic_tests", ""), prefix="test"),
         }
-        opening = (
-            "A new patient has presented. You have not yet taken a history.\n\n"
-            f"Opening statement from the patient: {sample.fields.get('observation', '')[:600]}"
-        )
-        return (
-            [
-                ChatMessage(role="system", content=self._release_actor_prompt()),
-                ChatMessage(role="user", content=opening),
+        parts = ProtocolParts(
+            system=self.system_prompt,
+            context="A new patient has presented. You have not yet taken a history.",
+            observation=(
+                "Opening statement from the patient: "
+                f"{sample.fields.get('observation', '')[:600]}"
+            ),
+            instructions=(
+                "Work out what is wrong with this patient. Ask the patient what you need to "
+                "know, order the examinations and tests that would settle it, and commit to "
+                "a diagnosis."
+            ),
+            requirements=[
+                "take exactly one action per turn",
+                "keep a short differential in mind and act on what would separate its "
+                "entries",
+                "when several actions would help, prefer the one that is quick and "
+                "inexpensive -- time and resources are part of the task",
+                "rule out the conditions that would be dangerous to miss before the "
+                "unlikely ones",
+                f"you may ask at most {self.category_limits['askquestion']} questions and "
+                f"order at most {self.category_limits['ordertest']} tests",
+                "submit the diagnosis as soon as the evidence supports one",
             ],
-            {"evidence": store, "counts": {}},
+            actions=list(self._ACTION_HELP),
+            output_format=(
+                "Reply with one JSON object and nothing else:\n"
+                '{"action_type": "AskQuestion" | "OrderTest" | "SubmitDiagnosis", '
+                '"action_text": "<your question, test, or diagnosis>"}'
+            ),
         )
+        return build_protocol_messages(parts, self.context.modes), {
+            "evidence": store,
+            "counts": {},
+        }
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
@@ -365,6 +387,12 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             },
             primary_metric="accuracy" if self._subtask == "selection" else "diagnosis_judged",
             decisions=[
+                "THE PROTOCOL PROMPT IS LOCALLY ADAPTED, NOT THE AUTHORS'. The Actor's three "
+                "actions and their JSON shape, the budgets, the cost-awareness and "
+                "differential-driven task rules and the stopping condition come from the "
+                "release and are reproduced in substance; the wording is this suite's. Its "
+                "request that the actor explain the decision value of each proposed test is "
+                "dropped, because this task runs io only.",
                 "Default is free-text generation, matching this dataset's processing mode; the "
                 "four provided candidates are only used with options.subtask = selection.",
                 "Scored by an LLM judge rather than by string comparison: the model names a "

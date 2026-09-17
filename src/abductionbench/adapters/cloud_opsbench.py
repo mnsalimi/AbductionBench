@@ -22,8 +22,7 @@ choose which slice to look at is both the benchmark's task and the thing that
 makes it tractable.  ``options.delivery = static`` keeps the old bounded-slice
 form for comparison.
 
-The system prompt and the tool vocabulary are the release's own
-(``cloudops_agent/prompts/RCA_candidate.py``), read from the cloned repository.
+**The protocol prompt is this suite's, adapted rather than quoted.**  The tool vocabulary, the ``Action`` / ``Action Input`` syntax, the single-fault constraint, the evidence rule ("do not conclude from an assumed cluster state") and the pivot rule are the release's and are reproduced in substance, because they are the benchmark.  Its *reasoning elicitation* is not: the release's ``Thought:`` line, its "provide a clear reasoning chain" instruction and its "limit your internal reasoning to a few concise sentences" are all dropped.  This dataset runs ``io`` only (``io_only``), and an instruction to explain a choice would contradict the mode instruction sitting in the same prompt -- and, here, the parser as well.  The wording is therefore this harness's, in the same five layers every static prompt uses.
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ from ..core.types import (
 from . import _common as C
 from ._base import PooledDatasetAdapter, apply_judged_metric, unparsed_score
 from ._interactive import InteractiveMixin
+from ._prompting import ProtocolParts, build_protocol_messages
 
 REPO_URL = "https://github.com/LLM4Ops/Cloud-OpsBench"
 #: Tool-cache keys are of the form ``ToolName:{json args}``; these come first
@@ -115,9 +115,11 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "symptom."
     )
     data_delivery_mode = "interactive"
-    #: The prompt below is the release's own, so there is one prompt set
-    #: and one prompt mode (see DatasetAdapter.authors_prompt).
-    authors_prompt = True
+    #: The protocol prompt below is this suite's, adapted from the release's
+    #: agent prompt rather than quoted from it, so this is False. One prompt
+    #: mode still, for the reason io_only states.
+    authors_prompt = False
+    io_only = True
     #: Measured, not assumed: the root cause is a short technical label the model
     #: writes itself -- no candidate list is shown, and the release's own golds
     #: ("missing_service_account", "cpu_throttling") are one naming convention
@@ -136,22 +138,6 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     max_turns = 15
     category_limits = {"tool": 12}
 
-    def _release_prompt(self) -> str:
-        """The published agent prompt, read from the cloned repository."""
-        if getattr(self, "_agent_prompt", None):
-            return self._agent_prompt
-        path = (
-            self.context.data_dir / "repo" / "cloudops_agent" / "prompts" / "RCA_candidate.py"
-        )
-        prompt = ""
-        if path.exists():
-            source = path.read_text(encoding="utf-8", errors="replace")
-            match = re.search(r'agent_prompt = """(.*?)"""', source, re.S)
-            if match:
-                prompt = match.group(1).strip()
-        self._agent_prompt = prompt or self.system_prompt
-        return self._agent_prompt
-
     @staticmethod
     def _tool_signature(key: str) -> tuple[str, str]:
         name, _, arguments = key.partition(":")
@@ -160,22 +146,44 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
         cache = sample.metadata.get("_tool_cache") or {}
         tools = sorted({self._tool_signature(key)[0] for key in cache if ":" in key})
-        opening = (
-            f"Reported symptom: {sample.metadata.get('query', '')}\n"
-            f"Namespace: {sample.metadata.get('namespace', '')}\n\n"
-            "Available tools: " + ", ".join(tools) + "\n\n"
-            "Issue one tool call per turn, in exactly this form:\n"
-            "Action: <ToolName>\n"
-            'Action Input: {"key": "value"}\n\n'
-            "When you have the evidence you need, finalise instead:\n"
-            "Action: Finalize\n"
-            "Action Input: {\"root_cause\": \"...\", \"fault_object\": \"kind/name\"}"
+        parts = ProtocolParts(
+            system=self.system_prompt,
+            context=(
+                f"Reported symptom: {sample.metadata.get('query', '')}\n"
+                f"Namespace: {sample.metadata.get('namespace', '')}"
+            ),
+            observation="Diagnostic tools available on this cluster: " + ", ".join(tools),
+            instructions=(
+                "Find the root cause of this incident. You choose which tools to run and in "
+                "what order, then finalise with the fault you have established."
+            ),
+            requirements=[
+                "this scenario contains exactly one primary fault",
+                "issue exactly one tool call per turn",
+                "your conclusion must be supported by output a tool actually returned, not "
+                "by an assumed cluster state",
+                "if a tool returns no anomaly, drop that hypothesis and investigate a "
+                "different path",
+                "reach the fault in as few tool calls as you can",
+                f"you may make at most {self.category_limits['tool']} tool calls",
+                "finalise as soon as the evidence establishes the fault",
+            ],
+            actions=[
+                ("<ToolName>", "run one of the diagnostic tools listed above."),
+                ("Finalize", "submit the root cause. This ends the investigation."),
+            ],
+            output_format=(
+                "Reply in exactly this form and nothing else:\n"
+                "Action: <ToolName>\n"
+                'Action Input: {"key": "value"}\n'
+                "Action Input is mandatory; use {} for a tool that takes no parameters.\n\n"
+                "To finalise:\n"
+                "Action: Finalize\n"
+                'Action Input: {"root_cause": "<the fault>", "fault_object": "kind/name"}'
+            ),
         )
         return (
-            [
-                ChatMessage(role="system", content=self._release_prompt()),
-                ChatMessage(role="user", content=opening),
-            ],
+            build_protocol_messages(parts, self.context.modes),
             {"cache": cache, "counts": {}, "calls": []},
         )
 
@@ -437,6 +445,14 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             },
             primary_metric="root_cause_judged",
             decisions=[
+                "THE PROTOCOL PROMPT IS LOCALLY ADAPTED, NOT THE AUTHORS'. The tool "
+                "vocabulary, the Action/Action Input syntax, the one-primary-fault "
+                "constraint, the evidence rule and the pivot rule come from the release's "
+                "agent prompt and are reproduced in substance; the wording is this suite's, "
+                "in its standard prompt layers. The release's Thought: line, its 'provide a "
+                "clear reasoning chain' instruction and its 'limit your internal reasoning' "
+                "clause are dropped, because this task runs io only and they would "
+                "contradict the mode instruction in the same prompt.",
                 "Included at most 6 cached tool outputs per case, each clipped to 220 words "
                 "(configurable): the full tool cache is ~300 KB and the raw logs tens of MB, both "
                 "far over the 16k-token input budget. How much was included is recorded per sample.",

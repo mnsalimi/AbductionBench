@@ -49,7 +49,10 @@ from typing import Any
 from ..core.modes import BOV, COT, IO, MCS, SCS, SELF_CONSISTENCY, TaskModes
 from ..core.types import ChatMessage
 
-__all__ = ["PromptParts", "build_messages", "mode_instruction", "option_labels_for", "letters"]
+__all__ = [
+    "PromptParts", "build_messages", "mode_instruction", "option_labels_for", "letters",
+    "ProtocolParts", "build_protocol_messages", "requirements_block",
+]
 
 #: The answer marker every scorer looks for.  One marker across the suite means
 #: a dataset's scorer keeps working when its prompt mode changes.
@@ -364,3 +367,112 @@ def build_messages(
         messages.append(ChatMessage(role="system", content=system))
     messages.append(ChatMessage(role="user", content="\n\n".join(b for b in body if b).strip()))
     return messages, contract
+
+
+# --------------------------------------------------------------------------- #
+# interactive protocols -- the same five layers, for a benchmark that is a loop
+# --------------------------------------------------------------------------- #
+
+#: Heading for the action vocabulary.  It sits where a static prompt puts its
+#: candidate list: after the task, before the mode instruction, because what the
+#: model may *do* is part of the task rather than part of how it answers.
+_ACTIONS_HEADING = "Available actions:"
+
+
+@dataclass(slots=True)
+class ProtocolParts:
+    """The dataset-owned content of one interactive benchmark's opening turn.
+
+    The static builder above assembles a question; this one assembles a
+    *protocol*, and it keeps the same five layers in the same order so that an
+    interactive prompt reads like the rest of the suite and can be audited the
+    same way:
+
+    1. :attr:`system` -- what this benchmark's task is, in its own terms;
+    2. :attr:`context` / :attr:`observation` -- the case, the incident, the stem;
+    3. ``Task:`` and ``Requirements:`` -- what the benchmark demands, including
+       its workflow gates and stopping conditions, stated once;
+    4. the mode instruction -- the *only* line that says whether to reason, and
+       it is the shared one, unmodified;
+    5. the closing -- :attr:`actions` and :attr:`output_format`, the exact shape
+       the environment's parser reads.
+
+    What deliberately has no home here is a reasoning field, a "thought" line or
+    a request to explain a choice.  Those are the upstream projects' *reasoning
+    elicitation*, not their task definition, and carrying them over would put
+    "explain your reasoning" and "Answer directly. Do not explain your
+    reasoning." into the same prompt -- the exact contradiction this module
+    exists to prevent.  The action vocabulary, the evidence rules, the gates,
+    the limits and the submission shape are the benchmark and are all kept.
+    """
+
+    #: The system instruction: this benchmark's task, in this suite's voice.
+    system: str
+    #: The case, incident or stem the episode opens on.
+    observation: str = ""
+    #: Background shown before the observation.
+    context: str = ""
+    #: What the benchmark asks for, as a ``Task:`` line.
+    instructions: str = ""
+    #: The benchmark's own demands: workflow gates, budgets, stopping
+    #: conditions.  Rendered as a ``Requirements:`` list, one clause each.
+    requirements: list[str] = field(default_factory=list)
+    #: ``(name, what it does)`` for every action the environment accepts, in the
+    #: order the benchmark lists them.
+    actions: list[tuple[str, str]] = field(default_factory=list)
+    #: The exact output shape the environment parses -- the closing. This is a
+    #: format, never an instruction to reason.
+    output_format: str = ""
+
+
+def requirements_block(requirements: list[str]) -> str:
+    """The ``Requirements:`` block, for a turn this module does not assemble.
+
+    An interactive benchmark restates its rules on later turns; rendering them
+    through the same function as the opening is what keeps a mid-episode
+    message in the same shape as the prompt that started it.
+    """
+    return _requirements_block(requirements)
+
+
+def _actions_block(actions: list[tuple[str, str]]) -> str:
+    if not actions:
+        return ""
+    lines = [f"- {name}: {what}" for name, what in actions]
+    return _ACTIONS_HEADING + "\n" + "\n".join(lines)
+
+
+def build_protocol_messages(
+    parts: ProtocolParts, modes: TaskModes
+) -> list[ChatMessage]:
+    """The opening conversation for an interactive benchmark.
+
+    Returns messages only: an interactive adapter owns its own state, and the
+    answer contract for these benchmarks is the protocol itself rather than an
+    ``Answer:`` marker.
+    """
+    body: list[str] = []
+    if parts.context:
+        body.append(f"Background:\n{parts.context}")
+    if parts.observation:
+        body.append(f"Observation:\n{parts.observation}")
+    if parts.instructions:
+        body.append(f"Task: {parts.instructions}")
+    requirements = _requirements_block(parts.requirements)
+    if requirements:
+        body.append(requirements)
+    actions = _actions_block(parts.actions)
+    if actions:
+        body.append(actions)
+    # The one line in the prompt that talks about reasoning, and it is the
+    # suite's own -- unchanged here, exactly as a static prompt gets it.
+    body.append(mode_instruction(modes))
+    if parts.output_format:
+        body.append(parts.output_format)
+
+    messages: list[ChatMessage] = []
+    system = (parts.system or "").strip()
+    if system:
+        messages.append(ChatMessage(role="system", content=system))
+    messages.append(ChatMessage(role="user", content="\n\n".join(b for b in body if b).strip()))
+    return messages

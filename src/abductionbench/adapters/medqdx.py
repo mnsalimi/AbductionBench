@@ -7,10 +7,24 @@ at three levels of information completeness (100%, 80%, 50% of the disease's
 symptoms) and, in its own benchmark, has an LLM "doctor" interrogate an LLM
 "patient" for three rounds before diagnosing.
 
-**How it is adapted.** The multi-turn interrogation cannot be reproduced in a
-single-turn harness, but the part that makes MedQDx abductive is the diagnosis
-itself: infer the disease that best explains an incomplete symptom picture.  Two
-modes are provided:
+**How it is run.** The interrogation *is* the benchmark and is executed as one:
+the model asks the patient one question a turn from an incomplete vignette, the
+patient answers from the case's recorded symptoms, and once the question budget
+is spent the model is asked for the diagnosis.
+
+**The interview prompt is this suite's, adapted rather than quoted.**  The
+protocol is the release's and is reproduced in substance -- one question per
+turn, each a single line ending in '?', specific to the case, no diagnosis or
+treatment inside a question, every new question worded differently from the
+last, a broader question after an "I'm not sure", and a single condition name at
+the end.  What is not reproduced is the notebook's completion-style scaffolding
+(``### User:`` / ``### Assistant:``), which exists because its harness makes one
+completion call per turn and keeps no conversation, and its repeated "Do not
+include any explanations, reasoning, or additional text" -- that rule agrees
+with ``io``, but this suite says it once, in the mode instruction, and a prompt
+that says it twice is the duplication the prompt architecture exists to stop.
+
+Two sampling modes are provided:
 
 * ``information_levels`` (default) -- each of the 100 vignettes is evaluated at
   all three completeness levels, giving exactly 300 samples and a built-in
@@ -43,6 +57,12 @@ from ..core.types import (
 from . import _common as C
 from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
 from ._interactive import EvidenceStore, InteractiveMixin
+from ._prompting import (
+    ProtocolParts,
+    build_protocol_messages,
+    mode_instruction,
+    requirements_block,
+)
 
 REPO_URL = "https://github.com/MaiWert/MedQDx"
 LEVELS = ("100% Case", "80% Case", "50% Case")
@@ -60,9 +80,11 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         "actually present."
     )
     data_delivery_mode = "interactive"
-    #: The prompt below is the release's own, so there is one prompt set
-    #: and one prompt mode (see DatasetAdapter.authors_prompt).
-    authors_prompt = True
+    #: The interview prompt below is this suite's, adapted from the release's
+    #: notebook rather than quoted from it, so this is False. One prompt mode
+    #: still, for the reason io_only states.
+    authors_prompt = False
+    io_only = True
     #: No candidate list is shown -- the release asks for an open diagnosis
     #: ("Output ONLY the name of the disease or condition using correct medical
     #: term"), so the answer is written into an open vocabulary and a correct
@@ -117,74 +139,51 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     max_turns = 12
     category_limits = {"ask": 8}
 
-    #: MedQDx's own prompts, verbatim from the release's benchmark-creation
-    #: notebook (``Benchmark Creation/MedQDx_Benchmark_Creation.ipynb``). The
-    #: benchmark is a diagnostic interview and these three strings are the
-    #: protocol: one question a turn, then a single diagnosis. They are quoted
-    #: rather than restated because this is an interactive benchmark -- the
-    #: wording is part of what is measured.
-    AUTHORS_SYSTEM = "You are a medical doctor."
-
-    AUTHORS_FIRST_QUESTION = (
-        "You are a medical doctor conducting a diagnostic interview with a patient.\n"
-        "You have received partial information about the case.\n"
-        "Your goal is to ask exactly **ONE** relevant, case-specific question that will "
-        "enable a more precise diagnosis.\n\n"
-        "Rules:\n"
-        "- Output exactly one question as a single, complete sentence.\n"
-        "- The question must be a single line, ending in \u2018?\u2019\n"
-        "- The question must be specific to the case.\n"
-        "- Do not include any explanations, reasoning, or additional text.\n"
-        "- Do not provide a diagnosis or suggest treatments in the question.\n"
-        "- Base the question solely on the provided partial case information.\n\n"
-        "Partial case Information:\n{case_text}\n\n"
-        "### User: What is the first best diagnostic question you want to ask the patient "
-        "(one question)?\n### Assistant:"
+    #: This suite's wording for MedQDx's protocol. The benchmark is the
+    #: *interview*: one question per turn, each new one different from the last,
+    #: the patient answering only from the recorded case, and a single condition
+    #: name at the end. All of that is the release's and is kept. What is not
+    #: kept is the notebook's completion-style scaffolding ("### User:",
+    #: "### Assistant:"), which exists because its harness made one completion
+    #: call per turn with no conversation memory, and its repeated "Do not
+    #: include any explanations, reasoning, or additional text" -- that rule
+    #: agrees with io, but saying it here as well as in the mode instruction
+    #: puts the same instruction in two layers, which is what this suite's
+    #: prompt architecture exists to prevent. The mode instruction carries it.
+    SYSTEM = (
+        "You are an expert at abductive reasoning: inferring the explanation that, if "
+        "true, would best account for the evidence you are given. You are a doctor "
+        "interviewing a patient about a case you have only partial information on. Ask "
+        "for what you are missing, then name the condition that accounts for it."
     )
 
-    AUTHORS_NEXT_QUESTION = (
-        "You are a medical doctor conducting a diagnostic interview with a patient.\n"
-        "You have received partial information about the case and the past conversation "
-        "with the patient.\n"
-        "Your goal is to ask exactly **ONE** new, relevant, case-specific question that "
-        "will enable a more precise diagnosis.\n"
-        "Ensure that this new question is **word-for-word different** from all previous "
-        "questions.\n\n"
-        "Rules:\n"
-        "- Output **ONLY ONE** question as a single, complete sentence ending with a "
-        "question mark.\n"
-        "- Do NOT include any explanations, reasoning, or additional text\u2014only the "
-        "question itself.\n"
-        "- The question must be a single line, ending in \u2018?\u2019\n"
-        "- Do NOT provide a diagnosis or suggest treatments.\n"
-        "- Base the question on the partial case information and past conversation with "
-        "the patient.\n"
-        "- ask new question to obtain additional information for better diasnosis.\n"
-        "- If the patient responded \"I'm not sure,\" ask a broader or differently phrased "
-        "question to elicit new information.\n\n"
-        "Partial case Information::\n{case_text}\n\n"
-        "Past Conversation with the patient:\n{history}\n\n"
-        "{prev_section}\n\n"
-        "### User:Next, output one NEW question you would ask the patient:\n### Assistant:"
+    _QUESTION_REQUIREMENTS = (
+        "ask exactly one question per turn",
+        "the question must be a single line ending in '?'",
+        "the question must be specific to this case",
+        "do not give a diagnosis or suggest treatment in a question",
+        "base the question on the case information and the conversation so far",
     )
 
-    AUTHORS_DIAGNOSIS = (
-        "***You are a medical doctor***. Your task is to provide a single most likely "
-        "diagnosis based on the partial case information and the past conversation with "
-        "the patient.\n\n"
-        "Rules:\n"
-        "- Analyze the case details and patient responses.\n"
-        "- Use clinical reasoning to determine the most probable diagnosis.\n"
-        "- Output ONLY the name of the disease or condition using correct medical term "
-        "(e.g., Pneumonia, Hypoglycemia).\n"
-        "- Do not include any notes, explanations, disclaimers, or additional text.\n"
-        "- Do not output symbols like ### or other placeholders.\n"
-        "- Do not repeat on the case symptoms\n"
-        "- Do not repeat on the patient answers\n\n"
-        "Case Information:\n{case_text}\n\n"
-        "Conversation History:\n{history}\n\n"
-        "### User: The patient diagnosis is:\n### Assistant:"
+    _QUESTION_FORMAT = "Reply with the question itself, on one line, and nothing else."
+
+    #: Appended to the requirements from the second question onward. The
+    #: release's own rules: a new question each time, and a broader one when the
+    #: patient could not answer.
+    _FOLLOW_UP_REQUIREMENTS = (
+        "each new question must be worded differently from every question already asked",
+        "ask for information the conversation has not already established",
+        "if the patient answered \"I'm not sure\", ask a broader or differently worded "
+        "question rather than repeating this one",
     )
+
+    _DIAGNOSIS_REQUIREMENTS = (
+        "give one condition, not a differential list",
+        "use the correct medical term for it (for example: Pneumonia, Hypoglycemia)",
+        "do not restate the case's symptoms or the patient's answers",
+    )
+
+    _DIAGNOSIS_FORMAT = "Reply with the name of the condition, on one line, and nothing else."
 
     def _history_text(self, state: dict[str, Any]) -> str:
         turns = state.get("history") or []
@@ -203,16 +202,18 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         }
         case_text = sample.fields.get("observation", "")
         state = {"evidence": store, "counts": {}, "history": [], "case_text": case_text}
-        return (
-            [
-                ChatMessage(role="system", content=self.AUTHORS_SYSTEM),
-                ChatMessage(
-                    role="user",
-                    content=self.AUTHORS_FIRST_QUESTION.format(case_text=case_text),
-                ),
-            ],
-            state,
+        parts = ProtocolParts(
+            system=self.SYSTEM,
+            observation=case_text,
+            instructions=(
+                "Interview the patient to fill in what the case does not tell you. Ask one "
+                f"question at a time, up to {self.category_limits['ask']}; you will then be "
+                "asked for the diagnosis."
+            ),
+            requirements=list(self._QUESTION_REQUIREMENTS),
+            output_format=self._QUESTION_FORMAT,
         )
+        return build_protocol_messages(parts, self.context.modes), state
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
@@ -220,7 +221,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         # MedQDx's protocol has no action vocabulary: the model is asked for a
         # question in plain language, and the patient answers it. The turn ends
         # when the question budget is spent, and the release then asks for the
-        # diagnosis with its own prompt.
+        # diagnosis instead.
         question = (assistant_text or "").strip().split("\n")[-1].strip()
         if state.get("phase") == "diagnose":
             return None
@@ -230,20 +231,48 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         found = store.reveal("ask", question, limit=3)
         # The release's patient answers from the case, and says so plainly when
         # the symptom is not recorded -- "I'm not sure" is the wording its
-        # next-question prompt is written to handle.
+        # follow-up requirements are written to handle.
         answer = found if found else "I'm not sure."
         state["history"].append((question, answer))
 
         if self.over_limit(state, "ask"):
             state["phase"] = "diagnose"
-            return self.AUTHORS_DIAGNOSIS.format(
-                case_text=state["case_text"], history=self._history_text(state)
+            return self._turn_message(
+                answer,
+                task="You have no questions left. Name the condition this case is.",
+                requirements=self._DIAGNOSIS_REQUIREMENTS,
+                output_format=self._DIAGNOSIS_FORMAT,
             )
-        return self.AUTHORS_NEXT_QUESTION.format(
-            case_text=state["case_text"],
-            history=self._history_text(state),
-            prev_section="",
+        return self._turn_message(
+            answer,
+            task="Ask your next question.",
+            requirements=self._QUESTION_REQUIREMENTS + self._FOLLOW_UP_REQUIREMENTS,
+            output_format=self._QUESTION_FORMAT,
         )
+
+    def _turn_message(
+        self,
+        answer: str,
+        *,
+        task: str,
+        requirements: tuple[str, ...],
+        output_format: str,
+    ) -> str:
+        """The patient's reply, then what to do next, in the opening's layers.
+
+        The release re-sends the whole prompt every turn -- the case text and
+        the full transcript included -- because its notebook makes one
+        completion call per question and keeps no conversation. This engine
+        keeps the conversation, so re-sending them would repeat what the model
+        can already read. The rules are restated, the evidence is not.
+        """
+        block = [f"Patient: {answer}", f"Task: {task}"]
+        rendered = requirements_block(list(requirements))
+        if rendered:
+            block.append(rendered)
+        block.append(mode_instruction(self.context.modes))
+        block.append(output_format)
+        return "\n\n".join(block)
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         row = item["row"]
@@ -391,6 +420,15 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             },
             primary_metric="diagnosis_judged",
             decisions=[
+                "THE INTERVIEW PROMPT IS LOCALLY ADAPTED, NOT THE AUTHORS'. One question per "
+                "turn, single line ending in '?', specific to the case, no diagnosis inside "
+                "a question, each new question worded differently, a broader question after "
+                "an 'I'm not sure', and one condition name at the end are all the release's "
+                "and are kept. The notebook's ### User:/### Assistant: scaffolding is not: it "
+                "exists because its harness makes one completion call per turn and keeps no "
+                "conversation, while this engine keeps the whole episode. Its repeated 'do "
+                "not include explanations or reasoning' is also dropped -- it agrees with "
+                "io, but this suite states that once, in the mode instruction.",
                 "Kept the release's own open-vocabulary task -- MedQDx tells the model to "
                 "output only the name of the disease and never shows it a candidate list. An "
                 "earlier version of this adapter built a 5-way choice from the 29-disease label "

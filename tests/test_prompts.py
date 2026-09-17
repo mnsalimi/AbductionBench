@@ -681,20 +681,26 @@ def test_a_dataset_that_quotes_its_release_offers_one_prompt_mode():
     from abductionbench.core.modes import TaskModes
     from abductionbench.core.registry import resolve_adapter
 
-    quoted = ["cloud_opsbench:CloudOpsBenchAdapter", "med_inquire:MedInquireAdapter",
-              "medqdx:MedQDxAdapter", "vivabench:VivaBenchAdapter"]
+    # No adapter quotes its release's prompt any more: the four interactive
+    # protocols were localised into this suite's layers, and they are io-only
+    # for a different reason -- see test_interactive_prompts.py and
+    # DatasetAdapter.io_only.
+    protocol = ["cloud_opsbench:CloudOpsBenchAdapter", "med_inquire:MedInquireAdapter",
+                "medqdx:MedQDxAdapter", "vivabench:VivaBenchAdapter"]
     ours = ["ddxplus:DDXPlusAdapter"]
 
-    for impl in quoted:
+    for impl in protocol:
         cls = resolve_adapter(f"abductionbench.adapters.{impl}")
-        assert cls.authors_prompt is True, impl
+        assert cls.authors_prompt is False, impl
+        assert cls.io_only is True, impl
         assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
         refusal = cls.supports_modes(TaskModes(prompt_mode="cot"))
-        assert refusal and "one prompt set" in refusal, impl
+        assert refusal and "protocol" in refusal, impl
 
     for impl in ours:
         cls = resolve_adapter(f"abductionbench.adapters.{impl}")
         assert cls.authors_prompt is False, impl
+        assert cls.io_only is False, impl
         # Both modes are offered, because the prompt is this harness's to vary.
         assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
         assert cls.supports_modes(TaskModes(prompt_mode="cot")) is None, impl
