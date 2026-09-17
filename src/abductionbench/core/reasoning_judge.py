@@ -527,9 +527,13 @@ class ReasoningJudgeStage:
                     # window, and _clip_chain applies that one budget to all of
                     # it. A reference cut mid-JSON told the judge less than
                     # nothing.
-                    answer=self._clip_chain(score.prediction or response.text or ""),
-                    reference=self._clip_chain(
-                        json.dumps(sample.reference, ensure_ascii=False, default=str)
+                    answer=clip_middle(
+                        score.prediction or response.text or "",
+                        self.config.max_reference_chars,
+                    ),
+                    reference=clip_middle(
+                        json.dumps(sample.reference, ensure_ascii=False, default=str),
+                        self.config.max_reference_chars,
                     ),
                     options=options,
                     generation_like=generation_like,

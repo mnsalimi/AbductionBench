@@ -228,3 +228,71 @@ def test_the_whole_exchange_is_budgeted_not_unbounded():
     assert "omitted from the middle" in clipped
     # Anything that already fits is passed through untouched.
     assert clip_middle("short", 1000) == "short"
+
+
+def test_what_a_judge_may_be_shown_fits_the_window_it_has():
+    """The sum of the per-field caps, not each cap on its own.
+
+    Twice now a per-field limit has been set without checking what they add up
+    to, and a request that overruns the judge's context window is rejected
+    outright -- the sample gets no verdict at all, which is strictly worse than
+    one read from a clipped copy. The reasoning judge's four fields at its chain
+    limit came to 240,000 characters against a window that holds about 178,000
+    at this suite's densest.
+
+    The density is measured, not assumed: tokenised with gpt-oss-20b's own
+    tokenizer over real responses from 13 datasets, this suite runs 2.72
+    characters per token at its worst (abd's s-expressions) against a 4.57
+    median. Using the worst is the point -- a limit that only holds for average
+    text is not a limit.
+    """
+    from abductionbench.core.config import JudgeConfig, ReasoningJudgeConfig
+
+    WINDOW = 65_536          # both judges are served with this context
+    DENSEST = 2.72           # measured chars per token, worst dataset
+    SCAFFOLD = 6_000         # template wording, criteria, gold, observation
+
+    def tokens(chars: int) -> float:
+        return chars / DENSEST
+
+    answer = JudgeConfig()
+    used = (
+        tokens(answer.max_prompt_chars + answer.max_response_chars)
+        + SCAFFOLD
+        + answer.max_tokens
+    )
+    assert used < WINDOW, (
+        f"the answer judge can be sent {used:,.0f} tokens against a {WINDOW:,} window; "
+        "lower max_prompt_chars/max_response_chars, not max_tokens"
+    )
+
+    reasoning = ReasoningJudgeConfig()
+    # question + chain at the chain limit, answer + reference at theirs.
+    used = (
+        tokens(2 * reasoning.max_chain_chars + 2 * reasoning.max_reference_chars)
+        + SCAFFOLD
+        + reasoning.max_tokens
+    )
+    assert used < WINDOW, (
+        f"the reasoning judge can be sent {used:,.0f} tokens against a {WINDOW:,} window"
+    )
+
+
+def test_output_budget_is_not_the_constraint_on_a_judge():
+    """A verdict is short; reserving output tokens only starves the input.
+
+    Measured on the worst-case exchange -- both clips maxed, 80,338 characters --
+    the judge spent 62 of its 2,048 completion tokens and finished cleanly. The
+    instinct to raise max_tokens when a judge returns nothing is what produced
+    the 24,000-token setting that cut the input to 41,536 and had requests
+    rejected for length; the cause there was reasoning_effort, not room.
+    """
+    from abductionbench.core.config import JudgeConfig, ReasoningJudgeConfig
+
+    for config in (JudgeConfig(), ReasoningJudgeConfig()):
+        assert config.reasoning_effort == "low", (
+            "a judge that thinks without bound is what exhausts an output budget; "
+            "the budget is not the fix"
+        )
+        # Generous against a 62-token verdict, and small against the window.
+        assert config.max_tokens <= 8192

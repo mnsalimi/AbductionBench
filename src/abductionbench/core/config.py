@@ -515,8 +515,18 @@ class JudgeConfig(_Base):
     #: needs the question it was answering and the reasoning that produced it,
     #: not just the answer line -- but a request that overruns the judge's own
     #: context window is rejected outright and the sample gets no verdict.
-    max_prompt_chars: int = Field(40000, ge=1000)
-    max_response_chars: int = Field(40000, ge=1000)
+    #:
+    #: Sized from a measurement, not a guess. Tokenised with gpt-oss-20b's own
+    #: tokenizer over real responses from 13 datasets, this suite runs 2.72
+    #: characters per token at its densest (abd's s-expressions) against a 4.57
+    #: median -- so 60,000 characters is ~22,000 tokens of the judge's 65,536
+    #: window, and the two together leave room for the verdict and the
+    #: adapter's own fields. Raising ``max_tokens`` instead would be the wrong
+    #: lever: measured on the worst-case exchange the judge spends **62** of its
+    #: 2,048 completion tokens, and every token reserved for output is one the
+    #: exchange cannot use.
+    max_prompt_chars: int = Field(60000, ge=1000)
+    max_response_chars: int = Field(60000, ge=1000)
     #: Cache judge verdicts on disk so re-scoring does not re-spend tokens.
     cache: bool = True
 
@@ -574,6 +584,13 @@ class ReasoningJudgeConfig(_Base):
     #: replies were exactly that.  Counting steps in a chain is a reading task;
     #: it does not need a research budget.  ``None`` leaves the server default.
     reasoning_effort: str | None = "low"
+    #: Longest answer and reference shown to a judge.  Deliberately far smaller
+    #: than ``max_chain_chars``: these are an answer and a reference, not a
+    #: chain, and clipping all four fields at the chain's limit lets the request
+    #: total 240,000 characters -- 88,000 tokens against a 65,536 window.  A
+    #: per-field cap does not bound a sum, which is the same mistake in a new
+    #: place.
+    max_reference_chars: int = Field(8000, ge=200)
     #: Longest chain (in characters) shown to a judge; longer ones are clipped
     #: in the middle, keeping both ends.  Without this the prompt can exceed the
     #: judge's own context window -- observed at 65,621 tokens against a 65,536
