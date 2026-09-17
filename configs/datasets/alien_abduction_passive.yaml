@@ -1,0 +1,12 @@
+dataset:
+  id: alien_abduction_passive
+  impl: abductionbench.adapters.alien_abduction:AlienAbductionPassiveAdapter
+  options:
+    test_cases: 100
+    timeout_s: 10
+    memory_mb: 512
+  notes: >-
+    Alien Abduction, Passive-Output (arXiv:2608.03388), mapped to sequential
+    delivery: the Game Master reveals one pair per NEXT, 15 turns. Runs the
+    release's own protocol prompt, so io only. Same 50 targets and suites as
+    alien_abduction and alien_abduction_active.
