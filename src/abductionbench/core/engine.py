@@ -392,6 +392,8 @@ class EvaluationEngine:
                     # Inside the run directory, so engine.sync mirrors it
                     # off-box along with the records and the workbook.
                     log_path=self.run_dir / "reasoning_metrics.jsonl",
+                    # So each task's judge calls land beside its records.
+                    run_dir=self.run_dir,
                 )
 
             if not self.dry_run:

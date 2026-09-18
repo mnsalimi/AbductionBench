@@ -73,6 +73,14 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         "with one symptom."
     )
     data_delivery_mode = "interactive"
+    #: Run as io only. DDXPlus is an interview that ends in a selection: every
+    #: turn has to be one readable question and the last has to be a choice the
+    #: scorer can parse, which is the same reason the other four interactive
+    #: protocols are io-only (see DatasetAdapter.io_only). The cot variant was
+    #: offered because this harness writes the interview prompt itself -- true,
+    #: but beside the point: the prompt being ours does not make a reasoning
+    #: instruction compatible with one action per turn.
+    io_only = True
     objective_metrics = True
     selection_cardinality = "single"
     hypothesis_modes = ("selection",)

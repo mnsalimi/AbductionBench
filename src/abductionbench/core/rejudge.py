@@ -234,6 +234,8 @@ async def _judge_run(
         batch_disabled=batch_disabled,
         calls=asyncio.Semaphore(reasoning_cfg.max_parallel_calls),
         log_path=run_dir / "reasoning_metrics.jsonl",
+        # A post-pass writes its audit beside the same tasks a live run would.
+        run_dir=run_dir,
     )
 
     summary: dict[str, Any] = {

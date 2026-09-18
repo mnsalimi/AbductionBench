@@ -573,7 +573,7 @@ def test_one_question_is_bought_once_even_when_tasks_ask_it_together():
     peak = 0
 
     class _Stage(ReasoningJudgeStage):
-        async def _judge_many(self, family, requests):
+        async def _judge_many(self, family, requests, *, identity=None, context=None):
             nonlocal in_flight, peak
             fetched.append(tuple(sorted(requests)))
             in_flight += 1
@@ -620,7 +620,7 @@ def test_a_failed_inventory_never_leaves_another_task_waiting():
     class _Stage(ReasoningJudgeStage):
         calls = 0
 
-        async def _judge_many(self, family, requests):
+        async def _judge_many(self, family, requests, *, identity=None, context=None):
             type(self).calls += 1
             if type(self).calls == 1:
                 await asyncio.sleep(0.05)
@@ -786,3 +786,271 @@ def test_the_evidence_counts_must_partition_the_observations_used():
     )
     assert not errors
     assert ok["reasoning_redundancy"] == 2 and ok["reasoning_completeness"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# audit: why did the judge say that?
+# --------------------------------------------------------------------------- #
+
+
+def _audit_stage(tmp_path, client, **overrides):
+    """A stage wired to write its audit log under ``tmp_path``."""
+    from abductionbench.core.config import ReasoningJudgeConfig
+    from abductionbench.core.types import ChatMessage
+
+    class _Renderer:
+        def render(self, sample, template):
+            return (
+                [
+                    ChatMessage(role="system", content="judge system"),
+                    ChatMessage(role="user", content=f"CHAIN>>> {sample.fields}"),
+                ],
+                {},
+            )
+
+    return ReasoningJudgeStage(
+        config=ReasoningJudgeConfig(enabled=True, model="judge-m", cache=False, **overrides),
+        registry=_FakeRegistry(),
+        renderer=_Renderer(),
+        clients={"judge-m": client},
+        retry_policy=None,
+        cache_dir=tmp_path / "cache",
+        run_dir=tmp_path / "run",
+    )
+
+
+def _identity():
+    from abductionbench.core.types import TaskIdentity
+
+    return TaskIdentity(
+        run_id="run-1", dataset_id="dset", model_id="model-under-test",
+        template_id="cot_n-a_static", template_version="1.0", prompt_mode="cot",
+        selection_mode="n/a", data_delivery_mode="static", task_kind="generation",
+    )
+
+
+def _audit_lines(tmp_path):
+    import orjson
+
+    path = (
+        tmp_path / "run" / "datasets" / "dset" / "model-under-test"
+        / "cot_n-a_static@1.0" / ReasoningJudgeStage.AUDIT_FILENAME
+    )
+    if not path.exists():
+        return []
+    return [orjson.loads(line) for line in path.read_bytes().splitlines() if line.strip()]
+
+
+class _Choice:
+    def __init__(self, content, reasoning=None, finish_reason="stop"):
+        self.content = content
+        self.reasoning = reasoning
+        self.finish_reason = finish_reason
+
+
+class _Result:
+    def __init__(self, choices, usage=None):
+        self.choices = choices
+        self.usage = usage or {"completion_tokens": 7}
+
+
+def test_every_judge_call_is_logged_whole_with_its_identifiers(tmp_path):
+    """The prompt, the answer and enough ids to find the generation it graded.
+
+    reasoning_metrics.jsonl records the parsed numbers, and the verdict cache
+    keeps a truncated copy of the reply; neither answers "why did the judge say
+    14 steps for this chain". This log does, and it is untruncated on purpose.
+    """
+    class _Client:
+        supports_batch = False
+
+        async def chat_single(self, messages, params):
+            return _Result([_Choice('{"total_steps": 14}', reasoning="I counted them.")])
+
+    stage = _audit_stage(tmp_path, _Client())
+    long_reply = '{"total_steps": 14}' + "x" * 5000
+
+    async def run():
+        async def fake_retry(fn, **kwargs):
+            return await fn(), None
+
+        import abductionbench.core.reasoning_judge as rj
+
+        original, rj.with_retry = rj.with_retry, fake_retry
+        try:
+            return await stage._judge_many(
+                "steps",
+                {"0": {"question": "q", "reasoning_chain": "c"}},
+                identity=_identity(),
+                context={"0": {"sample_id": "sample-42", "group_id": "g1", "target_index": 0}},
+            )
+        finally:
+            rj.with_retry = original
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+    lines = _audit_lines(tmp_path)
+    assert len(lines) == 1, lines
+    row = lines[0]
+
+    assert row["schema"] == ReasoningJudgeStage.AUDIT_SCHEMA
+    # Identifiers that connect the call to its run, dataset, task and sample.
+    assert row["run_id"] == "run-1"
+    assert row["dataset_id"] == "dset"
+    assert row["model_id"] == "model-under-test", "the evaluated model, not the judge"
+    assert row["template_id"] == "cot_n-a_static"
+    assert row["prompt_mode"] == "cot"
+    assert row["sample_id"] == "sample-42"
+    assert row["group_id"] == "g1"
+    assert row["metric_family"] == "steps"
+    assert row["judge_model"] == "judge-m"
+    assert row["judge_template"].startswith("reasoning_steps")
+    assert row["cache_key"]
+
+    # The exact submitted messages, not a summary of them.
+    sent = row["request"]["messages"]
+    assert [m["role"] for m in sent] == ["system", "user"]
+    assert "CHAIN>>>" in sent[1]["content"]
+
+    # The complete answer and an explicitly-present reasoning trace.
+    assert row["response"]["outcome"] == "ok"
+    assert row["response"]["content"] == '{"total_steps": 14}'
+    assert row["response"]["reasoning_trace"]["available"] is True
+    assert row["response"]["reasoning_trace"]["text"] == "I counted them."
+    assert row["parse"]["ok"] is True
+    assert row["parse"]["values"] == {"total_steps": 14}
+    assert row["parse"]["source"] == "content"
+    assert long_reply  # (kept for the next test's contrast)
+
+
+def test_an_absent_reasoning_trace_is_not_an_empty_one(tmp_path):
+    """"The API returned no trace" and "the trace was empty" are different facts."""
+    class _Client:
+        supports_batch = False
+
+        async def chat_single(self, messages, params):
+            return _Result([_Choice('{"total_steps": 3}', reasoning=None)])
+
+    stage = _audit_stage(tmp_path, _Client())
+
+    async def run():
+        async def fake_retry(fn, **kwargs):
+            return await fn(), None
+
+        import abductionbench.core.reasoning_judge as rj
+
+        original, rj.with_retry = rj.with_retry, fake_retry
+        try:
+            await stage._judge_many(
+                "steps", {"0": {"question": "q"}}, identity=_identity(),
+                context={"0": {"sample_id": "s"}},
+            )
+        finally:
+            rj.with_retry = original
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+    trace = _audit_lines(tmp_path)[0]["response"]["reasoning_trace"]
+    assert trace["available"] is False
+    assert trace["text"] is None
+
+
+def test_unparseable_and_failed_calls_are_kept_not_dropped(tmp_path):
+    """The replies worth reading back are precisely the ones that did not work."""
+    from abductionbench.core.errors import EndpointError
+
+    class _Unparseable:
+        supports_batch = False
+
+        async def chat_single(self, messages, params):
+            return _Result([_Choice("I think about nine steps, roughly?")])
+
+    class _Dead:
+        supports_batch = False
+
+        async def chat_single(self, messages, params):
+            raise EndpointError("connection refused")
+
+    for client, outcome, has_content in (
+        (_Unparseable(), "unparseable", True),
+        (_Dead(), "call_failed", False),
+    ):
+        target = tmp_path / outcome
+        stage = _audit_stage(target, client)
+
+        async def run(stage=stage):
+            async def fake_retry(fn, **kwargs):
+                return await fn(), None
+
+            import abductionbench.core.reasoning_judge as rj
+
+            original, rj.with_retry = rj.with_retry, fake_retry
+            try:
+                await stage._judge_many(
+                    "steps", {"0": {"question": "q"}}, identity=_identity(),
+                    context={"0": {"sample_id": "s"}},
+                )
+            finally:
+                rj.with_retry = original
+
+        asyncio.run(asyncio.wait_for(run(), timeout=5))
+        rows = _audit_lines(target)
+        assert len(rows) == 1, f"{outcome}: {rows}"
+        row = rows[0]
+        assert row["response"]["outcome"] == outcome
+        assert row["parse"]["ok"] is False
+        if has_content:
+            # Kept in full: this is the string that has to be read to see why.
+            assert row["response"]["content"] == "I think about nine steps, roughly?"
+        else:
+            assert row["response"]["error"], "a failed call must say why"
+        # Even a failure carries the identifiers that locate the generation.
+        assert row["sample_id"] == "s" and row["dataset_id"] == "dset"
+
+
+def test_the_audit_log_carries_no_credentials(tmp_path):
+    """It ships to Drive with the run, so it must not carry a key."""
+    class _Client:
+        supports_batch = False
+
+        async def chat_single(self, messages, params):
+            return _Result([_Choice('{"total_steps": 1}')])
+
+    stage = _audit_stage(tmp_path, _Client())
+
+    async def run():
+        async def fake_retry(fn, **kwargs):
+            return await fn(), None
+
+        import abductionbench.core.reasoning_judge as rj
+
+        original, rj.with_retry = rj.with_retry, fake_retry
+        try:
+            await stage._judge_many(
+                "steps", {"0": {"question": "q"}}, identity=_identity(),
+                context={"0": {"sample_id": "s"}},
+            )
+        finally:
+            rj.with_retry = original
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
+    import orjson
+
+    blob = orjson.dumps(_audit_lines(tmp_path)).decode().lower()
+    for secret in ("api_key", "authorization", "bearer", "vllm-", "hf_", "sk-"):
+        assert secret not in blob, f"the audit log leaked {secret!r}"
+
+
+def test_the_audit_lands_inside_the_run_so_sync_ships_it(tmp_path):
+    """Beside the task's own records, which is what engine.sync mirrors."""
+    stage = _audit_stage(tmp_path, object())
+    path = stage._audit_path(_identity())
+    assert path is not None
+    assert path.parent.name == "cot_n-a_static@1.0"
+    assert path.parent.parent.name == "model-under-test"
+    assert path.parent.parent.parent.name == "dset"
+    assert path.name == "reasoning_judge_calls.jsonl"
+    # No run directory (a bare stage in a test or a probe) writes nothing and
+    # raises nothing.
+    bare = _audit_stage(tmp_path, object())
+    bare.run_dir = None
+    assert bare._audit_path(_identity()) is None
+    bare._append_audit(_identity(), [{"a": 1}])

@@ -665,49 +665,47 @@ def test_the_dead_binding_fields_stay_inert():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_dataset_that_quotes_its_release_offers_one_prompt_mode():
+def test_every_interactive_protocol_offers_one_prompt_mode():
     """io and cot must not be the same bytes under two labels.
 
     Five interactive datasets used to report an io row and a cot row built from
-    the identical prompt, because their prompts come from their releases and
+    the identical prompt, because their prompts came from their releases and
     interactive_start never looked at prompt_mode. medqdx was the sharpest: its
     authors' wording says "Do NOT include any explanations, reasoning", and that
     was the row labelled cot.
 
-    Where the prompt is the release's, there is one prompt set and so one task.
-    Where this harness had to write the prompt itself, the mode instruction is
-    ours to add and both modes are real.
+    The prompts are this suite's now, so none of them quotes a release -- but
+    all five still run io only, and for the reason `io_only` states rather than
+    the provenance one: a turn-by-turn protocol needs every turn to be a single
+    parseable action, which a reasoning instruction contradicts. ddxplus was the
+    last to change: its interview prompt being ours does not make "work through
+    the evidence step by step" compatible with one question per turn.
     """
     from abductionbench.core.modes import TaskModes
     from abductionbench.core.registry import resolve_adapter
 
-    # No adapter quotes its release's prompt any more: the four interactive
-    # protocols were localised into this suite's layers, and they are io-only
-    # for a different reason -- see test_interactive_prompts.py and
-    # DatasetAdapter.io_only.
     protocol = ["cloud_opsbench:CloudOpsBenchAdapter", "med_inquire:MedInquireAdapter",
-                "medqdx:MedQDxAdapter", "vivabench:VivaBenchAdapter"]
-    ours = ["ddxplus:DDXPlusAdapter"]
+                "medqdx:MedQDxAdapter", "vivabench:VivaBenchAdapter",
+                "ddxplus:DDXPlusAdapter"]
 
     for impl in protocol:
         cls = resolve_adapter(f"abductionbench.adapters.{impl}")
         assert cls.authors_prompt is False, impl
         assert cls.io_only is True, impl
         assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
-        refusal = cls.supports_modes(TaskModes(prompt_mode="cot"))
-        assert refusal and "protocol" in refusal, impl
+        for refused in ("cot", "self-consistency"):
+            why = cls.supports_modes(TaskModes(prompt_mode=refused))
+            assert why and "protocol" in why, f"{impl} would schedule a {refused} task"
 
-    for impl in ours:
-        cls = resolve_adapter(f"abductionbench.adapters.{impl}")
-        assert cls.authors_prompt is False, impl
-        assert cls.io_only is False, impl
-        # Both modes are offered, because the prompt is this harness's to vary.
-        assert cls.supports_modes(TaskModes(prompt_mode="io")) is None, impl
-        assert cls.supports_modes(TaskModes(prompt_mode="cot")) is None, impl
+    # A static dataset whose prompt this harness writes still gets both modes.
+    static = resolve_adapter("abductionbench.adapters.commonwhy:CommonWhyAdapter")
+    assert static.io_only is False
+    assert static.supports_modes(TaskModes(prompt_mode="io")) is None
+    assert static.supports_modes(TaskModes(prompt_mode="cot")) is None
 
 
-def test_the_harness_written_interview_prompt_actually_varies_by_mode():
-    """ddxplus offers both modes, so its two prompts have to differ."""
+def test_the_shared_mode_instruction_actually_varies_by_mode():
+    """The one line that differs between an io prompt and a cot one."""
     from abductionbench.adapters._prompting import mode_instruction
     from abductionbench.core.modes import TaskModes
 

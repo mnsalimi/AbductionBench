@@ -38,6 +38,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -423,6 +424,7 @@ class ReasoningJudgeStage:
         batch_disabled: set[str] | None = None,
         calls: asyncio.Semaphore | None = None,
         log_path: Path | None = None,
+        run_dir: Path | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -466,6 +468,13 @@ class ReasoningJudgeStage:
         #: status that explains any blank -- and it lands inside the run
         #: directory, so `engine.sync` mirrors it off-box with everything else.
         self.log_path = Path(log_path) if log_path else None
+        #: The run directory, so every judge call can be written next to the
+        #: task whose chains it graded.  One audit file per task rather than one
+        #: per run on purpose: the sync mirrors whole files, and a single
+        #: growing multi-hundred-megabyte log would be re-uploaded in full on
+        #: every tick, while a finished task's file stops changing and stops
+        #: costing anything.
+        self.run_dir = Path(run_dir) if run_dir else None
         #: Counters for the stage's own log line.
         self.stats: dict[str, int] = {"judged": 0, "cached": 0, "calls": 0, "failed": 0}
         if config.cache and self._cache_path.exists():
@@ -568,7 +577,7 @@ class ReasoningJudgeStage:
         if not targets:
             return updated
 
-        await self._evaluate(targets)
+        await self._evaluate(targets, identity)
         async with self._lock:
             self._save_cache()
 
@@ -635,6 +644,117 @@ class ReasoningJudgeStage:
         with self.log_path.open("ab") as handle:
             handle.write(blob)
 
+    #: Version of the audit record's shape, so a reader can tell what to
+    #: expect from a file written by an older run.
+    AUDIT_SCHEMA = "reasoning_judge_call/v1"
+    AUDIT_FILENAME = "reasoning_judge_calls.jsonl"
+
+    def _audit_path(self, identity: TaskIdentity | None) -> Path | None:
+        """Where this task's judge calls are written, or ``None`` if nowhere.
+
+        Beside the task's ``records.jsonl`` and ``raw/``, because that is where
+        a reader already goes to see what the evaluated model was asked and
+        what it said; the judge's side of the same sample belongs next to it
+        and is mirrored off-box by the same sync.
+        """
+        if self.run_dir is None or identity is None:
+            return None
+        return (
+            self.run_dir
+            / "datasets"
+            / identity.dataset_id
+            / identity.model_id
+            / f"{identity.template_id}@{identity.template_version}"
+            / self.AUDIT_FILENAME
+        )
+
+    def _append_audit(self, identity: TaskIdentity | None, lines: list[dict[str, Any]]) -> None:
+        """Append judge-call records, untruncated.
+
+        Never raises: an audit trail that can break a run is worse than one
+        that reports it missed a line.
+        """
+        path = self._audit_path(identity)
+        if path is None or not lines:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            blob = b"".join(orjson.dumps(line, default=str) + b"\n" for line in lines)
+            with path.open("ab") as handle:
+                handle.write(blob)
+        except OSError as exc:  # pragma: no cover - disk full, permissions
+            logger.warning("reasoning judge: could not write the audit log %s: %s", path, exc)
+
+    @staticmethod
+    def _audit_record(
+        *,
+        identity: TaskIdentity | None,
+        family: str,
+        template: PromptTemplate,
+        cache_key: str,
+        judge_model: str | None,
+        context: dict[str, Any],
+        messages: Any,
+        outcome: str,
+        content: str | None = None,
+        reasoning: str | None = None,
+        parsed: dict[str, Any] | None = None,
+        parsed_from: str | None = None,
+        error: str | None = None,
+        usage: dict[str, Any] | None = None,
+        finish_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """One judge call, in full.
+
+        The prompt and the answer are stored whole. Clipping is what the metric
+        log already does, and it is exactly what makes a score unauditable: the
+        question "why did the judge say 14 steps" cannot be answered from a
+        truncated reply.
+
+        ``reasoning_trace.available`` is recorded explicitly rather than left to
+        be inferred from an empty string, because "the API returned no trace"
+        and "the trace was empty" are different facts and only the first is
+        something this harness can state.
+        """
+        return {
+            "schema": ReasoningJudgeStage.AUDIT_SCHEMA,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            # -- what was judged ------------------------------------------- #
+            "run_id": getattr(identity, "run_id", None),
+            "dataset_id": getattr(identity, "dataset_id", None),
+            "model_id": getattr(identity, "model_id", None),
+            "template_id": getattr(identity, "template_id", None),
+            "template_version": getattr(identity, "template_version", None),
+            "prompt_mode": getattr(identity, "prompt_mode", None),
+            **context,
+            # -- who judged it --------------------------------------------- #
+            "metric_family": family,
+            "judge_model": judge_model,
+            "judge_template": template.ref,
+            "cache_key": cache_key,
+            # -- the call --------------------------------------------------- #
+            "request": {"messages": messages},
+            "response": {
+                "outcome": outcome,
+                "content": content,
+                "reasoning_trace": {
+                    "available": reasoning is not None,
+                    "text": reasoning,
+                },
+                "finish_reason": finish_reason,
+                "usage": usage,
+                "error": error,
+            },
+            "parse": {
+                "ok": parsed is not None,
+                "values": parsed,
+                # Which channel the values came out of, so the fallback that
+                # reads a verdict from the reasoning channel is visible rather
+                # than silent.
+                "source": parsed_from,
+            },
+        }
+
     @staticmethod
     def _mark(
         updated: list[tuple[SampleSpec, ModelResponse, SampleScore]], index: int, status: str
@@ -654,7 +774,7 @@ class ReasoningJudgeStage:
 
     # -- the two waves ------------------------------------------------------- #
 
-    async def _evaluate(self, targets: list[_Target]) -> None:
+    async def _evaluate(self, targets: list[_Target], identity: TaskIdentity | None = None) -> None:
         inventory_requests: dict[str, dict[str, Any]] = {}
         question_keys: dict[int, str] = {}
         for target in targets:
@@ -665,7 +785,26 @@ class ReasoningJudgeStage:
         # The inventory is the one shared purchase: it depends on the question
         # alone, so it is bought once per distinct question and reused for every
         # model, repeat and task that asks it.
-        inventories = await self._inventories(inventory_requests)
+        shared_by: dict[str, list[str]] = {}
+        for target in targets:
+            shared_by.setdefault(question_keys[target.index], []).append(
+                self._sample_id(target)
+            )
+        inventories = await self._inventories(
+            inventory_requests,
+            identity=identity,
+            context={
+                key: {
+                    # One inventory answers every sample asking the same
+                    # question, so the audit names all of them rather than
+                    # pretending the call belonged to one.
+                    "sample_id": None,
+                    "shared_with_sample_ids": sorted(set(ids)),
+                    "question_key": key,
+                }
+                for key, ids in shared_by.items()
+            },
+        )
 
         common: dict[int, dict[str, Any]] = {}
         for target in targets:
@@ -703,7 +842,22 @@ class ReasoningJudgeStage:
                 for key, fields in requests.items()
                 if all(required in fields for required in template.required_fields)
             }
-            results = await self._judge_many(family, callable_requests)
+            results = await self._judge_many(
+                family,
+                callable_requests,
+                identity=identity,
+                context={
+                    str(target.index): {
+                        "sample_id": self._sample_id(target),
+                        "group_id": getattr(target.sample, "group_id", None),
+                        "repeat_of": (getattr(target.sample, "metadata", {}) or {}).get(
+                            "repeat_of"
+                        ),
+                        "target_index": target.index,
+                    }
+                    for target in selected
+                },
+            )
             for target in selected:
                 key = str(target.index)
                 if key not in callable_requests:
@@ -760,7 +914,11 @@ class ReasoningJudgeStage:
         await run_family("uncertainty", targets, ("question", "reasoning_chain", "total_steps"))
 
     async def _inventories(
-        self, requests: dict[str, dict[str, Any]]
+        self,
+        requests: dict[str, dict[str, Any]],
+        *,
+        identity: TaskIdentity | None = None,
+        context: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any] | None]:
         """Buy each question's inventory once, without serializing the tasks.
 
@@ -783,7 +941,11 @@ class ReasoningJudgeStage:
         out: dict[str, dict[str, Any] | None] = {}
         if mine:
             try:
-                out.update(await self._judge_many("observation_inventory", mine))
+                out.update(
+                    await self._judge_many(
+                        "observation_inventory", mine, identity=identity, context=context
+                    )
+                )
             finally:
                 # Resolve every claimed key even on failure, or the tasks
                 # waiting on this question would hang for the whole run.
@@ -798,12 +960,23 @@ class ReasoningJudgeStage:
 
     # -- one family's calls -------------------------------------------------- #
 
+    @staticmethod
+    def _sample_id(target: _Target) -> str | None:
+        return getattr(getattr(target, "sample", None), "sample_id", None)
+
     async def _judge_many(
-        self, family: str, requests: dict[str, dict[str, Any]]
+        self,
+        family: str,
+        requests: dict[str, dict[str, Any]],
+        *,
+        identity: TaskIdentity | None = None,
+        context: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any] | None]:
         template = self.templates[family]
+        ctx = context or {}
         keyed: list[tuple[str, dict[str, Any], str]] = []
         out: dict[str, dict[str, Any] | None] = {}
+        audit: list[dict[str, Any]] = []
         for request_id, fields in requests.items():
             key = stable_hash({"template": template.ref, "fields": fields}, length=32)
             cached = self._cache.get(key)
@@ -811,8 +984,28 @@ class ReasoningJudgeStage:
                 values = cached.get("values")
                 out[request_id] = values if isinstance(values, dict) else None
                 self.stats["cached"] += 1
+                # No call was made, so there is no response to record -- and
+                # inventing one would be the fabrication this log exists to
+                # prevent. The row says where the values came from instead, and
+                # the cache key leads to the call that first produced them.
+                audit.append(
+                    self._audit_record(
+                        identity=identity,
+                        family=family,
+                        template=template,
+                        judge_model=self.config.model,
+                        cache_key=key,
+                        context=ctx.get(request_id, {}),
+                        messages=None,
+                        outcome="cache_hit",
+                        parsed=values if isinstance(values, dict) else None,
+                        parsed_from="cache",
+                    )
+                )
             else:
                 keyed.append((request_id, fields, key))
+        if audit:
+            self._append_audit(identity, audit)
 
         # A group is always ``group_size`` requests, whether or not the server
         # has a batch route, so in-flight judge sequences stay at
@@ -823,8 +1016,18 @@ class ReasoningJudgeStage:
         # factor of group_size on exactly the servers that are slowest already.
         can_batch = self.client.supports_batch and self.config.model not in self._batch_disabled
 
-        def record(request_id: str, key: str, raw: str, reasoning: str | None = None) -> None:
+        def record(
+            request_id: str,
+            key: str,
+            raw: str,
+            reasoning: str | None = None,
+            *,
+            messages: Any = None,
+            finish_reason: str | None = None,
+            usage: dict[str, Any] | None = None,
+        ) -> None:
             values = self._parse_json(raw, template)
+            parsed_from = "content" if values is not None else None
             if values is None and reasoning:
                 # A reasoning model puts its chain in a separate channel and
                 # `content` comes back null when that chain ran to the budget.
@@ -834,6 +1037,7 @@ class ReasoningJudgeStage:
                 # content channel is where a finished answer belongs.
                 values = self._parse_json(reasoning, template)
                 if values is not None:
+                    parsed_from = "reasoning_trace"
                     self.stats["recovered_from_reasoning"] = (
                         self.stats.get("recovered_from_reasoning", 0) + 1
                     )
@@ -852,15 +1056,42 @@ class ReasoningJudgeStage:
                 logger.warning("reasoning judge %s: unparseable reply %r", family, raw[:200])
                 self.stats["failed"] += 1
             out[request_id] = values
+            # Written whether or not it parsed: an unparseable reply is exactly
+            # the one worth being able to read back.
+            self._append_audit(
+                identity,
+                [
+                    self._audit_record(
+                        identity=identity,
+                        family=family,
+                        template=template,
+                        judge_model=self.config.model,
+                        cache_key=key,
+                        context=ctx.get(request_id, {}),
+                        messages=messages,
+                        outcome="ok" if values is not None else "unparseable",
+                        content=raw,
+                        reasoning=reasoning,
+                        parsed=values,
+                        parsed_from=parsed_from,
+                        finish_reason=finish_reason,
+                        usage=usage,
+                    )
+                ],
+            )
 
         async def run_chunk(chunk: list[tuple[str, dict[str, Any], str]]) -> None:
             conversations = []
-            for _request_id, fields, key in chunk:
+            # The exact bytes sent, kept per request so the audit can record the
+            # prompt that produced each answer rather than a re-render of it.
+            sent: dict[str, Any] = {}
+            for request_id, fields, key in chunk:
                 sample = SampleSpec(
                     sample_id=f"reasoning-judge::{key}", fields=fields, task_kind="judge"
                 )
                 messages, _contract = self.renderer.render(sample, template)
                 conversations.append(messages)
+                sent[request_id] = [m.to_dict() for m in messages]
             sampling = SamplingParams(
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
@@ -884,6 +1115,23 @@ class ReasoningJudgeStage:
                         for request_id, _fields, _key in chunk:
                             out[request_id] = None
                             self.stats["failed"] += 1
+                        self._append_audit(
+                            identity,
+                            [
+                                self._audit_record(
+                                    identity=identity,
+                                    family=family,
+                                    template=template,
+                                    judge_model=self.config.model,
+                                    cache_key=key,
+                                    context=ctx.get(request_id, {}),
+                                    messages=sent.get(request_id),
+                                    outcome='call_failed',
+                                    error=f'{type(exc).__name__}: {exc}',
+                                )
+                                for request_id, _fields, key in chunk
+                            ],
+                        )
                         return
                     if len(result.choices) != len(chunk):
                         # Losing the alignment between requests and answers
@@ -899,11 +1147,36 @@ class ReasoningJudgeStage:
                         for request_id, _fields, _key in chunk:
                             out[request_id] = None
                             self.stats["failed"] += 1
+                        self._append_audit(
+                            identity,
+                            [
+                                self._audit_record(
+                                    identity=identity,
+                                    family=family,
+                                    template=template,
+                                    judge_model=self.config.model,
+                                    cache_key=key,
+                                    context=ctx.get(request_id, {}),
+                                    messages=sent.get(request_id),
+                                    outcome='call_failed',
+                                    error=f'{len(result.choices)} answer(s) for {len(chunk)} request(s)',
+                                )
+                                for request_id, _fields, key in chunk
+                            ],
+                        )
                         return
                     for (request_id, _fields, key), choice in zip(
                         chunk, result.choices, strict=True
                     ):
-                        record(request_id, key, choice.content or "", choice.reasoning)
+                        record(
+                            request_id,
+                            key,
+                            choice.content or "",
+                            choice.reasoning,
+                            messages=sent.get(request_id),
+                            finish_reason=getattr(choice, "finish_reason", None),
+                            usage=getattr(result, "usage", None),
+                        )
                     return
 
                 async def one(request_id: str, key: str, messages: Any) -> None:
@@ -920,13 +1193,53 @@ class ReasoningJudgeStage:
                         logger.warning("reasoning judge %s failed permanently: %s", family, exc)
                         out[request_id] = None
                         self.stats["failed"] += 1
+                        self._append_audit(
+                            identity,
+                            [
+                                self._audit_record(
+                                    identity=identity,
+                                    family=family,
+                                    template=template,
+                                    judge_model=self.config.model,
+                                    cache_key=key,
+                                    context=ctx.get(request_id, {}),
+                                    messages=sent.get(request_id),
+                                    outcome="call_failed",
+                                    error=f"{type(exc).__name__}: {exc}",
+                                )
+                            ],
+                        )
                         return
                     choice = result.choices[0] if result.choices else None
                     if choice is None:
                         out[request_id] = None
                         self.stats["failed"] += 1
+                        self._append_audit(
+                            identity,
+                            [
+                                self._audit_record(
+                                    identity=identity,
+                                    family=family,
+                                    template=template,
+                                    judge_model=self.config.model,
+                                    cache_key=key,
+                                    context=ctx.get(request_id, {}),
+                                    messages=sent.get(request_id),
+                                    outcome="call_failed",
+                                    error="the endpoint returned no choices",
+                                )
+                            ],
+                        )
                         return
-                    record(request_id, key, choice.content or "", choice.reasoning)
+                    record(
+                        request_id,
+                        key,
+                        choice.content or "",
+                        choice.reasoning,
+                        messages=sent.get(request_id),
+                        finish_reason=getattr(choice, "finish_reason", None),
+                        usage=getattr(result, "usage", None),
+                    )
 
                 await asyncio.gather(
                     *(
