@@ -1,10 +1,19 @@
 # google/gemma-4-31B-it served by vLLM on this instance (gemma-4-31b-vllm,
 # 127.0.0.1:18006), reached directly because the engine runs on the GPU host.
 #
-# The largest model this card holds: GPU_MEMORY_UTILIZATION=0.82 (~80 GiB of
-# 97,887 MiB). Nothing of gpt-oss-20b's size fits beside it, which is why a run
-# that includes this model cannot also judge inline with the 20b judge unless
-# that judge is given a much smaller share.
+# The largest model this card holds, and it is run alone: at
+# GPU_MEMORY_UTILIZATION=0.93 it occupies ~91.5 of 97,887 MiB, so nothing else
+# is served beside it. That is why a run including this model cannot judge
+# inline -- the answers are generated first and the verdicts bought on a later
+# resume, which is what the answer judge reading reused records is for.
+#
+# Concurrency is bounded by KV cache, not by MAX_NUM_SEQS. Measured from vLLM's
+# own startup line: at 0.82 the cache held 20,382 tokens ("Maximum concurrency
+# for 8,192 tokens per request: 2.49x"); at 0.93 it holds 32,788 ("4.00x").
+# That 4x is the worst case -- it assumes every request fills the whole 8,192
+# window, and vLLM allocates per actual token, so a typical prompt runs several
+# times more concurrently. group_size 8 x max_parallel_batches 2 = 16 in flight
+# matches MAX_NUM_SEQS=16; sending more would only queue inside the server.
 extends: [gemma-4-e4b.yaml]
 model:
   id: gemma-4-31b-local
