@@ -1054,3 +1054,75 @@ def test_the_audit_lands_inside_the_run_so_sync_ships_it(tmp_path):
     bare.run_dir = None
     assert bare._audit_path(_identity()) is None
     bare._append_audit(_identity(), [{"a": 1}])
+
+
+# --------------------------------------------------------------------------- #
+# the reasoning columns in Summary_Long
+# --------------------------------------------------------------------------- #
+
+
+def _summary_task(prompt_mode, metrics):
+    from abductionbench.core.engine import TaskResult
+    from abductionbench.core.types import TaskIdentity
+
+    identity = TaskIdentity(
+        run_id="r", dataset_id="d", model_id="m", template_id="t", template_version="1.0",
+        prompt_mode=prompt_mode, selection_mode="n/a", data_delivery_mode="static",
+        task_kind="generation",
+    )
+    return TaskResult(
+        identity=identity, output_dir=Path("/tmp"), metrics=metrics,
+        primary_metric="hypothesis_judged",
+    )
+
+
+def test_summary_long_carries_every_reasoning_metric():
+    """The averages already exist on the task; the sheet now shows them.
+
+    Taken from the task's own aggregate rather than recomputed from the
+    per-sample sheet, so the headline row and the sheet it summarises cannot
+    drift apart.
+    """
+    from abductionbench.core.engine import RunResult
+    from abductionbench.core.reporting import build_summary_frame
+
+    judged = {"hypothesis_judged": 0.5}
+    judged.update({column: float(index) for index, column in enumerate(REASONING_METRIC_COLUMNS)})
+    result = RunResult(
+        run_id="r", run_dir=Path("/tmp"), config=None,
+        tasks=[_summary_task("cot", judged)],
+    )
+    frame = build_summary_frame(result)
+    for index, column in enumerate(REASONING_METRIC_COLUMNS):
+        assert column in frame.columns, column
+        assert frame.iloc[0][column] == float(index), column
+
+
+def test_a_task_without_chains_gets_blanks_not_zeros():
+    """Every one of these metrics has a meaningful zero.
+
+    No backtracking, no uncertainty marked, nothing branched -- all real
+    findings. Writing 0.0 where nothing was measured would report one. An io
+    task has no chain in it, so its cells are empty.
+    """
+    import pandas as pd
+
+    from abductionbench.core.engine import RunResult
+    from abductionbench.core.reporting import build_summary_frame
+
+    result = RunResult(
+        run_id="r", run_dir=Path("/tmp"), config=None,
+        tasks=[
+            _summary_task("io", {"hypothesis_judged": 0.4}),
+            _summary_task("cot", {"hypothesis_judged": 0.5, "reasoning_total_steps": 0.0}),
+        ],
+    )
+    frame = build_summary_frame(result).set_index("prompt_mode")
+
+    for column in REASONING_METRIC_COLUMNS:
+        assert pd.isna(frame.loc["io", column]), f"io must be blank in {column}"
+
+    # A genuine zero on a judged task survives as a zero, not a blank.
+    assert frame.loc["cot", "reasoning_total_steps"] == 0.0
+    # ...and a column the judge never produced for that task is still blank.
+    assert pd.isna(frame.loc["cot", "reasoning_branchiness"])

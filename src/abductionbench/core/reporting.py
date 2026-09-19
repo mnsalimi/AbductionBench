@@ -36,6 +36,7 @@ import pandas as pd
 
 from .checkpoint import dedupe_records, load_records
 from .engine import RunResult, TaskResult
+from .reasoning_judge import REASONING_METRIC_COLUMNS
 from .types import AdapterDocumentation
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,18 @@ def build_metrics_frame(result: RunResult) -> pd.DataFrame:
 
 
 def build_summary_frame(result: RunResult) -> pd.DataFrame:
-    """Dataset x model matrix of primary metrics (the headline table)."""
+    """Dataset x model matrix of primary metrics, plus the reasoning columns.
+
+    Each reasoning column is that task's mean over its own judged samples --
+    the same number the per-sample sheet averages to, taken from the task's
+    aggregate rather than recomputed, so the two can never disagree.
+
+    A task with no chains to measure gets a blank, not a zero. Every one of
+    these metrics has a meaningful zero -- no backtracking, no uncertainty
+    marked, nothing branched -- so writing 0.0 where nothing was measured would
+    read as a finding. An io task has no chain of reasoning in it and its
+    columns are empty; so are the columns of a cot task the judge never ran on.
+    """
     rows: list[dict[str, Any]] = []
     for task in result.all_tasks:
         primary = task.primary_metric
@@ -97,6 +109,11 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
                 "n_scored": task.n_scored,
                 "n_planned": task.n_planned,
                 "failure": task.failure or "",
+                # Absent -> None -> an empty cell, never 0.0.
+                **{
+                    column: _fmt(task.metrics[column]) if column in task.metrics else None
+                    for column in REASONING_METRIC_COLUMNS
+                },
             }
         )
     frame = pd.DataFrame(rows)
