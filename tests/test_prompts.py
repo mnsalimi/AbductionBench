@@ -236,8 +236,16 @@ def test_requirements_are_a_property_of_the_task_not_of_the_mode():
         assert "answer line" not in text
 
 
-def test_io_and_cot_prompts_differ_by_exactly_the_mode_instruction():
-    """The property that makes an io/cot comparison mean anything."""
+def test_io_and_cot_prompts_differ_only_where_the_mode_requires():
+    """The property that makes an io/cot comparison mean anything.
+
+    Two layers legitimately differ, and only two: the mode instruction, and the
+    closing that says where the answer goes. The closing has to, because "on the
+    last line" is true of a reply that reasons first and false of one told to
+    answer directly -- io gets "Your entire response must be" instead. Every
+    other layer, including the task and its requirements, is byte-identical,
+    which is what makes a difference in score a difference in elicitation.
+    """
     from abductionbench.adapters._prompting import build_messages
     from abductionbench.core.modes import TaskModes
 
@@ -245,7 +253,16 @@ def test_io_and_cot_prompts_differ_by_exactly_the_mode_instruction():
     io = build_messages(parts, TaskModes(prompt_mode="io"))[0][-1].content
     cot = build_messages(parts, TaskModes(prompt_mode="cot"))[0][-1].content
     assert io != cot
-    assert _without_the_mode_instruction(io) == _without_the_mode_instruction(cot)
+
+    # Everything above the mode instruction -- system, evidence, task,
+    # requirements -- is the same text in both.
+    io_head = io.split("Answer directly. Do not explain your reasoning.")[0]
+    cot_head = cot.split("Work through the evidence step by step")[0]
+    assert io_head == cot_head
+
+    # And the only difference below it is the closing each mode requires.
+    assert "Your entire response must be" in io and "on the last line" not in io.lower()
+    assert "On the last line" in cot and "Your entire response must be" not in cot
 
 
 def test_self_consistency_renders_exactly_the_cot_prompt():
@@ -260,14 +277,24 @@ def test_self_consistency_renders_exactly_the_cot_prompt():
 
 
 def test_the_answer_line_is_scoped_once_in_shared_wording():
-    """"output only the <answer>" is said by the closing, not by 17 datasets."""
+    """"output only the <answer>" is said by the closing, not by 17 datasets.
+
+    cot says it as a separate sentence, because its answer sits at the end of a
+    longer reply and the marker is what separates the two. io no longer needs
+    the sentence at all: "Your entire response must be: Answer: <x>" already
+    says nothing else may appear, and repeating it would be the duplication this
+    module exists to prevent.
+    """
     from abductionbench.adapters._prompting import _ANSWER_LINE_ONLY, build_messages
     from abductionbench.core.modes import TaskModes
 
-    for mode in ("io", "cot"):
-        text = build_messages(_free_form_parts([]), TaskModes(prompt_mode=mode))[0][-1].content
-        assert text.count(_ANSWER_LINE_ONLY) == 1, mode
-        assert text.rstrip().endswith(_ANSWER_LINE_ONLY), mode
+    cot = build_messages(_free_form_parts([]), TaskModes(prompt_mode="cot"))[0][-1].content
+    assert cot.count(_ANSWER_LINE_ONLY) == 1
+    assert cot.rstrip().endswith(_ANSWER_LINE_ONLY)
+
+    io = build_messages(_free_form_parts([]), TaskModes(prompt_mode="io"))[0][-1].content
+    assert _ANSWER_LINE_ONLY not in io, "io says it once, in the closing itself"
+    assert io.count("Your entire response must be") == 1
 
 
 def test_requirements_survive_every_selection_mode():
@@ -834,3 +861,133 @@ def test_a_multi_line_answer_closes_with_a_block_not_a_last_line():
         "Reasoning.\nAnswer:\nAnna is kind.\nBob is round.", {"answer_prefix": "Answer:"}
     )
     assert parsed == "Anna is kind.\nBob is round."
+
+
+# --------------------------------------------------------------------------- #
+# An io reply is the answer; a cot reply ends with it
+# --------------------------------------------------------------------------- #
+
+#: Wording that only means something if the reply has a body above the answer.
+#: True of cot, where the model reasons first. False of io, which was just told
+#: "Answer directly. Do not explain your reasoning." -- and then, for a long
+#: time, "On the last line, give your final answer as", which describes a reply
+#: with something before it. A model reading that could reasonably conclude a
+#: preamble was wanted, i.e. that this was the reasoning mode after all.
+_IMPLIES_PRECEDING_TEXT = r"on the last line|end your reply with|after your (?:reasoning|analysis)"
+
+#: What each mode's closing says instead.
+_IO_CLOSING = "Your entire response must be"
+
+
+def _closings_for(cls, selection_mode, prompt_mode):
+    """One shipped dataset's rendered prompt, in one mode."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    options = ["first candidate", "second candidate"] if selection_mode else []
+    parts = PromptParts(
+        system=cls.system_prompt,
+        observation="an observation",
+        answer_format=getattr(cls, "answer_format", "") or "an answer",
+        requirements=list(getattr(cls, "task_requirements", ()) or ()),
+        options=options,
+        answer_is_block=bool(getattr(cls, "answer_is_a_block", False)),
+    )
+    modes = TaskModes(prompt_mode=prompt_mode, selection_mode=selection_mode)
+    messages, _contract = build_messages(parts, modes)
+    return " ".join(m.content for m in messages)
+
+
+def test_an_io_prompt_never_describes_a_reply_with_text_before_the_answer():
+    """Every shipped dataset, every selection mode, both prompt modes.
+
+    io must ask for the answer and nothing else; cot must keep "on the last
+    line", because there the answer genuinely is the last line and the marker is
+    what separates it from the reasoning above.
+    """
+    import re
+
+    from abductionbench.core.modes import BOV, MCS, SCS
+
+    implies = re.compile(_IMPLIES_PRECEDING_TEXT, re.I)
+    io_offenders, cot_offenders = [], []
+    for dataset_id, cls in _shipped_adapters():
+        for selection in (None, SCS, MCS, BOV):
+            io = _closings_for(cls, selection, "io")
+            found = implies.search(io)
+            if found:
+                io_offenders.append((dataset_id, selection, found.group(0)))
+            if _IO_CLOSING not in io:
+                io_offenders.append((dataset_id, selection, "no 'entire response' closing"))
+
+            # The other direction: cot must not have been flattened into io.
+            cot = _closings_for(cls, selection, "cot")
+            if not implies.search(cot):
+                cot_offenders.append((dataset_id, selection, "cot lost its last-line closing"))
+            if _IO_CLOSING in cot:
+                cot_offenders.append((dataset_id, selection, "cot took io's closing"))
+
+    assert not io_offenders, f"io prompts implying a multi-line reply: {io_offenders[:6]}"
+    assert not cot_offenders, f"cot prompts damaged by the io fix: {cot_offenders[:6]}"
+
+
+def test_neither_mode_can_be_mistaken_for_the_other():
+    """The two modes must stay distinguishable at both ends of the prompt.
+
+    Fixing the io closing is only safe if it does not make an io prompt read
+    like a cot one anywhere else, or vice versa: the mode instruction and the
+    closing have to agree with each other in both modes.
+    """
+    from abductionbench.adapters._prompting import mode_instruction
+    from abductionbench.core.modes import BOV, MCS, SCS, TaskModes
+
+    io_line = mode_instruction(TaskModes(prompt_mode="io"))
+    assert io_line != mode_instruction(TaskModes(prompt_mode="cot"))
+
+    for dataset_id, cls in _shipped_adapters():
+        for selection in (None, SCS, MCS, BOV):
+            # BOV shows one candidate, so its cot instruction is the
+            # one-at-a-time variant -- existing behaviour, not a mode leak.
+            cot_line = mode_instruction(
+                TaskModes(prompt_mode="cot"), one_at_a_time=selection == BOV
+            )
+            io = _closings_for(cls, selection, "io")
+            cot = _closings_for(cls, selection, "cot")
+            # Each carries its own mode instruction and not the other's.
+            assert io_line in io, dataset_id
+            assert cot_line not in io, dataset_id
+            assert cot_line in cot, dataset_id
+            assert io_line not in cot, dataset_id
+            # And the two differ by more than nothing.
+            assert io != cot, dataset_id
+
+
+def test_the_parsing_contract_is_identical_in_both_modes():
+    """The wording changed; what the scorer reads must not have.
+
+    The closing is the only thing that moved, and the marker inside it is what
+    every scorer keys on. If io and cot stopped agreeing on the contract, the
+    fix would have traded a prompt contradiction for a parsing bug.
+    """
+    from abductionbench.adapters._prompting import ANSWER_PREFIX, PromptParts, build_messages
+    from abductionbench.core.modes import BOV, MCS, SCS, TaskModes
+
+    for dataset_id, cls in _shipped_adapters():
+        for selection in (None, SCS, MCS, BOV):
+            options = ["first candidate", "second candidate"] if selection else []
+            parts = PromptParts(
+                system=cls.system_prompt,
+                observation="an observation",
+                answer_format=getattr(cls, "answer_format", "") or "an answer",
+                requirements=list(getattr(cls, "task_requirements", ()) or ()),
+                options=options,
+                answer_is_block=bool(getattr(cls, "answer_is_a_block", False)),
+            )
+            contracts = {}
+            for mode in ("io", "cot"):
+                messages, contract = build_messages(
+                    parts, TaskModes(prompt_mode=mode, selection_mode=selection)
+                )
+                contracts[mode] = contract
+                assert ANSWER_PREFIX in messages[-1].content, (dataset_id, mode)
+            assert contracts["io"] == contracts["cot"], (dataset_id, selection)

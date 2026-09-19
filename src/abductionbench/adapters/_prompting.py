@@ -82,6 +82,26 @@ _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
 #: after the final marker, newlines included.
 _ANSWER_BLOCK_ONLY = "Put nothing in that block but the answer itself, one item per line."
 
+def _where_the_answer_goes(modes: TaskModes, example: str) -> str:
+    """How the closing asks for the answer, in the only way each mode allows.
+
+    ``cot`` reasons first, so its answer genuinely is the last line and saying
+    "on the last line" is both true and necessary.  ``io`` has just been told
+    "Answer directly. Do not explain your reasoning." -- and then, until now,
+    "on the last line, give your final answer as", which only means anything if
+    something precedes it.  The prompt was asking for a bare answer and
+    describing a reply that has a body above it, which is the same kind of
+    self-contradiction this module exists to remove; a model reading it could
+    reasonably infer that some preamble was expected, i.e. that this was the
+    reasoning mode.
+
+    The marker is identical in both, so the parsing contract does not move.
+    """
+    if modes.prompt_mode in (COT, SELF_CONSISTENCY):
+        return f"On the last line, give your final answer as:\n{example}\n{_ANSWER_LINE_ONLY}"
+    return f"Your entire response must be:\n{example}"
+
+
 #: The one sentence that replaces the seventeen per-dataset "output only the
 #: diagnosis name" / "output only the formula" clauses.  Said once, in shared
 #: wording, and scoped to the marker rather than to the response -- which is
@@ -294,8 +314,8 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
             "You are shown one candidate hypothesis at a time; the others are not listed "
             "here, so judge this one on its own merits rather than against them.\n"
             f"Decide whether this hypothesis {asks}.\n"
-            "Answer with only YES or NO, on the last line, as:\n"
-            f"{ANSWER_PREFIX} YES"
+            "Answer with only YES or NO.\n"
+            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} YES")
         ), contract
 
     if modes.selection_mode == MCS:
@@ -303,29 +323,34 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
         example = ", ".join(labels[:2]) if len(labels) > 1 else (labels[0] if labels else "1")
         return (
             "Select every hypothesis that applies -- there may be one or several.\n"
-            f"Answer with only their numbers, separated by commas, on the last line, as:\n"
-            f"{ANSWER_PREFIX} {example}"
+            "Answer with only their numbers, separated by commas.\n"
+            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} {example}")
         ), contract
 
     if modes.selection_mode == SCS:
         contract.update({"style": "single_label", "labels_from_field": "option_labels"})
         return (
             "Select exactly one hypothesis.\n"
-            f"Answer with only one of: {_label_list(labels)}, on the last line, as:\n"
-            f"{ANSWER_PREFIX} {labels[0] if labels else '1'}"
+            f"Answer with only one of: {_label_list(labels)}.\n"
+            + _where_the_answer_goes(
+                modes, f"{ANSWER_PREFIX} {labels[0] if labels else '1'}"
+            )
         ), contract
 
     contract.update({"style": "free_form"})
     shape = parts.answer_format or "your answer"
     if parts.answer_is_block:
+        # Same split as the one-line closing: under cot the block genuinely
+        # ends a reply that has reasoning above it, under io it is the reply.
+        lead = (
+            "End your reply with the answer block:"
+            if modes.prompt_mode in (COT, SELF_CONSISTENCY)
+            else "Your entire response must be the answer block:"
+        )
         return (
-            f"End your reply with the answer block:\n{ANSWER_PREFIX}\n<{shape}>\n"
-            f"{_ANSWER_BLOCK_ONLY}"
+            f"{lead}\n{ANSWER_PREFIX}\n<{shape}>\n{_ANSWER_BLOCK_ONLY}"
         ), contract
-    return (
-        f"On the last line, give your final answer as:\n{ANSWER_PREFIX} <{shape}>\n"
-        f"{_ANSWER_LINE_ONLY}"
-    ), contract
+    return _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <{shape}>"), contract
 
 
 def build_messages(
