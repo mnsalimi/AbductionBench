@@ -274,6 +274,9 @@ class EvaluationEngine:
         #: Built once and shared by every task, so a question's observation
         #: inventory is bought once and reused across models and repeats.
         self._reasoning_judge: ReasoningJudgeStage | None = None
+        #: Datasets finishing this pass without the verdict that scores
+        #: them, because engine.judge.defer is set.
+        self._judge_deferred: list[str] = []
         #: One budget of in-flight calls for the judge *model*, not for a stage
         #: or a task. Both judge stages talk to the same server, and JudgeStage
         #: is built per task, so a per-stage semaphore would let three tasks
@@ -598,13 +601,31 @@ class EvaluationEngine:
         if not needing:
             return
 
+        if not judge.enabled and judge.defer:
+            # Judging deliberately postponed to a later pass. Said loudly: the
+            # numbers this pass writes for these datasets are placeholders, and
+            # anyone reading the run before the judged resume has to know that.
+            logger.warning(
+                "engine.judge.defer is set: %d dataset(s) scored by the judge alone (%s%s) "
+                "will finish this pass UNJUDGED, with their judged metric left at 0.0. "
+                "Those are placeholders, not scores. Fill them in with: abench run <config> "
+                "--resume %s, with the judge enabled and reachable.",
+                len(needing),
+                ", ".join(sorted(needing)[:5]),
+                ", ..." if len(needing) > 5 else "",
+                self.run_id,
+            )
+            self._judge_deferred = sorted(needing)
+            return
         if not judge.enabled:
             raise ConfigError(
                 f"{len(needing)} dataset(s) have no verifiable answer and are scored by the "
                 f"LLM judge alone ({', '.join(sorted(needing)[:5])}"
                 f"{', ...' if len(needing) > 5 else ''}), but engine.judge.enabled is false. "
                 "Set engine.judge.enabled: true and engine.judge.model, or disable those "
-                "datasets -- running them without the judge reports no score for them."
+                "datasets -- running them without the judge reports no score for them. If the "
+                "judge is coming in a later pass -- because it cannot share the card with the "
+                "model under test, say -- set engine.judge.defer: true to say so explicitly."
             )
         known = {model.id for model in self.config.models}
         if judge.model not in known:

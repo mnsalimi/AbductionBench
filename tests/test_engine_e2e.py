@@ -1432,3 +1432,70 @@ class LateJudgedAdapter(FakeAdapter):
     ]
     assert records, "no records written"
     assert all(r["metrics"]["verdict"] == 1.0 for r in records[-4:]), records[-1]
+
+
+def test_deferring_the_judge_is_allowed_only_when_said_explicitly(
+    fake_server, write_run_config, fake_dataset, tmp_path, monkeypatch
+):
+    """A judge-scored dataset with no judge is refused -- unless deferred.
+
+    The refusal is right by default: such a run finishes, looks complete, and
+    reports no score for those datasets. It is wrong for a model too large to
+    share a card with its judge, where generating first and judging on a later
+    resume is the only way to run it at all. `defer` distinguishes the two, and
+    the distinction has to be explicit rather than inferred from an unreachable
+    endpoint.
+    """
+    from abductionbench.core.errors import ConfigError
+
+    adapter_src = tmp_path / "unverifiable_adapter.py"
+    adapter_src.write_text(
+        '''
+from fake_adapter import FakeAdapter
+
+
+class UnverifiableAdapter(FakeAdapter):
+    """No answer key: the judge is the only thing that can score it."""
+
+    objective_metrics = False
+    primary_metric = "verdict"
+
+    def score(self, sample, response, *, output_contract=None):
+        from abductionbench.core.types import SampleScore
+
+        return SampleScore(metrics={"verdict": 0.0}, prediction=response.text)
+
+    def aggregate(self, scores):
+        values = [s.metrics.get("verdict", 0.0) for s in scores]
+        return {"verdict": sum(values) / max(1, len(values))}
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    dataset = {
+        "id": "unverifiable",
+        "impl": "unverifiable_adapter:UnverifiableAdapter",
+        "sample_size": 2,
+        "options": {"n": 2},
+    }
+
+    # Judge off and nothing said about it: refused, with the way out named.
+    refused = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[dataset],
+        engine={"judge": {"enabled": False, "model": "fake-model"}},
+    )
+    with pytest.raises(ConfigError) as caught:
+        _run(refused)
+    assert "defer" in str(caught.value), "the refusal must name the deferred path"
+
+    # Judge off and deferred on purpose: the pass runs.
+    deferred = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[dataset],
+        engine={"judge": {"enabled": False, "defer": True, "model": "fake-model"}},
+    )
+    result, engine = _run(deferred)
+    assert result.tasks[0].n_scored == 2
+    assert result.tasks[0].metrics["verdict"] == 0.0, "a placeholder, not a score"
+    assert engine._judge_deferred == ["unverifiable"], "the run must record what it skipped"

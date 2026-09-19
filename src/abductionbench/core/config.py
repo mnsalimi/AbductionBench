@@ -491,6 +491,22 @@ class JudgeConfig(_Base):
     """
 
     enabled: bool = False
+    #: Deliberately judging in a *later* pass, not in this one.
+    #:
+    #: ``enabled: false`` on a run that contains judge-scored datasets is
+    #: normally refused, because such a run finishes, looks complete, and
+    #: quietly reports no score for them.  That guard is right for the case it
+    #: was written for and wrong for one it did not anticipate: a model too
+    #: large to share a card with its judge.  gemma-4-31b takes 0.93 of this
+    #: box's GPU; the judge cannot be up at the same time, so the answers have
+    #: to be generated first and the verdicts bought on a later resume.
+    #:
+    #: Setting this says that out loud.  The run proceeds without the judge,
+    #: every judged metric is left at its seeded zero, and the fact is logged
+    #: per task and recorded in the result -- so the pass is legible as
+    #: unfinished rather than passed off as a score.  The verdicts are filled
+    #: in by resuming with the judge enabled, which both judges now support.
+    defer: bool = False
     #: Model id (from the run's model list, or its own endpoint config file).
     model: str | None = None
     template: str = "judge_binary_v1"
