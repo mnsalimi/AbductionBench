@@ -52,7 +52,7 @@ def _fmt(value: Any, digits: int = 4) -> Any:
 def build_metrics_frame(result: RunResult) -> pd.DataFrame:
     """Long-form metric table: one row per (task, metric)."""
     rows: list[dict[str, Any]] = []
-    for task in result.tasks:
+    for task in result.all_tasks:
         for metric, value in sorted(task.metrics.items()):
             rows.append(
                 {
@@ -79,7 +79,7 @@ def build_metrics_frame(result: RunResult) -> pd.DataFrame:
 def build_summary_frame(result: RunResult) -> pd.DataFrame:
     """Dataset x model matrix of primary metrics (the headline table)."""
     rows: list[dict[str, Any]] = []
-    for task in result.tasks:
+    for task in result.all_tasks:
         primary = task.primary_metric
         rows.append(
             {
@@ -109,7 +109,7 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
 
 def _build_tasks_frame(result: RunResult) -> pd.DataFrame:
     rows = []
-    for task in result.tasks:
+    for task in result.all_tasks:
         checkpoint = task.checkpoint.to_dict() if task.checkpoint else {}
         rows.append(
             {
@@ -146,7 +146,7 @@ def _build_tasks_frame(result: RunResult) -> pd.DataFrame:
 def _build_datasets_frame(result: RunResult) -> pd.DataFrame:
     """Adapter self-documentation, one row per dataset."""
     seen: dict[str, AdapterDocumentation] = {}
-    for task in result.tasks:
+    for task in result.all_tasks:
         if task.documentation and task.identity.dataset_id not in seen:
             seen[task.identity.dataset_id] = task.documentation
     rows = []
@@ -242,7 +242,7 @@ def _rows_per_task(task_records: list[list[dict[str, Any]]], limit: int) -> list
 def _by_dataset(result: RunResult) -> dict[str, list[Path]]:
     """Task directories grouped by the dataset they belong to."""
     grouped: dict[str, list[Path]] = {}
-    for task in result.tasks:
+    for task in result.all_tasks:
         grouped.setdefault(task.identity.dataset_id, []).append(task.output_dir)
     return grouped
 
@@ -330,7 +330,7 @@ def build_coverage_frame(result: RunResult) -> pd.DataFrame:
     are in the sample sheet's status columns, per record.
     """
     rows: list[dict[str, Any]] = []
-    for task in result.tasks:
+    for task in result.all_tasks:
         records = dedupe_records(load_records(task.output_dir / "records.jsonl"))
         if not records:
             continue
@@ -543,7 +543,7 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             _write_sheet(writer, models, _safe_sheet_name("Models", used))
             if reporting.include_sample_sheets:
                 by_dataset: dict[str, list[Path]] = {}
-                for task in result.tasks:
+                for task in result.all_tasks:
                     by_dataset.setdefault(task.identity.dataset_id, []).append(task.output_dir)
                 for dataset_id, directories in sorted(by_dataset.items()):
                     frame = _build_samples_frame(
@@ -583,7 +583,7 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             logger.warning("could not write the turn log for %s: %s", dataset_id, exc)
 
     if reporting.write_run_documentation:
-        for task in result.tasks:
+        for task in result.all_tasks:
             try:
                 doc_path = _write_task_documentation(result, task)
                 written[f"doc:{task.identity.slug}"] = doc_path
@@ -811,7 +811,16 @@ def _render_run_report(result: RunResult, summary: pd.DataFrame) -> str:
     lines.append(f"* **Started**: {datetime.fromtimestamp(result.started_at, timezone.utc).isoformat(timespec='seconds')}")
     lines.append(f"* **Duration**: {result.duration_s / 60:.1f} min")
     lines.append(f"* **Models**: {', '.join(m.id for m in config.models)}")
-    lines.append(f"* **Tasks**: {len(result.tasks)}")
+    if result.prior_tasks:
+        # A resumed run: say what the directory holds and what this pass added,
+        # so neither number has to be guessed from the other.
+        lines.append(
+            f"* **Tasks**: {len(result.all_tasks)} "
+            f"({len(result.tasks)} from the latest pass, "
+            f"{len(result.all_tasks) - len(result.tasks)} carried over)"
+        )
+    else:
+        lines.append(f"* **Tasks**: {len(result.tasks)}")
     lines.append(f"* **Config sources**: {', '.join(config.source_files)}")
     lines.append("")
 
@@ -824,7 +833,7 @@ def _render_run_report(result: RunResult, summary: pd.DataFrame) -> str:
         lines.append(pivot.to_markdown())
     lines.append("")
 
-    failed = [task for task in result.tasks if task.failure]
+    failed = [task for task in result.all_tasks if task.failure]
     if failed:
         lines.append("## Failed tasks")
         lines.append("")
@@ -870,7 +879,7 @@ def _render_run_report(result: RunResult, summary: pd.DataFrame) -> str:
     lines.append("")
     lines.append("| task | coverage | errors | skipped | truncation | empty | bisections |")
     lines.append("|---|---|---|---|---|---|---|")
-    for task in result.tasks:
+    for task in result.all_tasks:
         checkpoint = task.checkpoint.to_dict() if task.checkpoint else {}
         lines.append(
             f"| `{task.identity.slug}` | {_fmt(task.metrics.get('coverage'))} | {task.n_error} "

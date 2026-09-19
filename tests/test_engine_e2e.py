@@ -1499,3 +1499,84 @@ class UnverifiableAdapter(FakeAdapter):
     assert result.tasks[0].n_scored == 2
     assert result.tasks[0].metrics["verdict"] == 0.0, "a placeholder, not a score"
     assert engine._judge_deferred == ["unverifiable"], "the run must record what it skipped"
+
+
+def test_a_resume_for_one_model_keeps_the_other_models_in_the_report(
+    fake_server, write_run_config, fake_dataset
+):
+    """The workbook describes the run directory, not the latest pass.
+
+    Resuming with `-m <one model>` runs only that model, which is the point --
+    but the report was rebuilt from that pass's tasks alone, so it came back
+    holding one model and no trace of the others. The records were never
+    touched; only the sheet describing them was, which is worse than it sounds,
+    because the sheet is what anyone actually reads.
+    """
+    import openpyxl
+
+    two_models = [
+        {
+            "id": "model-a",
+            "model_name": "fake-model",
+            "endpoint": {"base_url": fake_server.base_url, "api_key": "k"},
+        },
+        {
+            "id": "model-b",
+            "model_name": "fake-model",
+            "endpoint": {"base_url": fake_server.base_url, "api_key": "k"},
+        },
+    ]
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[fake_dataset("fake", n=4, sample_size=4)],
+        models=two_models,
+    )
+    result, _ = _run(config_path)
+    assert {t.identity.model_id for t in result.tasks} == {"model-a", "model-b"}
+
+    def models_in_workbook(run_dir):
+        wb = openpyxl.load_workbook(run_dir / "reports" / "abductionbench_results.xlsx",
+                                    read_only=True)
+        ws = wb["Summary_Long"]
+        head = [c.value for c in next(ws.iter_rows(max_row=1))]
+        index = head.index("model_id")
+        found = {r[index] for r in ws.iter_rows(min_row=2, values_only=True)}
+        wb.close()
+        return found
+
+    assert models_in_workbook(result.run_dir) == {"model-a", "model-b"}
+
+    # Resume restricted to one model, as `-m model-b` does.
+    only_b = load_run_config(config_path, model_filter=["model-b"])
+    engine2 = EvaluationEngine(only_b, run_id=result.run_id, run_dir=result.run_dir)
+    result2 = asyncio.run(engine2.run())
+
+    # This pass ran model-b alone -- the count stays honest ...
+    assert {t.identity.model_id for t in result2.tasks} == {"model-b"}
+    # ... and model-a is carried, so the report still covers both.
+    assert {t.identity.model_id for t in result2.prior_tasks} >= {"model-a"}
+    assert {t.identity.model_id for t in result2.all_tasks} == {"model-a", "model-b"}
+    assert models_in_workbook(result.run_dir) == {"model-a", "model-b"}
+
+
+def test_a_rerun_task_supersedes_the_copy_already_on_disk():
+    """Carried-over rows must not double up with the pass that replaced them."""
+    from abductionbench.core.engine import RunResult, TaskResult
+    from abductionbench.core.types import TaskIdentity
+
+    def task(model_id, metric):
+        identity = TaskIdentity(
+            run_id="r", dataset_id="d", model_id=model_id, template_id="t",
+            template_version="1.0", prompt_mode="io", selection_mode="n/a",
+            data_delivery_mode="static", task_kind="generation",
+        )
+        return TaskResult(identity=identity, output_dir=Path("/tmp"), metrics={"m": metric})
+
+    result = RunResult(
+        run_id="r", run_dir=Path("/tmp"), config=None,
+        prior_tasks=[task("a", 1.0), task("b", 1.0)],
+        tasks=[task("b", 2.0)],
+    )
+    assert len(result.all_tasks) == 2, "the re-run task must replace, not duplicate"
+    by_model = {t.identity.model_id: t.metrics["m"] for t in result.all_tasks}
+    assert by_model == {"a": 1.0, "b": 2.0}, "the fresh result must win"

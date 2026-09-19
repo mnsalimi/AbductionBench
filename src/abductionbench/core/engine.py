@@ -190,6 +190,18 @@ class RunResult:
     run_dir: Path
     config: RunConfig
     tasks: list[TaskResult] = field(default_factory=list)
+    #: Tasks this run directory already held when the pass started -- earlier
+    #: models, earlier datasets, an earlier interrupted attempt.
+    #:
+    #: A resume runs only what is new, so ``tasks`` holds only that, which is
+    #: the honest count for this pass. The *report*, though, describes the run
+    #: directory rather than the pass: rebuilding it from ``tasks`` alone
+    #: silently dropped every model a previous pass had measured -- a run
+    #: resumed with `-m gemma-4-31b-local` rewrote the workbook with 42 rows
+    #: and no trace of the 116 tasks already on disk. The records were never
+    #: touched; only the sheet describing them was. Reports read
+    #: :attr:`all_tasks`.
+    prior_tasks: list[TaskResult] = field(default_factory=list)
     skipped_datasets: list[dict[str, str]] = field(default_factory=list)
     #: (dataset, mode, reason) for every requested mode a dataset does not admit.
     skipped_modes: list[dict[str, str]] = field(default_factory=list)
@@ -200,6 +212,26 @@ class RunResult:
     sync_stats: dict[str, Any] = field(default_factory=dict)
     started_at: float = 0.0
     finished_at: float = 0.0
+
+    @property
+    def all_tasks(self) -> list[TaskResult]:
+        """Every task the run directory holds: carried over, then this pass's.
+
+        A task re-run in this pass supersedes the copy on disk, matched on
+        (dataset, model, template, version) -- the tuple that names a task
+        directory.
+        """
+        mine = {
+            (t.identity.dataset_id, t.identity.model_id,
+             t.identity.template_id, t.identity.template_version)
+            for t in self.tasks
+        }
+        carried = [
+            t for t in self.prior_tasks
+            if (t.identity.dataset_id, t.identity.model_id,
+                t.identity.template_id, t.identity.template_version) not in mine
+        ]
+        return [*carried, *self.tasks]
 
     @property
     def duration_s(self) -> float:
@@ -399,6 +431,18 @@ class EvaluationEngine:
                     run_dir=self.run_dir,
                 )
 
+            # What this run directory already holds. Loaded before any task
+            # runs so every report -- interim and final -- describes the whole
+            # directory rather than only this pass.
+            result.prior_tasks = await asyncio.to_thread(self._load_prior_tasks)
+            if result.prior_tasks:
+                logger.info(
+                    "resuming into a directory that already holds %d task(s) across %d "
+                    "model(s); the reports will cover those as well as this pass",
+                    len(result.prior_tasks),
+                    len({t.identity.model_id for t in result.prior_tasks}),
+                )
+
             if not self.dry_run:
                 result.endpoint_reports = await self._verify_endpoints()
 
@@ -514,6 +558,28 @@ class EvaluationEngine:
             )
         return result
 
+    def _load_prior_tasks(self) -> list[TaskResult]:
+        """Task results already on disk in this run directory.
+
+        Rebuilt from the records rather than carried in memory, because the
+        earlier pass may have been a different process, a different day or a
+        different model. Best effort: a directory that cannot be read costs the
+        report some rows, and must never cost the run.
+        """
+        datasets_root = self.run_dir / "datasets"
+        if not datasets_root.exists() or not any(datasets_root.iterdir()):
+            return []
+        try:
+            from .rebuild import rebuild_run_result
+
+            return list(rebuild_run_result(self.run_dir).tasks)
+        except Exception as exc:  # noqa: BLE001 - a report detail, not the run
+            logger.warning(
+                "could not read the task(s) already in %s, so the reports will cover "
+                "only this pass: %s", self.run_dir, exc,
+            )
+            return []
+
     async def _report_interim(self, result: RunResult, dataset_id: str) -> None:
         """Rewrite the report set now that ``dataset_id`` has no tasks left.
 
@@ -550,6 +616,7 @@ class EvaluationEngine:
                 result,
                 finished_at=time.time(),
                 tasks=list(result.tasks),
+                prior_tasks=list(result.prior_tasks),
                 skipped_datasets=list(result.skipped_datasets),
                 skipped_modes=list(result.skipped_modes),
                 introduced_modes=list(result.introduced_modes),
