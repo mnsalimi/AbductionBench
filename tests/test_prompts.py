@@ -991,3 +991,54 @@ def test_the_parsing_contract_is_identical_in_both_modes():
                 contracts[mode] = contract
                 assert ANSWER_PREFIX in messages[-1].content, (dataset_id, mode)
             assert contracts["io"] == contracts["cot"], (dataset_id, selection)
+
+
+def test_no_system_prompt_uses_a_verb_the_mode_instruction_negates():
+    """A dataset must not open with the verb the io mode line forbids.
+
+    The io mode instruction is "Answer directly. Do not explain your
+    reasoning." A system prompt that opens a sentence with "Explain" uses the
+    same verb a few lines above it, with a different object -- explain the
+    *outcome* versus explain your *reasoning* -- and a reader has to resolve
+    that collision before it can tell which one is meant. uncommonsense was the
+    only one, against 33 datasets that say State, Name, Identify, Propose,
+    Choose, Select, Decide or Answer.
+
+    The task is untouched: uncommonsense's answer still *is* an explanation,
+    named as a noun rather than demanded as an imperative that the next layer
+    takes back.
+    """
+    import re
+
+    # Verbs that name what the *response* should do, where the mode instruction
+    # already owns that question.
+    collides = re.compile(
+        r"(?:^|\.\s+)(Explain|Justify|Reason|Think|Elaborate|Describe your|Show your)\b"
+    )
+    offenders = []
+    for dataset_id, cls in _shipped_adapters():
+        text = getattr(cls, "system_prompt", "") or ""
+        found = collides.search(text)
+        if found:
+            offenders.append((dataset_id, found.group(1)))
+    assert not offenders, (
+        "system prompts using a verb the mode instruction negates "
+        f"(say State/Name/Identify/Propose instead): {offenders}"
+    )
+
+
+def test_uncommonsense_still_asks_for_an_explanation():
+    """The rewording must not have turned the task into something else.
+
+    Its answer is an explanation and its metric judges plausibility; if the
+    prompt stopped asking for one, the fix would have traded a wording
+    collision for a changed benchmark.
+    """
+    from abductionbench.core.registry import resolve_adapter
+
+    cls = resolve_adapter("abductionbench.adapters.uncommonsense:UncommonsenseAdapter")
+    prompt = cls.system_prompt
+    assert "explanation" in prompt, "the answer is still an explanation"
+    assert "likely, not merely possible" in prompt, "the task's own constraint stands"
+    assert cls.answer_format == "1 to 3 sentences"
+    assert cls.primary_metric == "plausibility_judged"
