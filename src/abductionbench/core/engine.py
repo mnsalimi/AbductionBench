@@ -1482,78 +1482,21 @@ class EvaluationEngine:
         if fatal is not None:
             result.failure = f"{type(fatal).__name__}: {fatal}"
 
-        # Optional LLM-judge pass over the scored samples.
-        if self.engine_cfg.judge.enabled and scores and not fatal:
-            try:
-                judge = JudgeStage(
-                    config=self.engine_cfg.judge,
-                    registry=self.registry,
-                    renderer=self.renderer,
-                    clients=self._clients,
-                    retry_policy=self.retry_policy,
-                    # Run-level, not task-level: the same (template, fields)
-                    # verdict would otherwise be re-bought once per task, and
-                    # the reasoning judge already caches this way.
-                    cache_dir=self.run_dir / "judge_cache",
-                    batch_disabled=self._batch_disabled,
-                    calls=self._judge_calls,
-                )
-                before = {
-                    sample.sample_id: score for sample, _r, score in scores
-                }
-                # The rendered prompts go in too: the judge is shown the whole
-                # exchange, not just the answer the scorer pulled out of it.
-                scores = await judge.apply(adapter, scores, rendered)
-                # The records were written per batch, before judging; bring the
-                # sample-level log up to date so a row shows the score its
-                # dataset is actually reported on.
-                rewritten = store.update_scores({
-                    sample.sample_id: {
-                        "metrics": dict(score.metrics),
-                        "prediction": score.prediction,
-                        "details": dict(score.details),
-                        "parse_ok": score.parse_ok,
-                    }
-                    for sample, _response, score in scores
-                    if before.get(sample.sample_id) is not score
-                })
-                if rewritten:
-                    logger.info(
-                        "task %s: %d sample record(s) updated with the judge's verdict",
-                        identity.slug, rewritten,
-                    )
-                if judge.unavailable:
-                    # Verdicts were asked for and never came back. `apply`
-                    # applies whatever it did obtain, so partial results are
-                    # kept -- but the task cannot be reported as scored.
-                    raise EndpointError(
-                        f"{judge.unavailable} judge verdict(s) unavailable "
-                        f"({judge.last_error})"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("task %s: judge stage failed: %s", identity.slug, exc)
-                checkpoint.notes["judge_error"] = str(exc)
-                if not adapter.objective_metrics:
-                    # For this dataset the judge IS the score. Its seeded 0.0
-                    # would otherwise be reported as if the model had got
-                    # everything wrong, which is indistinguishable from a
-                    # genuine zero -- and that is how an unreachable judge
-                    # produced a full set of plausible-looking zeros. The task
-                    # fails instead, and `abench run --resume` will retry it.
-                    result.failure = (
-                        f"judge stage failed and this dataset has no verifiable answer, so "
-                        f"there is no score without it: {type(exc).__name__}: {exc}"
-                    )
-                    logger.error(
-                        "task %s: refusing to report a judged metric the judge never "
-                        "produced; the task is marked failed", identity.slug,
-                    )
-
         # Rebuild checkpointed outputs into the same triplets a fresh sample
-        # produces, so the reasoning judge can see them too. A scoring-code
-        # change does not alter a request fingerprint, so a resumed COT run can
-        # hold perfectly reusable answers that predate these metrics; they must
-        # be judged rather than silently left blank.
+        # produces, so BOTH judges can see them. A scoring-code change does not
+        # alter a request fingerprint, so a resumed run can hold perfectly
+        # reusable answers that were never judged -- because the judge was off,
+        # or its endpoint was down, or these metrics postdate the answers. They
+        # must be judged rather than silently left blank.
+        #
+        # This is built before the judge stage rather than after it. For a long
+        # time it was after, which meant the answer judge only ever saw freshly
+        # generated samples: a run whose answers were already on disk skipped
+        # judging entirely and there was no way to fill the verdicts in later,
+        # since no CLI re-judges answers the way `judge-reasoning` re-judges
+        # chains. Serving the judge separately from the model under test -- the
+        # only way to fit a 31B model and a judge on one card -- needs exactly
+        # that, so the two judges now behave the same way.
         prompt_by_id = {prompt.sample_id: prompt for prompt in rendered}
         reused_triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
         reused_fingerprints: dict[str, str] = {}
@@ -1604,6 +1547,81 @@ class EvaluationEngine:
         # Structural reasoning metrics. The stage itself refuses anything that
         # is not cot/self-consistency, so an io output can never enter it; it is
         # shared across tasks so an observation inventory is bought once.
+
+        # Optional LLM-judge pass over the scored samples, fresh and reused
+        # alike. A reused record already carrying a verdict costs nothing to
+        # pass again: the judge cache is keyed by (template, fields) and lives
+        # in the run directory, so a resume into the same run hits it.
+        judgeable = [*scores, *reused_triplets]
+        if self.engine_cfg.judge.enabled and judgeable and not fatal:
+            try:
+                judge = JudgeStage(
+                    config=self.engine_cfg.judge,
+                    registry=self.registry,
+                    renderer=self.renderer,
+                    clients=self._clients,
+                    retry_policy=self.retry_policy,
+                    # Run-level, not task-level: the same (template, fields)
+                    # verdict would otherwise be re-bought once per task, and
+                    # the reasoning judge already caches this way.
+                    cache_dir=self.run_dir / "judge_cache",
+                    batch_disabled=self._batch_disabled,
+                    calls=self._judge_calls,
+                )
+                before = {
+                    sample.sample_id: score for sample, _r, score in judgeable
+                }
+                fresh_count = len(scores)
+                # The rendered prompts go in too: the judge is shown the whole
+                # exchange, not just the answer the scorer pulled out of it.
+                judged = await judge.apply(adapter, judgeable, rendered)
+                scores = judged[:fresh_count]
+                reused_triplets = judged[fresh_count:]
+                # The records were written per batch, before judging; bring the
+                # sample-level log up to date so a row shows the score its
+                # dataset is actually reported on.
+                rewritten = store.update_scores({
+                    sample.sample_id: {
+                        "metrics": dict(score.metrics),
+                        "prediction": score.prediction,
+                        "details": dict(score.details),
+                        "parse_ok": score.parse_ok,
+                    }
+                    for sample, _response, score in judged
+                    if before.get(sample.sample_id) is not score
+                })
+                if rewritten:
+                    logger.info(
+                        "task %s: %d sample record(s) updated with the judge's verdict",
+                        identity.slug, rewritten,
+                    )
+                if judge.unavailable:
+                    # Verdicts were asked for and never came back. `apply`
+                    # applies whatever it did obtain, so partial results are
+                    # kept -- but the task cannot be reported as scored.
+                    raise EndpointError(
+                        f"{judge.unavailable} judge verdict(s) unavailable "
+                        f"({judge.last_error})"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("task %s: judge stage failed: %s", identity.slug, exc)
+                checkpoint.notes["judge_error"] = str(exc)
+                if not adapter.objective_metrics:
+                    # For this dataset the judge IS the score. Its seeded 0.0
+                    # would otherwise be reported as if the model had got
+                    # everything wrong, which is indistinguishable from a
+                    # genuine zero -- and that is how an unreachable judge
+                    # produced a full set of plausible-looking zeros. The task
+                    # fails instead, and `abench run --resume` will retry it.
+                    result.failure = (
+                        f"judge stage failed and this dataset has no verifiable answer, so "
+                        f"there is no score without it: {type(exc).__name__}: {exc}"
+                    )
+                    logger.error(
+                        "task %s: refusing to report a judged metric the judge never "
+                        "produced; the task is marked failed", identity.slug,
+                    )
+
         reasoning_mode = identity.prompt_mode in (COT, SELF_CONSISTENCY)
         if self._reasoning_judge is not None and (scores or reused_triplets) and not fatal:
             try:

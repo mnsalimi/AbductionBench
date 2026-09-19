@@ -1323,3 +1323,112 @@ class SeededJudgeAdapter(FakeAdapter):
     assert task.failure, "an unreachable judge was reported as a scored task"
     assert "judge" in task.failure.lower()
     assert "no verifiable answer" in task.failure
+
+
+def test_a_resume_fills_in_verdicts_the_first_pass_never_bought(
+    fake_server, write_run_config, fake_dataset, tmp_path, monkeypatch
+):
+    """Generate with the judge off, judge later, into the same run.
+
+    This is what running a big model and its judge on one card requires: the
+    card holds gemma-4-31b at 0.82 or the judge, not both, so the answers are
+    produced first and the verdicts bought afterwards.
+
+    It only works if the answer judge looks at *reused* records. For a long time
+    it looked at freshly generated ones alone, so a resume whose answers were
+    already on disk skipped judging and the verdicts could never be filled in --
+    unlike the reasoning judge, which has taken reused records all along and has
+    `abench judge-reasoning` besides.
+    """
+    adapter_src = tmp_path / "late_judged_adapter.py"
+    adapter_src.write_text(
+        '''
+from fake_adapter import FakeAdapter
+
+
+class LateJudgedAdapter(FakeAdapter):
+    """Its primary metric exists only once a judge has ruled."""
+
+    primary_metric = "verdict"
+    objective_metrics = True   # so a judge outage does not fail the task
+
+    def score(self, sample, response, *, output_contract=None):
+        from abductionbench.core.types import SampleScore
+
+        return SampleScore(metrics={"verdict": 0.0}, prediction=response.text)
+
+    def aggregate(self, scores):
+        values = [s.metrics.get("verdict", 0.0) for s in scores]
+        return {"verdict": sum(values) / max(1, len(values))}
+
+    def judge_request(self, sample, response, score):
+        if not response.text:
+            return None
+        return {"candidate": response.text, "gold": str(sample.reference)}
+
+    def apply_judge(self, sample, response, score, verdict):
+        from abductionbench.core.types import SampleScore
+
+        return SampleScore(
+            metrics={**score.metrics, "verdict": 1.0 if getattr(verdict, "positive", False) else 0.0},
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details=score.details,
+        )
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    dataset = {
+        "id": "late",
+        "impl": "late_judged_adapter:LateJudgedAdapter",
+        "sample_size": 4,
+        "options": {"n": 4},
+    }
+
+    # Pass one: the judge is off, exactly as it is when its server is down to
+    # make room for the model under test.
+    unjudged_cfg = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[dataset],
+        engine={"judge": {"enabled": False, "model": "fake-model"}},
+    )
+    result, _ = _run(unjudged_cfg)
+    assert result.tasks[0].n_scored == 4
+    assert result.tasks[0].metrics["verdict"] == 0.0, "nothing judged yet"
+
+    # Pass two: the judge is back. Every answer is already on disk, so this
+    # buys verdicts and nothing else.
+    fake_server.state.responder = lambda conv, mt: "YES"
+    calls_before = len(fake_server.state.batch_calls)
+
+    judged_cfg = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[dataset],
+        engine={"judge": {"enabled": True, "model": "fake-model"}},
+    )
+    config = load_run_config(judged_cfg)
+    engine2 = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    result2 = asyncio.run(engine2.run())
+    task = result2.tasks[0]
+
+    assert task.n_reused == 4, "the answers must be reused, not re-generated"
+    assert task.metrics["verdict"] == 1.0, "the resume must fill the verdicts in"
+    # Judge calls were made; the model under test was not asked anything new.
+    assert len(fake_server.state.batch_calls) > calls_before
+
+    # And the records on disk carry the verdict, not just the in-memory summary.
+    import orjson
+
+    records = [
+        orjson.loads(line)
+        for line in (
+            result.run_dir / "datasets" / "late" / "fake-model"
+            / f"{task.identity.template_id}@{task.identity.template_version}"
+            / "records.jsonl"
+        ).read_bytes().splitlines()
+        if line.strip()
+    ]
+    assert records, "no records written"
+    assert all(r["metrics"]["verdict"] == 1.0 for r in records[-4:]), records[-1]

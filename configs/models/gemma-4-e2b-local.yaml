@@ -1,0 +1,33 @@
+# google/gemma-4-E2B-it served by vLLM on this instance (gemma-4-e2b-vllm,
+# 127.0.0.1:18005), reached directly because the engine runs on the GPU host.
+#
+# The smallest of the three gemmas: GPU_MEMORY_UTILIZATION=0.15, so it leaves
+# room for a second model on the same card -- which is the reason it is run at
+# all, alongside the 31b.
+extends: [gemma-4-e4b.yaml]
+model:
+  id: gemma-4-e2b-local
+  model_name: google/gemma-4-E2B-it
+  description: >-
+    Gemma 4 E2B instruction-tuned, served by vLLM with MAX_MODEL_LEN=16384 and
+    MAX_NUM_SEQS=8.
+  endpoint:
+    base_url: ${env:ABENCH_E2B_URL|http://127.0.0.1:18005}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    batch:
+      base_url: ${env:ABENCH_E2B_URL|http://127.0.0.1:18005}
+      path: /v1/chat/completions/batch
+      # MAX_NUM_SEQS=8 on this service, so a group of 8 fills its scheduler.
+      group_size: 8
+    discovery:
+      # A fixed local address never rotates, so discovery is disabled.
+      base_url_command: null
+      batch_base_url_command: null
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN from gemma-4-e2b/.env.
+    context_window: 16384
+  notes:
+    served_by: vLLM (gemma-4-e2b-vllm supervisor service, port 18005)

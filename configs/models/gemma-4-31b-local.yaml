@@ -1,0 +1,33 @@
+# google/gemma-4-31B-it served by vLLM on this instance (gemma-4-31b-vllm,
+# 127.0.0.1:18006), reached directly because the engine runs on the GPU host.
+#
+# The largest model this card holds: GPU_MEMORY_UTILIZATION=0.82 (~80 GiB of
+# 97,887 MiB). Nothing of gpt-oss-20b's size fits beside it, which is why a run
+# that includes this model cannot also judge inline with the 20b judge unless
+# that judge is given a much smaller share.
+extends: [gemma-4-e4b.yaml]
+model:
+  id: gemma-4-31b-local
+  model_name: google/gemma-4-31B-it
+  description: >-
+    Gemma 4 31B instruction-tuned, served by vLLM with MAX_MODEL_LEN=8192 and
+    MAX_NUM_SEQS=8.
+  endpoint:
+    base_url: ${env:ABENCH_31B_URL|http://127.0.0.1:18006}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    batch:
+      base_url: ${env:ABENCH_31B_URL|http://127.0.0.1:18006}
+      path: /v1/chat/completions/batch
+      group_size: 8
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+  limits:
+    max_parallel_batches: 2
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN from gemma-4-31b/.env -- half the e4b's window, so the
+    # engine's per-sample output clamp bites harder here. It is reported.
+    context_window: 8192
+  notes:
+    served_by: vLLM (gemma-4-31b-vllm supervisor service, port 18006)

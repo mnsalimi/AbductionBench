@@ -72,6 +72,8 @@ models:
   # 127.0.0.1:18000. A run lists the models it can actually reach, so this line
   # follows the supervisor service rather than the other way round.
   - file: ../models/gemma-4-e4b-local.yaml
+  - file: ../models/gemma-4-e2b-local.yaml
+  - file: ../models/gemma-4-31b-local.yaml
 
   # The judge. Listed here because the run needs a client to reach it, and
   # marked `judge_only: true` in its own file so it is not evaluated: it is
