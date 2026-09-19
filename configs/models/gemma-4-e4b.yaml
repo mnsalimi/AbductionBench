@@ -56,7 +56,14 @@ model:
     extra: {}
 
   limits:
-    max_parallel_batches: 2
+    # 8 x 8 = 64 in flight, matching MAX_NUM_SEQS=64. It was 2 (16 in flight)
+    # against the same 64-sequence server: measured on the 31b, that shape
+    # leaves vLLM reporting "Waiting: 0 reqs" with the cache a quarter full,
+    # because the engine holds a batch open until all 8 of its requests return
+    # and the tail of each batch drains the server. group_size stays 8 --
+    # vLLM is not bit-stable across batch sizes, so that is the one number
+    # here that changes results rather than throughput.
+    max_parallel_batches: 8
     requests_per_minute: null
     tokens_per_minute: null
     # MAX_MODEL_LEN from gemma-4-e4b/.env. This is much tighter than the suite's
