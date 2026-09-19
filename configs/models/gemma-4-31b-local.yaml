@@ -12,8 +12,16 @@
 # for 8,192 tokens per request: 2.49x"); at 0.93 it holds 32,788 ("4.00x").
 # That 4x is the worst case -- it assumes every request fills the whole 8,192
 # window, and vLLM allocates per actual token, so a typical prompt runs several
-# times more concurrently. group_size 8 x max_parallel_batches 2 = 16 in flight
-# matches MAX_NUM_SEQS=16; sending more would only queue inside the server.
+# times more concurrently. Measured on the real suite: at Running=10 the cache
+# sat at 25%, i.e. ~2.5% per sequence, so roughly 40 fit.
+#
+# 8 x 2 = 16 in flight was far too few, and the server said so plainly --
+# "Waiting: 0 reqs" on every line while Running fell to 4 and KV usage to 13%.
+# The engine holds a batch open until all 8 of its requests return, so the tail
+# of each batch drained the server. More batches in flight, not bigger ones:
+# group_size stays 8 because vLLM at a fixed temperature is not bit-stable
+# across batch sizes, while the number of concurrent batches changes nothing
+# about any single request's result.
 extends: [gemma-4-e4b.yaml]
 model:
   id: gemma-4-31b-local
@@ -32,7 +40,10 @@ model:
       base_url_command: null
       batch_base_url_command: null
   limits:
-    max_parallel_batches: 2
+    # 6 x 8 = 48 requested against MAX_NUM_SEQS=48. vLLM schedules what the KV
+    # cache holds (~40) and queues the rest, which is the point: a short queue
+    # is what stops the GPU going idle between batches.
+    max_parallel_batches: 6
     requests_per_minute: null
     tokens_per_minute: null
     # MAX_MODEL_LEN from gemma-4-31b/.env -- half the e4b's window, so the
