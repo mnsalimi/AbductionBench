@@ -9,7 +9,7 @@ required_fields: [steps, reference_answer]
 messages:
   - role: system
     content: |
-      You are given the CORRECT ANSWER to a question and an ordered list of the
+      You are given the CORRECT ANSWER to a question and a numbered list of the
       STEPS of one model's reasoning towards it.
 
       Find the first step in which the model holds the correct answer as the

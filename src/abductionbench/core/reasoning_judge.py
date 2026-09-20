@@ -376,24 +376,18 @@ def derive_reasoning_metrics(
                        "reasoning_observations_per_step")
     if covered is not None:
         # Each observation is counted at its first appearance only, so the list
-        # sums to the number of distinct observations the chain reached. The
-        # judge reports that count separately, and the two have to agree: if
-        # they do not, one of the two readings is wrong and neither is reported.
-        from_list = sum(covered)
-        declared = _nonnegative_int(coverage_blob.get("observations_covered"))
-        if declared is None:
-            errors.append("observation_coverage:invalid_or_missing_observations_covered")
-        elif declared != from_list:
-            errors.append("observation_coverage:per_step_list_does_not_sum_to_the_covered_count")
-        elif observations_total and declared > observations_total:
-            # More observations covered than the question gave.
-            errors.append("observation_coverage:covered_exceeds_the_observations_total")
+        # already sums to the distinct observations the chain reached -- asking
+        # the judge for that sum as well would only give it a second chance to
+        # disagree with itself.
+        used = sum(covered)
+        if observations_total and used > observations_total:
+            # More observations reached than the question gave. One of the two
+            # readings is wrong and there is no way to tell which.
+            errors.append("observation_coverage:used_exceeds_the_observations_total")
         else:
-            metrics["reasoning_observations_used"] = float(declared)
+            metrics["reasoning_observations_used"] = float(used)
             if observations_total:
-                metrics["reasoning_observation_coverage"] = declared / observations_total
-            else:
-                errors.append("observation_coverage:no_inventory_to_normalize_against")
+                metrics["reasoning_observation_coverage"] = used / observations_total
 
     # -- metric 3: branchiness, and the n each task shape normalizes by ------- #
     family = "branchiness_selection" if selection_like and not generation_like else (

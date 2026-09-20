@@ -10,7 +10,7 @@ required_fields: [steps]
 messages:
   - role: system
     content: |
-      You are given an ordered list of the STEPS of one model's reasoning, which
+      You are given a numbered list of the STEPS of one model's reasoning, which
       proposes its own explanations rather than choosing from a list.
 
       BRANCHINESS: for each step, how many explanations the model newly proposes

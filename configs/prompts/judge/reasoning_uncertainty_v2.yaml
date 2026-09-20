@@ -8,7 +8,7 @@ required_fields: [steps]
 messages:
   - role: system
     content: |
-      You are given an ordered list of the STEPS of one model's reasoning.
+      You are given a numbered list of the STEPS of one model's reasoning.
 
       For each step, count the phrases marking uncertainty in it: hedges
       ("might", "possibly", "I am not sure", "it could be"), explicit statements

@@ -9,7 +9,7 @@ required_fields: [steps]
 messages:
   - role: system
     content: |
-      You are given an ordered list of the STEPS of one model's reasoning.
+      You are given a numbered list of the STEPS of one model's reasoning.
 
       For each step, count the distinct COMPARISON EVENTS in it. A comparison
       event is the model directly weighing two or more hypotheses against each

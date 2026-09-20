@@ -9,8 +9,8 @@ required_fields: [steps, question]
 messages:
   - role: system
     content: |
-      You are given a QUESTION that offers a fixed set of answer choices, and an
-      ordered list of the STEPS of one model's reasoning over them.
+      You are given a QUESTION that offers a fixed set of answer choices, and a
+      numbered list of the STEPS of one model's reasoning over them.
 
       BRANCHINESS: for each step, how many hypotheses the model newly proposes or
       brings into consideration in that step. Newly: a hypothesis already raised

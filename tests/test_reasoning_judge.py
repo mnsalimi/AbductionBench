@@ -37,11 +37,11 @@ def _raw(**overrides):
             "proof_disproof_counts": [0, 1, 1, 2],
             "backtracking_steps": 1,
         },
-        # One call: the total, and first-appearance placement per step.
+        # One call: the total, and first-appearance placement per step. The
+        # list's own sum is the covered count, so it is not asked for twice.
         "observation_coverage": {
             "observations_total": 3,
             "observations_per_step": [1, 1, 0, 1],
-            "observations_covered": 3,
         },
         "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
         "directionality": {"directionality": 0.5},
@@ -214,7 +214,6 @@ def test_a_question_with_no_observations_blocks_the_ratio():
         _raw(observation_coverage={
             "observations_total": 0,
             "observations_per_step": [0, 0, 0, 0],
-            "observations_covered": 0,
         })
     )
     assert "observation_coverage:invalid_or_missing_observations_total" in errors
@@ -455,10 +454,7 @@ def _reasoning_responder(conversation, max_tokens):
             '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
         )
     if '"observations_per_step"' in body:
-        return (
-            '{"observations_total": 3, "observations_per_step": [1, 1, 0, 0], '
-            '"observations_covered": 2}'
-        )
+        return '{"observations_total": 3, "observations_per_step": [1, 1, 0, 0]}'
     if '"branchiness_per_step"' in body and '"diversity"' in body:
         return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
     if '"branchiness_per_step"' in body:
@@ -1105,7 +1101,6 @@ def test_coverage_counts_each_observation_once_so_it_cannot_exceed_one():
             observation_coverage={
                 "observations_total": 4,
                 "observations_per_step": [2, 1, 0, 0],
-                "observations_covered": 3,
             },
         )
     )
@@ -1115,28 +1110,22 @@ def test_coverage_counts_each_observation_once_so_it_cannot_exceed_one():
     assert metrics["reasoning_observation_coverage"] <= 1.0
 
 
-def test_the_covered_count_and_the_per_step_list_have_to_agree():
-    """Two readings of the same thing, so a disagreement discards both."""
+def test_a_chain_cannot_reach_more_observations_than_the_question_gave():
+    """The only cross-check left, and the only one that carries information.
+
+    The per-step list's own sum is the covered count, so asking the judge for
+    that sum as well would give it a second chance to disagree with itself and
+    tell us nothing new. What the total does check is real: a list summing above
+    it means one of the two readings is wrong and there is no way to tell which.
+    """
     _m, _l, errors, _i = _derive(
         _raw(observation_coverage={
-            "observations_total": 3,
+            "observations_total": 1,
             "observations_per_step": [1, 1, 0, 1],
-            "observations_covered": 2,
         })
     )
-    assert "observation_coverage:per_step_list_does_not_sum_to_the_covered_count" in errors
-
-    # And the chain cannot cover more observations than the question gave.
-    _m2, _l2, errors2, _i2 = _derive(
-        _raw(
-            observation_coverage={
-                "observations_total": 1,
-                "observations_per_step": [1, 1, 0, 1],
-                "observations_covered": 3,
-            },
-        )
-    )
-    assert "observation_coverage:covered_exceeds_the_observations_total" in errors2
+    assert "observation_coverage:used_exceeds_the_observations_total" in errors
+    assert "reasoning_observation_coverage" not in _m
 
 
 
@@ -1178,3 +1167,27 @@ def test_every_judge_call_in_this_stage_runs_at_temperature_zero():
     engine = EngineConfig()
     assert engine.reasoning_judge.temperature == 0.0
     assert engine.judge.temperature == 0.0
+
+
+def test_the_prompts_may_call_the_step_list_numbered_because_it_is():
+    """The wording is only honest because the renderer makes it so.
+
+    Every prompt that consumes the segmentation says "numbered list", and the
+    judge is invited to align its i-th value by those numbers. That is true only
+    because the step list is rendered through `_numbered` on the way in -- if it
+    were ever passed through raw, every one of those prompts would be lying and
+    the alignment the per-step metrics rest on would be guesswork.
+    """
+    import inspect
+
+    from abductionbench.core.reasoning_judge import ReasoningJudgeStage, _numbered
+
+    assert _numbered(["first", "second"]) == "1. first\n2. second"
+
+    source = inspect.getsource(ReasoningJudgeStage._evaluate)
+    assert '["steps"] = _numbered(' in source, source
+
+    for path in sorted(JUDGE_PROMPTS.glob("reasoning_*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        if "{{ steps }}" in text:
+            assert "numbered list" in text, f"{path.name} consumes steps but never says numbered"

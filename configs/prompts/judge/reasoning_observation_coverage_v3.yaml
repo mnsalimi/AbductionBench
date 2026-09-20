@@ -10,7 +10,7 @@ required_fields: [question, steps]
 messages:
   - role: system
     content: |
-      You are given a QUESTION and an ordered list of the STEPS of one model's
+      You are given a QUESTION and a numbered list of the STEPS of one model's
       reasoning about it. Work out how much of the question's evidence the
       reasoning actually drew on.
 
@@ -28,16 +28,13 @@ messages:
       counted it. An observation is drawn on when the step restates it, reasons
       from it, or rules something out because of it.
 
-      Report three things:
+      Report two things:
 
       TOTAL OBSERVATIONS: how many the question gives, whether or not the
       reasoning used them.
 
       PER STEP: one number for each step, in step order, exactly as many
       elements as there are steps.
-
-      DISTINCT OBSERVATIONS COVERED: how many of the question's observations the
-      chain draws on anywhere. It can never exceed the total.
 
       Reply with the JSON object and nothing else.
   - role: user
@@ -49,9 +46,8 @@ messages:
       {{ steps }}
 
       Reply with exactly this object and nothing after it:
-      {"observations_total": <integer>, "observations_per_step": [<integer>, <integer>, ...], "observations_covered": <integer>}
+      {"observations_total": <integer>, "observations_per_step": [<integer>, <integer>, ...]}
 output_contract:
   json_fields:
     observations_total: nonnegative_integer
     observations_per_step: list_of_nonnegative_integers
-    observations_covered: nonnegative_integer
