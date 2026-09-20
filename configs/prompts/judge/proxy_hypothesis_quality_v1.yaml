@@ -1,0 +1,88 @@
+id: proxy_hypothesis_quality_v1
+version: "1.0"
+description: >-
+  PROJECT-SPECIFIC PROXY, not HypoArena's own evaluation. Scores a generated
+  hypothesis or hypothesis set 0-5 on three dimensions -- grounding, insight and
+  testability -- without treating any source-derived hypothesis as the one right
+  answer.
+task_kinds: [judge]
+required_fields: [candidate]
+optional_fields: [observation, context, references, full_prompt, full_response]
+messages:
+  - role: system
+    content: |
+      You rate the quality of a hypothesis, or a set of hypotheses, proposed to
+      explain a case.
+
+      THERE IS NO SINGLE RIGHT ANSWER HERE. If you are shown hypotheses drawn
+      from the source material, treat them as a yardstick for the standard a
+      good answer reaches -- not as the answer. A candidate that proposes
+      something different from all of them can still score 5, provided it stands
+      up on its own. Do not reward a candidate for resembling them, and do not
+      penalise it for departing from them.
+
+      Judge on three things, all of them about the candidate itself:
+
+      GROUNDED -- does it follow from what the case actually says? A hypothesis
+      that ignores the evidence, contradicts it, or would fit any case at all is
+      not grounded.
+
+      INSIGHT -- does it say something worth knowing? Restating the case, or
+      naming a cause so generic it explains nothing, is not insight.
+
+      TESTABLE -- does it point at evidence that would tell you whether it is
+      right? A hypothesis no observation could bear on is not testable.
+
+      Where several hypotheses are offered, judge the set: its best member
+      matters most, but a set padded with weak or repeated entries is worse than
+      a short sharp one.
+
+      Score 0-5:
+      5 -- grounded, genuinely insightful, and clearly testable.
+      4 -- strong on all three, with one of them thin.
+      3 -- grounded and plausible, but obvious or hard to test.
+      2 -- loosely connected to the case, or too vague to act on.
+      1 -- barely related to the case.
+      0 -- irrelevant, contradictory, or no hypothesis offered.
+  - role: user
+    content: |
+      {% if full_prompt %}
+      ===== WHAT THE MODEL WAS ASKED =====
+      {{ full_prompt }}
+
+      ===== WHAT THE MODEL REPLIED, IN FULL =====
+      {{ full_response }}
+
+      ===== THE JUDGEMENT =====
+      The answer below was read out of that reply. Judge that answer; the
+      exchange above is context for reading it, not a second thing to grade.
+
+      {% endif %}
+      {% if observation %}
+      THE CASE:
+      {{ observation }}
+
+      {% endif %}
+      {% if references %}
+      HYPOTHESES DRAWN FROM THE SOURCE MATERIAL, FOR CALIBRATION ONLY.
+      These show the standard a good answer reaches. They are NOT the answer,
+      and the candidate is not being compared against them:
+      {{ references }}
+
+      {% endif %}
+      CANDIDATE HYPOTHESIS OR HYPOTHESES:
+      {{ candidate }}
+
+      Reply with exactly these four lines and nothing else:
+      Grounded: <integer 0-5>
+      Insight: <integer 0-5>
+      Testable: <integer 0-5>
+      Score: <integer 0-5>
+output_contract:
+  score_regex: "(?<!\\w)score\\s*:?\\s*(?P<score>[0-5])"
+  expect_numeric_score: true
+  score_scale: 5
+  detail_regexes:
+    grounded: "grounded\\s*:?\\s*(?P<grounded>[0-5])"
+    insight: "insight\\s*:?\\s*(?P<insight>[0-5])"
+    testable: "testable\\s*:?\\s*(?P<testable>[0-5])"

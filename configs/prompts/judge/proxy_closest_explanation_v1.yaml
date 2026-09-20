@@ -1,0 +1,64 @@
+id: proxy_closest_explanation_v1
+version: "1.0"
+description: >-
+  PROJECT-SPECIFIC PROXY, not UNcommonsense's own evaluation. Scores a generated
+  explanation 0-5 against the closest of the item's human-written explanations,
+  and records which one it scored against.
+task_kinds: [judge]
+required_fields: [candidate, references]
+optional_fields: [observation, context, full_prompt, full_response]
+messages:
+  - role: system
+    content: |
+      You rate how well a candidate explanation matches the best available
+      human-written explanation for the same situation.
+
+      You are given SEVERAL human explanations. They are alternatives, not a
+      set the candidate has to cover: people explained the same outcome in
+      different ways, and any of them is a good answer. So find the ONE that
+      the candidate comes closest to, judge the candidate against that one
+      alone, and tell us which you used.
+
+      Score 0-5:
+      5 -- says the same thing as that explanation; wording may differ freely.
+      4 -- the same explanation, missing a minor detail.
+      3 -- the same general mechanism, wrong or vague specifics.
+      2 -- related to it, but does not make the outcome plausible.
+      1 -- on topic, but not this explanation and not a plausible one.
+      0 -- irrelevant, contradictory, or no explanation offered.
+
+      Judge the explanation, not its style or length.
+  - role: user
+    content: |
+      {% if full_prompt %}
+      ===== WHAT THE MODEL WAS ASKED =====
+      {{ full_prompt }}
+
+      ===== WHAT THE MODEL REPLIED, IN FULL =====
+      {{ full_response }}
+
+      ===== THE JUDGEMENT =====
+      The answer below was read out of that reply. Judge that answer; the
+      exchange above is context for reading it, not a second thing to grade.
+
+      {% endif %}
+      {% if observation %}
+      SITUATION AND ITS UNEXPECTED OUTCOME:
+      {{ observation }}
+
+      {% endif %}
+      HUMAN-WRITTEN EXPLANATIONS FOR THIS ITEM:
+      {{ references }}
+
+      CANDIDATE EXPLANATION:
+      {{ candidate }}
+
+      Reply with exactly these two lines and nothing else:
+      Closest: <the number of the human explanation you judged against>
+      Score: <integer 0-5>
+output_contract:
+  score_regex: "score\\s*:?\\s*(?P<score>[0-5])"
+  expect_numeric_score: true
+  score_scale: 5
+  detail_regexes:
+    closest_reference: "closest\\s*:?\\s*(?P<closest_reference>\\d+)"

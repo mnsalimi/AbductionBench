@@ -28,9 +28,19 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
+from ._base import PooledDatasetAdapter, apply_proxy_score, judged_only_score
 
 REPO_ID = "ChicagoHAI/HypoGeniC-datasets"
+
+
+def _numbered_references(references: Any) -> str:
+    """The item's reference texts, numbered so a judge can name the one it used.
+
+    Numbered rather than bulleted because the judge is asked which it scored
+    against, and an index is the only handle that survives into the record.
+    """
+    items = [str(item).strip() for item in (references or []) if str(item).strip()]
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
 
 
 class HypoBenchAdapter(PooledDatasetAdapter):
@@ -53,7 +63,12 @@ class HypoBenchAdapter(PooledDatasetAdapter):
     )
     objective_metrics = False
     selection_cardinality = None
-    primary_metric = "hypothesis_judged"
+    #: A PROJECT-SPECIFIC PROXY, not this benchmark's own protocol.
+    #: The `proxy_` prefix is load-bearing: these numbers must never be
+    #: read as the paper's metric, and the prefix is what a reader sees
+    #: first in a sheet.
+    judge_template = "proxy_closest_hypothesis_v1"
+    primary_metric = "proxy_closest_hypothesis_score"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -201,10 +216,10 @@ class HypoBenchAdapter(PooledDatasetAdapter):
         resemblance to one particular wording rather than correctness.
         """
         stratum = sample.metadata.get("task", "unknown").replace("/", "_")
-        extra = {f"hypothesis_judged_{stratum}": 0.0}
+        extra = {f"proxy_closest_hypothesis_score_{stratum}": 0.0}
         return judged_only_score(
             response,
-            metric="hypothesis_judged",
+            metric="proxy_closest_hypothesis_score",
             output_contract=output_contract,
             extra_metrics=extra,
             details={"n_references": len(sample.reference["references"])},
@@ -220,19 +235,18 @@ class HypoBenchAdapter(PooledDatasetAdapter):
             return None
         return {
             "candidate": score.prediction or response.text[:600],
-            "gold": sample.reference["gold"],
+            # All known hypotheses, not just the first: a dataset can be
+            # separated by several patterns, and finding the second one is not
+            # a failure to find the first.
+            "references": _numbered_references(sample.reference.get("references")),
             "observation": sample.fields["observation"],
-            "criteria": (
-                "Correct if the candidate identifies the same distinguishing pattern as the "
-                "reference hypothesis, in the same direction."
-            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
         """The verdict is the score -- and the score of every stratum of it."""
-        return apply_judged_metric(score, verdict, "hypothesis_judged")
+        return apply_proxy_score(score, verdict, "proxy_closest_hypothesis_score")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -258,17 +272,14 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
                 "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
                 "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
-                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis "
-                "identifies the same relationship as a known one. 1.0 when the judge affirms, 0.0 "
-                "when it does not or when the response could not be parsed. The dataset score is "
-                "the mean over repeats x records.",
-                "hypothesis_judged_<task>": "the same verdict restricted to one task; identical definition, filtered "
+                "proxy_closest_hypothesis_score": "(PRIMARY, PROJECT-SPECIFIC PROXY -- not HypoBench's own evaluation. higher is better, 0-1) How closely the generated hypothesis matches the CLOSEST of the item's known hypotheses, graded 0-5 by an LLM judge and rescaled. Both halves count: the feature it names and the DIRECTION of the relationship it claims -- naming the right feature backwards scores low, because that is the opposite hypothesis. The judge records which known hypothesis it used and whether the direction matched. Blank, never 0.0, when the judge call failed.",
+                "proxy_closest_hypothesis_score_<task>": "the same verdict restricted to one task; identical definition, filtered "
                 "population",
-                "best_of_n_hypothesis_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "best_of_n_proxy_closest_hypothesis_score": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
                 "highest, then averaged over records. Read off the same modes.repeats samples -- "
                 "no extra calls. This is what replaces self-consistency here: a plurality needs "
                 "answers that can coincide, and free-text hypotheses do not.",
-                "hypothesis_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "proxy_closest_hypothesis_score_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
                 "across repeats -- how much the same question's answers varied.",
                 "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
                 "Near 0 is expected for free-text generation.",
@@ -276,7 +287,7 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 "These score 0 on the primary metric and are counted here separately, so being "
                 "unparseable is distinguishable from being wrong.",
             },
-            primary_metric="hypothesis_judged",
+            primary_metric="proxy_closest_hypothesis_score",
             decisions=[
                 "Used train examples as the evidence shown to the model (test/val are held out "
                 "for the classification task the dataset was built for, and a hypothesis is "
@@ -290,6 +301,7 @@ class HypoBenchAdapter(PooledDatasetAdapter):
                 "best match among them.",
             ],
             caveats=[
+                "proxy_closest_hypothesis_score IS NOT THE PAPER'S METRIC. HypoBench reports hypothesis discovery rate, feature discovery rate and held-out classification performance; none of those is computed here. This is an LLM-judge proxy defined by this suite, and it replaced a binary verdict taken against known[0] alone -- a dataset separable by several patterns marked the second one wrong.",
                 "These overlap numbers are diagnostics, not the evaluation: "
                 "character/n-gram similarity punishes a correct paraphrase and "
                 "rewards a wrong sentence that reuses the reference's words, so "

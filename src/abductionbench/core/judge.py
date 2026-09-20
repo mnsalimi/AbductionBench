@@ -307,6 +307,7 @@ class JudgeStage:
                     "score": verdict.score,
                     "raw": verdict.raw[:2000],
                     "parsed": verdict.parsed,
+                    "details": dict(verdict.details),
                 }
 
         # The batches go out together, throttled only by the shared semaphore.
@@ -328,6 +329,9 @@ class JudgeStage:
                 score=cached.get("score"),
                 raw=cached.get("raw", ""),
                 parsed=bool(cached.get("parsed")),
+                # Carried through the cache too, or a resumed run would lose
+                # exactly the record that makes a proxy score checkable.
+                details=dict(cached.get("details") or {}),
             )
             sample, response, score = updated[index]
             try:
@@ -407,4 +411,16 @@ class JudgeStage:
             scale = float(contract.get("score_scale", 1.0) or 1.0)
             verdict.score = raw_score / scale if scale else raw_score
             verdict.parsed = True
+
+        # Anything else the template wants on the record: which reference the
+        # judge scored against, what it said about each rubric dimension. A
+        # score with no trace of how it was reached is not auditable, and these
+        # proxy scores are the ones most in need of auditing.
+        for name, pattern in (contract.get("detail_regexes") or {}).items():
+            match = re.search(str(pattern), raw, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                groups = match.groupdict()
+                value = groups.get(name) or (match.group(1) if match.groups() else None)
+                if value is not None:
+                    verdict.details[name] = value.strip()
         return verdict

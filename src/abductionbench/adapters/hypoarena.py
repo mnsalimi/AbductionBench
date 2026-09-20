@@ -27,9 +27,19 @@ from ..core.adapter import SkippedDataset
 from ..core.metrics import aggregate_mean_metrics
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
+from ._base import PooledDatasetAdapter, apply_proxy_score, judged_only_score
 
 REPO_ID = "HypoArena/HypoData"
+
+
+def _numbered_references(references: Any) -> str:
+    """The item's reference texts, numbered so a judge can name the one it used.
+
+    Numbered rather than bulleted because the judge is asked which it scored
+    against, and an index is the only handle that survives into the record.
+    """
+    items = [str(item).strip() for item in (references or []) if str(item).strip()]
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
 
 
 class HypoArenaAdapter(PooledDatasetAdapter):
@@ -52,7 +62,12 @@ class HypoArenaAdapter(PooledDatasetAdapter):
     )
     objective_metrics = False
     selection_cardinality = None
-    primary_metric = "hypothesis_judged"
+    #: A PROJECT-SPECIFIC PROXY, not this benchmark's own protocol.
+    #: The `proxy_` prefix is load-bearing: these numbers must never be
+    #: read as the paper's metric, and the prefix is what a reader sees
+    #: first in a sheet.
+    judge_template = "proxy_hypothesis_quality_v1"
+    primary_metric = "proxy_hypothesis_quality_score"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -130,10 +145,10 @@ class HypoArenaAdapter(PooledDatasetAdapter):
         resemblance to one particular wording rather than correctness.
         """
         stratum = sample.metadata.get("domain", "unknown")
-        extra = {f"hypothesis_judged_{stratum}": 0.0}
+        extra = {f"proxy_hypothesis_quality_score_{stratum}": 0.0}
         return judged_only_score(
             response,
-            metric="hypothesis_judged",
+            metric="proxy_hypothesis_quality_score",
             output_contract=output_contract,
             extra_metrics=extra,
             details={"n_references": len(sample.reference["references"])},
@@ -149,19 +164,19 @@ class HypoArenaAdapter(PooledDatasetAdapter):
             return None
         return {
             "candidate": score.prediction or response.text[:900],
-            "gold": sample.reference["gold"],
+            # Passed for calibration, explicitly not as the answer: HypoArena's
+            # source-derived hypotheses are one good analysis of the case, not
+            # the only one, and scoring resemblance to them marked a better
+            # hypothesis wrong for being different.
+            "references": _numbered_references(sample.reference.get("references")),
             "observation": sample.fields["observation"],
-            "criteria": (
-                "Correct if the candidate identifies the same underlying mechanism or cause as "
-                "the reference hypothesis."
-            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
         """The verdict is the score -- and the score of every stratum of it."""
-        return apply_judged_metric(score, verdict, "hypothesis_judged")
+        return apply_proxy_score(score, verdict, "proxy_hypothesis_quality_score")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -181,17 +196,14 @@ class HypoArenaAdapter(PooledDatasetAdapter):
                 "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
                 "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
                 "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
-                "hypothesis_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the hypothesis is "
-                "a valid explanation of the observations. 1.0 when the judge affirms, 0.0 when it "
-                "does not or when the response could not be parsed. The dataset score is the mean "
-                "over repeats x records.",
-                "hypothesis_judged_<domain>": "the same verdict restricted to one domain; identical definition, filtered "
+                "proxy_hypothesis_quality_score": "(PRIMARY, PROJECT-SPECIFIC PROXY -- not HypoArena's own evaluation. higher is better, 0-1) A quality score for the generated hypothesis or hypothesis set, graded 0-5 by an LLM judge on three dimensions and rescaled: whether it is GROUNDED in the case, whether it offers a real INSIGHT rather than a restatement, and whether it is TESTABLE. The source-derived hypotheses are shown to the judge for calibration only and are explicitly not the answer, so a candidate that differs from all of them can still score full marks. The three dimension scores are recorded per sample. Blank, never 0.0, when the judge call failed.",
+                "proxy_hypothesis_quality_score_<domain>": "the same verdict restricted to one domain; identical definition, filtered "
                 "population",
-                "best_of_n_hypothesis_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "best_of_n_proxy_hypothesis_quality_score": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
                 "highest, then averaged over records. Read off the same modes.repeats samples -- "
                 "no extra calls. This is what replaces self-consistency here: a plurality needs "
                 "answers that can coincide, and free-text hypotheses do not.",
-                "hypothesis_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "proxy_hypothesis_quality_score_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
                 "across repeats -- how much the same question's answers varied.",
                 "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
                 "Near 0 is expected for free-text generation.",
@@ -199,7 +211,7 @@ class HypoArenaAdapter(PooledDatasetAdapter):
                 "These score 0 on the primary metric and are counted here separately, so being "
                 "unparseable is distinguishable from being wrong.",
             },
-            primary_metric="hypothesis_judged",
+            primary_metric="proxy_hypothesis_quality_score",
             decisions=[
                 "No official split exists, so the whole release is the population.",
                 "Multi-reference items credit the closest reference; all listed hypotheses are "
@@ -211,6 +223,7 @@ class HypoArenaAdapter(PooledDatasetAdapter):
                 "would test it.",
             ],
             caveats=[
+                "proxy_hypothesis_quality_score IS NOT THE PAPER'S METRIC. HypoArena ranks systems by pairwise comparison in an arena; this is an absolute LLM-judge quality score defined by this suite, and a run's number here says nothing about where it would place in that arena. It replaced equivalence-scoring against hypotheses[0], which treated one source-derived hypothesis as the only right answer and marked a better, different one wrong.",
                 "These overlap numbers are diagnostics, not the evaluation: "
                 "character/n-gram similarity punishes a correct paraphrase and "
                 "rewards a wrong sentence that reuses the reference's words, so "

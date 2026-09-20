@@ -438,6 +438,17 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
                     details.get("reasoning_metrics_inapplicable"), clip
                 ),
                 "reasoning_judge_errors": _clip(details.get("reasoning_judge_errors"), clip),
+                # The proxy judge's own assessment: the score, which reference
+                # it scored against or how it rated each rubric dimension, and
+                # the reply it actually returned. A proxy score that cannot be
+                # traced back to what the judge said is not auditable, and these
+                # are the scores most in need of auditing.
+                "proxy_judgement": _clip(
+                    json.dumps(details.get("proxy_judgement"), ensure_ascii=False)
+                    if details.get("proxy_judgement") is not None
+                    else None,
+                    clip,
+                ),
             }
             # One column per per-step list, holding the whole ordered list as
             # JSON. Not exploded into a column per step: chains differ in

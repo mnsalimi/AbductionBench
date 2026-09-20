@@ -421,3 +421,80 @@ def text_match_score(
         prediction=answer[:500],
         details={"gold": str(gold)[:300]},
     )
+
+
+#: Prefix every project-specific proxy score carries.
+#:
+#: These are not the papers' own evaluation protocols and must never be read as
+#: though they were.  A reader skimming a sheet sees the prefix before the name,
+#: and every one of them is documented as a proxy in its adapter's caveats.
+PROXY_PREFIX = "proxy_"
+
+
+def apply_proxy_score(
+    score: SampleScore,
+    verdict: Any,
+    metric: str,
+    *,
+    detail_key: str = "proxy_judgement",
+) -> SampleScore:
+    """Fold a graded judge verdict into a proxy metric, or record why it is absent.
+
+    Two things make this different from :func:`apply_judged_metric`.
+
+    It is **graded**, not binary: the verdict's 0-1 score is the metric, rather
+    than a yes/no folded to 1.0 or 0.0.
+
+    And a judgement that did not come back leaves the metric **absent**. A
+    binary metric can defensibly seed 0.0 -- "the judge did not affirm" -- but a
+    0-1 quality score of 0.0 means "the judge looked and found this worthless",
+    which is a finding, and recording it for a call that failed would put
+    fabricated zeros into an average. The sample is marked instead, so a blank
+    is legible as unjudged and the coverage of these metrics can be counted.
+
+    The judge's own reply is kept on the record either way: a proxy score that
+    cannot be traced back to what the judge said is not auditable, and these are
+    the scores most in need of auditing.
+    """
+    metrics = dict(score.metrics)
+    details = dict(score.details or {})
+    value = getattr(verdict, "score", None)
+    raw = (getattr(verdict, "raw", "") or "")[:2000]
+    judge_details = dict(getattr(verdict, "details", {}) or {})
+
+    if value is None or not getattr(verdict, "parsed", False):
+        # Absent, not zero. Every stratum of it goes too, or the strata would
+        # report a score the base metric does not have.
+        for name in list(metrics):
+            if name == metric or name.startswith(f"{metric}_"):
+                metrics.pop(name)
+        details[detail_key] = {
+            "status": "unjudged",
+            "reason": "the judge returned no usable score",
+            "judge_reply": raw,
+            **judge_details,
+        }
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details=details,
+        )
+
+    value = max(0.0, min(1.0, float(value)))
+    for name in list(metrics):
+        if name == metric or name.startswith(f"{metric}_"):
+            metrics[name] = value
+    metrics[metric] = value
+    details[detail_key] = {
+        "status": "judged",
+        "score": value,
+        "judge_reply": raw,
+        **judge_details,
+    }
+    return SampleScore(
+        metrics=metrics,
+        prediction=score.prediction,
+        parse_ok=score.parse_ok,
+        details=details,
+    )

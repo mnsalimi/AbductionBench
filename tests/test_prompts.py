@@ -27,11 +27,20 @@ def test_shipped_templates_load(prompt_dir: Path):
     registry = _registry(prompt_dir)
     ids = set(registry.ids())
     # Only judge templates ship now; a dataset's prompts live with its adapter.
-    # Two grade the answer, nine measure the structure of a chain of reasoning.
+    # Three kinds: the shared answer judges, the reasoning-structure family, and
+    # the project-specific proxies, which are named so they cannot be mistaken
+    # for a paper's own protocol.
     assert {"judge_binary_v1", "judge_graded_v1"} <= ids
-    assert {template for template in ids if not template.startswith("reasoning_")} == {
-        "judge_binary_v1",
-        "judge_graded_v1",
+    generic = {
+        template
+        for template in ids
+        if not template.startswith(("reasoning_", "proxy_"))
+    }
+    assert generic == {"judge_binary_v1", "judge_graded_v1"}
+    assert {template for template in ids if template.startswith("proxy_")} == {
+        "proxy_closest_explanation_v1",
+        "proxy_closest_hypothesis_v1",
+        "proxy_hypothesis_quality_v1",
     }
     template = registry.get("judge_binary_v1")
     assert set(template.required_fields) == {"candidate", "gold"}
@@ -1039,7 +1048,7 @@ def test_uncommonsense_still_asks_for_an_explanation():
     assert "explanation" in prompt, "the answer is still an explanation"
     assert "likely, not merely possible" in prompt, "the task's own constraint stands"
     assert cls.answer_format == "1 to 3 sentences"
-    assert cls.primary_metric == "plausibility_judged"
+    assert cls.primary_metric == "proxy_closest_explanation_score"
 
 
 def test_the_mode_instruction_ends_the_system_prompt_and_appears_once():

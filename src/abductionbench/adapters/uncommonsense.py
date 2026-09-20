@@ -25,9 +25,19 @@ from typing import Any
 from ..core.adapter import SkippedDataset
 from ..core.types import AdapterDocumentation, ModelResponse, SampleScore, SampleSpec
 from . import _common as C
-from ._base import PooledDatasetAdapter, apply_judged_metric, judged_only_score
+from ._base import PooledDatasetAdapter, apply_proxy_score, judged_only_score
 
 REPO_ID = "allenai/UNcommonsense"
+
+
+def _numbered_references(references: Any) -> str:
+    """The item's reference texts, numbered so a judge can name the one it used.
+
+    Numbered rather than bulleted because the judge is asked which it scored
+    against, and an index is the only handle that survives into the record.
+    """
+    items = [str(item).strip() for item in (references or []) if str(item).strip()]
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
 
 
 class UncommonsenseAdapter(PooledDatasetAdapter):
@@ -50,7 +60,12 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
     )
     objective_metrics = False
     selection_cardinality = None
-    primary_metric = "plausibility_judged"
+    #: A PROJECT-SPECIFIC PROXY, not this benchmark's own protocol.
+    #: The `proxy_` prefix is load-bearing: these numbers must never be
+    #: read as the paper's metric, and the prefix is what a reader sees
+    #: first in a sheet.
+    judge_template = "proxy_closest_explanation_v1"
+    primary_metric = "proxy_closest_explanation_score"
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_hf_snapshot(
@@ -119,7 +134,7 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
         """
         return judged_only_score(
             response,
-            metric="plausibility_judged",
+            metric="proxy_closest_explanation_score",
             output_contract=output_contract,
             details={"n_references": len(sample.reference["references"])},
         )
@@ -131,19 +146,19 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
             return None
         return {
             "candidate": score.prediction or response.text[:600],
-            "gold": sample.reference["gold"],
+            # Every human explanation for this item, not just the first one
+            # stored. They are alternatives -- people explained the same outcome
+            # differently -- so scoring against whichever happened to be first
+            # penalised a candidate for matching one of the others.
+            "references": _numbered_references(sample.reference.get("references")),
             "observation": sample.fields["observation"],
-            "criteria": (
-                "The candidate counts as correct if it makes the unexpected outcome plausible, "
-                "even if it differs from the reference explanation."
-            ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
         """The verdict is the score -- and the score of every stratum of it."""
-        return apply_judged_metric(score, verdict, "plausibility_judged")
+        return apply_proxy_score(score, verdict, "proxy_closest_explanation_score")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -163,15 +178,12 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
                 "Every metric also gets a best_of_n_ counterpart: per record, the repeat the judge "
                 "scored highest. This dataset has no checkable answer, so a plurality is meaningless "
                 "-- free-text answers never repeat verbatim -- and Best-of-N replaces it.",
-                "plausibility_judged": "(PRIMARY, higher is better, 0-1) LLM-judge verdict on whether the explanation "
-                "makes the unexpected outcome plausible given the context. 1.0 when the judge "
-                "affirms, 0.0 when it does not or when the response could not be parsed. The "
-                "dataset score is the mean over repeats x records.",
-                "best_of_n_plausibility_judged": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
+                "proxy_closest_explanation_score": "(PRIMARY, PROJECT-SPECIFIC PROXY -- not UNcommonsense's own evaluation. higher is better, 0-1) How closely the generated explanation matches the CLOSEST of the item's human-written explanations, graded 0-5 by an LLM judge and rescaled. The item's explanations are alternatives, not a set to cover, so the judge picks the one the candidate comes nearest and records which it used. A sample whose judge call failed is left BLANK, never 0.0: a 0 here means the judge read it and found it worthless.",
+                "best_of_n_proxy_closest_explanation_score": "(higher is better, 0-1) Best-of-N: per record, the repeat the judge scored "
                 "highest, then averaged over records. Read off the same modes.repeats samples -- "
                 "no extra calls. This is what replaces self-consistency here: a plurality needs "
                 "answers that can coincide, and free-text hypotheses do not.",
-                "plausibility_judged_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
+                "proxy_closest_explanation_score_repeat_std": "(lower is better) mean within-record standard deviation of the primary metric "
                 "across repeats -- how much the same question's answers varied.",
                 "repeat_agreement": "(0-1) fraction of records whose repeats all produced the identical prediction. "
                 "Near 0 is expected for free-text generation.",
@@ -179,7 +191,7 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
                 "These score 0 on the primary metric and are counted here separately, so being "
                 "unparseable is distinguishable from being wrong.",
             },
-            primary_metric="plausibility_judged",
+            primary_metric="proxy_closest_explanation_score",
             decisions=[
                 "Used the validation split: the release has no test split.",
                 "Scored against human_explanations only; the gpt4_explanations and "
@@ -191,6 +203,7 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
                 "outcome as the surprising observation to be explained.",
             ],
             caveats=[
+                "proxy_closest_explanation_score IS NOT THE PAPER'S METRIC. UNcommonsense evaluates with human preference judgements against its own baselines; this is an LLM-judge proxy defined by this suite for comparing runs here, and the two numbers are not interchangeable. It replaced a binary verdict taken against references[0] alone, which marked a candidate wrong for matching any human explanation but the first one stored.",
                 "These overlap numbers are diagnostics, not the evaluation: "
                 "character/n-gram similarity punishes a correct paraphrase and "
                 "rewards a wrong sentence that reuses the reference's words, so "

@@ -1,0 +1,71 @@
+id: proxy_closest_hypothesis_v1
+version: "1.0"
+description: >-
+  PROJECT-SPECIFIC PROXY, not HypoBench's own evaluation. Scores a generated
+  hypothesis 0-5 against the closest of the item's known hypotheses, on the
+  feature it names and the direction of the relationship it claims.
+task_kinds: [judge]
+required_fields: [candidate, references]
+optional_fields: [observation, context, full_prompt, full_response]
+messages:
+  - role: system
+    content: |
+      You rate how well a candidate hypothesis matches the best available known
+      hypothesis for the same dataset.
+
+      You are given SEVERAL known hypotheses. They are alternatives, not a set
+      the candidate has to cover. Find the ONE the candidate comes closest to,
+      judge against that one alone, and say which you used.
+
+      A hypothesis here has two parts, and BOTH matter:
+        - the FEATURE or pattern it points at, and
+        - the DIRECTION of the relationship it claims -- which way the feature
+          pushes the outcome.
+
+      A candidate that names the right feature but reverses the direction has
+      not found that hypothesis; it has found its opposite. Score it low.
+
+      Score 0-5:
+      5 -- same feature, same direction.
+      4 -- same feature and direction, stated more loosely or narrowly.
+      3 -- same feature, direction unclear or unstated.
+      2 -- same feature, WRONG direction, or a related feature in the right
+           direction.
+      1 -- on topic, but neither the feature nor the direction matches.
+      0 -- irrelevant, contradictory, or no hypothesis offered.
+  - role: user
+    content: |
+      {% if full_prompt %}
+      ===== WHAT THE MODEL WAS ASKED =====
+      {{ full_prompt }}
+
+      ===== WHAT THE MODEL REPLIED, IN FULL =====
+      {{ full_response }}
+
+      ===== THE JUDGEMENT =====
+      The answer below was read out of that reply. Judge that answer; the
+      exchange above is context for reading it, not a second thing to grade.
+
+      {% endif %}
+      {% if observation %}
+      WHAT THE MODEL WAS SHOWN:
+      {{ observation }}
+
+      {% endif %}
+      KNOWN HYPOTHESES FOR THIS DATASET:
+      {{ references }}
+
+      CANDIDATE HYPOTHESIS:
+      {{ candidate }}
+
+      Reply with exactly these three lines and nothing else:
+      Closest: <the number of the known hypothesis you judged against>
+      Direction: <matches|reversed|unclear>
+      Score: <integer 0-5>
+output_contract:
+  score_regex: "score\\s*:?\\s*(?P<score>[0-5])"
+  expect_numeric_score: true
+  score_scale: 5
+  detail_regexes:
+    closest_reference: "closest\\s*:?\\s*(?P<closest_reference>\\d+)"
+    direction: "direction\\s*:?\\s*(?P<direction>matches|reversed|unclear)"
