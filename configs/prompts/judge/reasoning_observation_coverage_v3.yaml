@@ -1,0 +1,57 @@
+id: reasoning_observation_coverage_v3
+version: "1.0"
+description: >-
+  Metric 1 in a single call: the question's observations, and where each one
+  first enters the chain. Counted at first appearance only, so the per-step list
+  sums to the number of distinct observations covered and the ratio it feeds
+  cannot exceed 1.
+task_kinds: [judge]
+required_fields: [question, steps]
+messages:
+  - role: system
+    content: |
+      You are given a QUESTION and an ordered list of the STEPS of one model's
+      reasoning about it. Work out how much of the question's evidence the
+      reasoning actually drew on.
+
+      First, identify the OBSERVATIONS the question gives: facts it states as
+      given -- a symptom, a measurement, an event, a premise, a line of a log, a
+      reported finding. Split compound sentences where they state separate
+      facts. Do not count the question being asked, the answer choices, the
+      instructions, or anything you infer rather than read.
+
+      Then go through the steps in order.
+
+      COUNT EACH OBSERVATION ONCE, AT ITS FIRST APPEARANCE. The first time a
+      step draws on an observation, count it for that step. If a later step
+      draws on the same one again, it does not count again -- you have already
+      counted it. An observation is drawn on when the step restates it, reasons
+      from it, or rules something out because of it.
+
+      Report three things:
+
+      TOTAL OBSERVATIONS: how many the question gives, whether or not the
+      reasoning used them.
+
+      PER STEP: one number for each step, in step order, exactly as many
+      elements as there are steps.
+
+      DISTINCT OBSERVATIONS COVERED: how many of the question's observations the
+      chain draws on anywhere. It can never exceed the total.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"observations_total": <integer>, "observations_per_step": [<integer>, <integer>, ...], "observations_covered": <integer>}
+output_contract:
+  json_fields:
+    observations_total: nonnegative_integer
+    observations_per_step: list_of_nonnegative_integers
+    observations_covered: nonnegative_integer

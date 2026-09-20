@@ -563,11 +563,10 @@ def _reasoning_judge_templates() -> dict[str, str]:
     is exactly the inference this suite does not buy.
     """
     return {
-        # Bought once per question: its observations do not depend on any model.
-        "observation_inventory": "reasoning_observation_inventory_v2",
         # The canonical segmentation. Runs first; everything below reads it.
         "steps": "reasoning_steps_v2",
-        "observation_coverage": "reasoning_observation_coverage_v2",
+        # Identifies the question's observations and places them in one call.
+        "observation_coverage": "reasoning_observation_coverage_v3",
         "branchiness_selection": "reasoning_branchiness_selection_v1",
         "branchiness_generation": "reasoning_branchiness_generation_v1",
         # The one other prompt that reads the raw chain.

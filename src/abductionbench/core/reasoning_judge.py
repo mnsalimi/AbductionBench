@@ -79,7 +79,6 @@ _GENERATION_KINDS = frozenset({"generation", "knowledge_completion"})
 _SELECTION_KINDS = frozenset({"selection", "multi_selection"})
 
 _REQUIRED_TEMPLATES = {
-    "observation_inventory",
     "steps",
     "observation_coverage",
     "branchiness_selection",
@@ -362,13 +361,15 @@ def derive_reasoning_metrics(
         return parsed
 
     # -- metric 1: observation coverage --------------------------------------- #
-    inventory = raw.get("observation_inventory") or {}
-    observations = _string_list(inventory.get("observations"))
-    if observations is None:
-        errors.append("observation_inventory:invalid_or_missing_observation_list")
-        observations_total = 0
+    #
+    # One call: the same judge identifies the question's observations and places
+    # each one at the step it first enters, so the total and the per-step list
+    # are two readings of one pass rather than of two.
+    coverage_blob = raw.get("observation_coverage") or {}
+    observations_total = _nonnegative_int(coverage_blob.get("observations_total")) or 0
+    if not observations_total:
+        errors.append("observation_coverage:invalid_or_missing_observations_total")
     else:
-        observations_total = len(observations)
         metrics["reasoning_observations_total"] = float(observations_total)
 
     covered = per_step("observation_coverage", "observations_per_step",
@@ -379,16 +380,14 @@ def derive_reasoning_metrics(
         # judge reports that count separately, and the two have to agree: if
         # they do not, one of the two readings is wrong and neither is reported.
         from_list = sum(covered)
-        declared = _nonnegative_int(
-            (raw.get("observation_coverage") or {}).get("observations_covered")
-        )
+        declared = _nonnegative_int(coverage_blob.get("observations_covered"))
         if declared is None:
             errors.append("observation_coverage:invalid_or_missing_observations_covered")
         elif declared != from_list:
             errors.append("observation_coverage:per_step_list_does_not_sum_to_the_covered_count")
         elif observations_total and declared > observations_total:
             # More observations covered than the question gave.
-            errors.append("observation_coverage:covered_exceeds_the_observation_inventory")
+            errors.append("observation_coverage:covered_exceeds_the_observations_total")
         else:
             metrics["reasoning_observations_used"] = float(declared)
             if observations_total:
@@ -570,14 +569,6 @@ class ReasoningJudgeStage:
         self._cache_path = self.cache_dir / "verdicts.json"
         self._cache: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
-        #: Observation inventories currently being bought, by question key.
-        #: The inventory is the one purchase shared between tasks, and the
-        #: obvious way to stop two of them paying for the same question twice
-        #: -- hold a lock across the whole inventory step -- serializes every
-        #: task's first wave behind every other task's. This lets tasks asking
-        #: *different* questions proceed at once while a task asking one
-        #: already in flight waits on that same answer.
-        self._inventories_inflight: dict[str, asyncio.Future] = {}
         self._calls = calls or asyncio.Semaphore(config.max_parallel_calls)
         #: A standalone JSONL log of these metrics alone, one line per judged
         #: output, written next to the records.  The sheet is the report and
@@ -954,24 +945,15 @@ class ReasoningJudgeStage:
     async def _evaluate(self, targets: list[_Target], identity: TaskIdentity | None = None) -> None:
         """Buy every metric for one task's chains, in dependency order.
 
-        Two things are independent and go out together: the question's
-        observation inventory, which reads the question, and the segmentation,
-        which reads the chain. Neither is an input to the other, so the wait is
-        the slower of the two rather than their sum.
+        Two waves, and the split is a real dependency rather than a schedule.
+        The segmentation goes out first because every per-step list below is
+        indexed by the steps it returns -- none of them can even be asked until
+        it has come back. Everything else then goes out together.
 
-        Everything after that does depend on the segmentation -- each per-step
-        list is indexed by it -- so it forms a second wave, all of it in
-        parallel once the steps are in hand.
+        Only two prompts read the chain itself: this segmentation, and
+        whole-chain directionality, which judges the chain as one thing and
+        needs no step boundaries.
         """
-        inventory_requests: dict[str, dict[str, Any]] = {}
-        question_keys: dict[int, str] = {}
-        shared_by: dict[str, list[str]] = {}
-        for target in targets:
-            question_key = stable_hash({"question": target.question}, length=32)
-            question_keys[target.index] = question_key
-            inventory_requests.setdefault(question_key, {"question": target.question})
-            shared_by.setdefault(question_key, []).append(self._sample_id(target))
-
         common: dict[int, dict[str, Any]] = {
             target.index: {
                 "question": target.question,
@@ -984,59 +966,26 @@ class ReasoningJudgeStage:
             for target in targets
         }
 
-        # -- wave one: the inventory and the segmentation, concurrently ----- #
-        #
-        # The inventory is the one shared purchase: it depends on the question
-        # alone, so it is bought once per distinct question and reused for every
-        # model, repeat and task that asks it.
-        inventories, _ = await asyncio.gather(
-            self._inventories(
-                inventory_requests,
-                identity=identity,
-                context={
-                    key: {
-                        # One inventory answers every sample asking the same
-                        # question, so the audit names all of them rather than
-                        # pretending the call belonged to one.
-                        "sample_id": None,
-                        "shared_with_sample_ids": sorted(set(ids)),
-                        "question_key": key,
-                    }
-                    for key, ids in shared_by.items()
-                },
-            ),
-            self._run_family(
-                "steps", targets, ("question", "reasoning_chain", "options"), common, identity
-            ),
+        # -- wave one: the segmentation ------------------------------------- #
+        await self._run_family(
+            "steps", targets, ("question", "reasoning_chain", "options"), common, identity
         )
 
         for target in targets:
-            inventory = inventories.get(question_keys[target.index])
-            if inventory is None:
-                target.errors.append("observation_inventory:judge_failed_or_unparseable")
-                inventory = {}
-            target.raw["observation_inventory"] = inventory
-            # Numbered, so the coverage judge's i-th observation and this code's
-            # i-th observation are the same one.
-            observations = _string_list(inventory.get("observations")) or []
-            common[target.index]["observations"] = _numbered(observations) or None
-
             segmented = _string_list((target.raw.get("steps") or {}).get("steps"))
             if segmented is None:
                 # Nothing downstream can be indexed against a chain that did not
                 # segment. Reported once here rather than nine times below.
                 target.errors.append("steps:no_segmentation_so_no_per_step_metric")
                 continue
+            # Numbered on the way in so the judge's i-th value and this code's
+            # i-th step are the same step. The prompts say "ordered", which is
+            # the property that matters and is true either way.
             common[target.index]["steps"] = _numbered(segmented)
 
         ready = [t for t in targets if "steps" in common[t.index]]
 
         # -- wave two: everything the segmentation unlocked ----------------- #
-        #
-        # All of these read the step list rather than the chain, so they are
-        # independent of each other and go out together. Directionality is the
-        # exception that still reads the raw chain: it judges the chain as a
-        # whole and needs no step boundaries.
         #
         # Branchiness is routed on the task's known shape, never inferred by the
         # judge: whether the candidates are the question's or the model's
@@ -1047,7 +996,7 @@ class ReasoningJudgeStage:
             family, chosen, fields, common, identity
         )
         wave_two = [
-            run("observation_coverage", ready, ("observations", "steps")),
+            run("observation_coverage", ready, ("question", "steps")),
             run("directionality", targets, ("question", "reasoning_chain")),
             run("step_directionality", ready, ("steps",)),
             run("differential_elimination", ready, ("steps",)),
@@ -1057,7 +1006,7 @@ class ReasoningJudgeStage:
             run("anchoring_point", [t for t in ready if t.reference],
                 ("steps", "reference_answer")),
             run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
-                ("steps", "options")),
+                ("steps", "question")),
             run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
                 ("steps",)),
         ]
@@ -1065,51 +1014,6 @@ class ReasoningJudgeStage:
             if not target.reference:
                 target.inapplicable.append("anchoring_point:no_reference_answer_to_anchor_on")
         await asyncio.gather(*wave_two)
-
-    async def _inventories(
-        self,
-        requests: dict[str, dict[str, Any]],
-        *,
-        identity: TaskIdentity | None = None,
-        context: dict[str, dict[str, Any]] | None = None,
-    ) -> dict[str, dict[str, Any] | None]:
-        """Buy each question's inventory once, without serializing the tasks.
-
-        Deduplication is per question rather than per step: a task claims the
-        questions nobody else is buying, fetches exactly those, and awaits the
-        rest on the futures whoever claimed them will resolve.
-        """
-        loop = asyncio.get_running_loop()
-        mine: dict[str, dict[str, Any]] = {}
-        waiting: dict[str, asyncio.Future] = {}
-        async with self._lock:
-            for key, fields in requests.items():
-                pending = self._inventories_inflight.get(key)
-                if pending is not None:
-                    waiting[key] = pending
-                else:
-                    self._inventories_inflight[key] = loop.create_future()
-                    mine[key] = fields
-
-        out: dict[str, dict[str, Any] | None] = {}
-        if mine:
-            try:
-                out.update(
-                    await self._judge_many(
-                        "observation_inventory", mine, identity=identity, context=context
-                    )
-                )
-            finally:
-                # Resolve every claimed key even on failure, or the tasks
-                # waiting on this question would hang for the whole run.
-                async with self._lock:
-                    for key in mine:
-                        future = self._inventories_inflight.pop(key, None)
-                        if future is not None and not future.done():
-                            future.set_result(out.get(key))
-        for key, future in waiting.items():
-            out[key] = await future
-        return out
 
     # -- one family's calls -------------------------------------------------- #
 

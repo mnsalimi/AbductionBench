@@ -31,15 +31,17 @@ STEPS = ["read the rash", "consider measles", "consider rubella", "settle on mea
 def _raw(**overrides):
     """A complete, self-consistent set of judge outputs for a generation task."""
     base = {
-        "observation_inventory": {"observations": ["rash", "fever", "cough"]},
+
         "steps": {
             "steps": list(STEPS),
             "proof_disproof_counts": [0, 1, 1, 2],
             "backtracking_steps": 1,
         },
-        # First appearance only, so the list sums to the distinct count.
+        # One call: the total, and first-appearance placement per step.
         "observation_coverage": {
-            "observations_per_step": [1, 1, 0, 1], "observations_covered": 3
+            "observations_total": 3,
+            "observations_per_step": [1, 1, 0, 1],
+            "observations_covered": 3,
         },
         "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
         "directionality": {"directionality": 0.5},
@@ -206,12 +208,16 @@ def test_a_chain_that_never_reaches_the_answer_is_blank_not_zero():
     assert "anchoring_point:not_an_index_into_the_step_list" in bad
 
 
-def test_an_empty_observation_inventory_blocks_the_ratio_but_keeps_the_counts():
+def test_a_question_with_no_observations_blocks_the_ratio():
+    """Nothing to cover, so there is no fraction to report."""
     metrics, _lists, errors, _inapplicable = _derive(
-        _raw(observation_inventory={"observations": []})
+        _raw(observation_coverage={
+            "observations_total": 0,
+            "observations_per_step": [0, 0, 0, 0],
+            "observations_covered": 0,
+        })
     )
-    assert "observation_inventory:invalid_or_missing_observation_list" in errors
-    assert metrics["reasoning_observations_used"] == 3.0
+    assert "observation_coverage:invalid_or_missing_observations_total" in errors
     assert "reasoning_observation_coverage" not in metrics
 
 
@@ -443,15 +449,16 @@ def _reasoning_responder(conversation, max_tokens):
     segmentation it returned was.
     """
     body = " ".join(str(message.get("content", "")) for message in conversation)
-    if '"observations"' in body and '"observations_per_step"' not in body:
-        return '{"observations": ["first thing", "second thing"]}'
     if '"steps"' in body and '"proof_disproof_counts"' in body:
         return (
             '{"steps": ["one", "two", "three", "four"], '
             '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
         )
     if '"observations_per_step"' in body:
-        return '{"observations_per_step": [1, 1, 0, 0], "observations_covered": 2}'
+        return (
+            '{"observations_total": 3, "observations_per_step": [1, 1, 0, 0], '
+            '"observations_covered": 2}'
+        )
     if '"branchiness_per_step"' in body and '"diversity"' in body:
         return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
     if '"branchiness_per_step"' in body:
@@ -592,101 +599,6 @@ class ReasonedAdapter(DatasetAdapter):
     assert lines and all(entry["prompt_mode"] == "cot" for entry in lines)
     assert lines[0]["raw"]["steps"]["backtracking_steps"] == 1
     assert lines[0]["metrics"]["reasoning_backtracking_rate"] == 0.25
-
-
-def test_one_question_is_bought_once_even_when_tasks_ask_it_together():
-    """Deduplication must not cost the concurrency it is there to protect.
-
-    Holding a lock across the whole inventory step buys each question once, but
-    it also queues every task's first wave behind every other task's. This
-    checks both halves: the same question is fetched once, and two tasks asking
-    *different* questions are in flight at the same time.
-    """
-    import tempfile
-
-    from abductionbench.core.config import ReasoningJudgeConfig
-
-    fetched: list[tuple[str, ...]] = []
-    in_flight = 0
-    peak = 0
-
-    class _Stage(ReasoningJudgeStage):
-        async def _judge_many(self, family, requests, *, identity=None, context=None):
-            nonlocal in_flight, peak
-            fetched.append(tuple(sorted(requests)))
-            in_flight += 1
-            peak = max(peak, in_flight)
-            try:
-                await asyncio.sleep(0.05)
-                return {key: {"total_observations": 1} for key in requests}
-            finally:
-                in_flight -= 1
-
-    async def run():
-        with tempfile.TemporaryDirectory() as directory:
-            stage = _Stage(
-                config=ReasoningJudgeConfig(enabled=True, model="m"),
-                registry=_FakeRegistry(),
-                renderer=None,
-                clients={"m": object()},
-                retry_policy=None,
-                cache_dir=Path(directory),
-            )
-            shared = {"q-shared": {"question": "same"}}
-            other = {"q-other": {"question": "different"}}
-            return await asyncio.gather(
-                stage._inventories(dict(shared)),
-                stage._inventories(dict(shared)),
-                stage._inventories(dict(other)),
-            )
-
-    first, second, third = asyncio.run(run())
-    assert first == second == {"q-shared": {"total_observations": 1}}
-    assert third == {"q-other": {"total_observations": 1}}
-    # One fetch for the shared question, one for the other -- not three.
-    assert sorted(fetched) == [("q-other",), ("q-shared",)]
-    # ...and they overlapped rather than queueing.
-    assert peak == 2
-
-
-def test_a_failed_inventory_never_leaves_another_task_waiting():
-    """A claimed question must be resolved even when its fetch blows up."""
-    import tempfile
-
-    from abductionbench.core.config import ReasoningJudgeConfig
-
-    class _Stage(ReasoningJudgeStage):
-        calls = 0
-
-        async def _judge_many(self, family, requests, *, identity=None, context=None):
-            type(self).calls += 1
-            if type(self).calls == 1:
-                await asyncio.sleep(0.05)
-                raise RuntimeError("judge exploded")
-            return {key: {"total_observations": 3} for key in requests}
-
-    async def run():
-        with tempfile.TemporaryDirectory() as directory:
-            stage = _Stage(
-                config=ReasoningJudgeConfig(enabled=True, model="m"),
-                registry=_FakeRegistry(),
-                renderer=None,
-                clients={"m": object()},
-                retry_policy=None,
-                cache_dir=Path(directory),
-            )
-            request = {"q": {"question": "same"}}
-            owner = asyncio.create_task(stage._inventories(dict(request)))
-            await asyncio.sleep(0.01)  # let the owner claim the key
-            waiter = asyncio.create_task(stage._inventories(dict(request)))
-            results = await asyncio.gather(owner, waiter, return_exceptions=True)
-            return results, stage
-
-    results, stage = asyncio.run(asyncio.wait_for(run(), timeout=5))
-    assert isinstance(results[0], RuntimeError)
-    # The waiter is released with "no inventory" rather than hanging forever.
-    assert results[1] == {"q": None}
-    assert not stage._inventories_inflight
 
 
 # --------------------------------------------------------------------------- #
@@ -1190,9 +1102,10 @@ def test_coverage_counts_each_observation_once_so_it_cannot_exceed_one():
     """
     metrics, _lists, errors, _inapplicable = _derive(
         _raw(
-            observation_inventory={"observations": ["a", "b", "c", "d"]},
             observation_coverage={
-                "observations_per_step": [2, 1, 0, 0], "observations_covered": 3
+                "observations_total": 4,
+                "observations_per_step": [2, 1, 0, 0],
+                "observations_covered": 3,
             },
         )
     )
@@ -1206,7 +1119,9 @@ def test_the_covered_count_and_the_per_step_list_have_to_agree():
     """Two readings of the same thing, so a disagreement discards both."""
     _m, _l, errors, _i = _derive(
         _raw(observation_coverage={
-            "observations_per_step": [1, 1, 0, 1], "observations_covered": 2
+            "observations_total": 3,
+            "observations_per_step": [1, 1, 0, 1],
+            "observations_covered": 2,
         })
     )
     assert "observation_coverage:per_step_list_does_not_sum_to_the_covered_count" in errors
@@ -1214,29 +1129,52 @@ def test_the_covered_count_and_the_per_step_list_have_to_agree():
     # And the chain cannot cover more observations than the question gave.
     _m2, _l2, errors2, _i2 = _derive(
         _raw(
-            observation_inventory={"observations": ["a"]},
             observation_coverage={
-                "observations_per_step": [1, 1, 0, 1], "observations_covered": 3
+                "observations_total": 1,
+                "observations_per_step": [1, 1, 0, 1],
+                "observations_covered": 3,
             },
         )
     )
-    assert "observation_coverage:covered_exceeds_the_observation_inventory" in errors2
+    assert "observation_coverage:covered_exceeds_the_observations_total" in errors2
 
 
-def test_the_inventory_and_the_segmentation_do_not_wait_on_each_other():
-    """One reads the question, the other the chain; neither feeds the other.
 
-    They are issued together, so the wait is the slower of the two rather than
-    their sum. Only what comes after needs the segmentation.
+
+def test_the_segmentation_is_the_only_thing_the_rest_waits_on():
+    """One wave for the cut, one for everything indexed by it.
+
+    Every per-step list is positional against the segmentation, so none of them
+    can be asked before it returns -- that is a dependency, not a scheduling
+    choice. Once it is in hand the rest have no ordering between them and go out
+    together.
     """
     import inspect
 
     from abductionbench.core.reasoning_judge import ReasoningJudgeStage
 
     source = inspect.getsource(ReasoningJudgeStage._evaluate)
-    first_gather = source.index("await asyncio.gather(")
-    # Everything from that gather up to where its results are consumed.
-    consumed = source.index("for target in targets:", first_gather)
-    wave_one = source[first_gather:consumed]
-    assert "_inventories" in wave_one, wave_one
-    assert '"steps"' in wave_one, wave_one
+    first_wave = source.index('"steps", targets')
+    second_wave = source.index("wave_two = [")
+    assert first_wave < second_wave, "the segmentation has to be bought first"
+
+    # And the second wave really is one gather, not a sequence of awaits.
+    tail = source[second_wave:]
+    assert tail.count("await ") == 1, tail
+    assert "asyncio.gather(*wave_two)" in tail
+
+
+def test_every_judge_call_in_this_stage_runs_at_temperature_zero():
+    """A structural measurement must not move because the judge rolled again.
+
+    These numbers are counted, not preferred: a step either proves something or
+    it does not. Sampling would make the same chain score differently between
+    runs and make a difference between two models unreadable.
+    """
+    from abductionbench.core.config import EngineConfig, ReasoningJudgeConfig
+
+    assert ReasoningJudgeConfig().temperature == 0.0
+    # And the stage sends exactly what it is configured with.
+    engine = EngineConfig()
+    assert engine.reasoning_judge.temperature == 0.0
+    assert engine.judge.temperature == 0.0

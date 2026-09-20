@@ -8,14 +8,16 @@ required_fields: [steps]
 messages:
   - role: system
     content: |
-      You are given a numbered list of the STEPS of one model's reasoning.
+      You are given an ordered list of the STEPS of one model's reasoning.
 
       For each step on its own, judge which direction that step reasons in:
 
         1   -- the step reasons from the evidence towards an explanation.
-        0   -- the step starts from an assumed or guessed explanation and works
-               backward to justify it against the evidence.
-        0.5 -- the step does both, or the direction cannot be told.
+        0   -- the step starts from an assumed or guessed explanation and
+               reasons forward from it to justify it against the evidence.
+        0.5 -- the step does both within itself -- reasoning from evidence and
+               defending a guess in the same step -- or the direction cannot be
+               told.
 
       Judge each step by what happens inside it. A step that neither reasons
       from evidence nor defends a guess -- a restatement, a setup, a

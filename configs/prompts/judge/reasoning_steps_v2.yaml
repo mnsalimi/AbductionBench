@@ -14,11 +14,24 @@ messages:
       You segment a chain of reasoning into discrete inferential steps, and
       report two things about that segmentation.
 
-      STEPS: the steps themselves, in order. Each element is the content of one
-      step, in the model's own terms -- enough that someone reading only your
-      list can follow the whole chain without the original. Keep them faithful:
-      do not merge separate inferences, do not invent steps the model never
-      took, and do not summarise the chain as a whole.
+      STEPS: the chain cut into its steps, in order.
+
+      YOU ARE CUTTING, NOT WRITING. Each element must be an exact, unmodified
+      span of the original text, copied character for character. Do not
+      paraphrase, summarise, shorten, correct, tidy, translate or re-punctuate
+      anything. Do not add words the model did not write, including labels like
+      "Step 1". Split the text at logical boundaries and change nothing else;
+      concatenating your list back together must give the model's text again,
+      apart from the whitespace between the spans.
+
+      A step is one inferential move. Split where the model moves from one to
+      the next. Do not merge separate inferences into one element, and do not
+      invent steps the model never took.
+
+      A BACKTRACK IS ITS OWN STEP. Where the model catches an error in its own
+      reasoning and changes direction, that correction is a step in its own
+      right -- cut it out as a separate element rather than folding it into the
+      step before or after it.
 
       PROOF/DISPROOF COUNTS: a list of the same length, aligned to the steps.
       The i-th element is how many explanations, options, causes or candidate

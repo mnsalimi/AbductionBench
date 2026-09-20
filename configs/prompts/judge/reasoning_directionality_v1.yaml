@@ -12,7 +12,7 @@ messages:
       You classify the direction of inference in an abductive reasoning chain.
 
       Report 0 when the model assumes or guesses an explanation first and then
-      reasons backward to justify it against the evidence.
+      reasons forward from it to justify it against the evidence.
 
       Report 1 when the model reasons from the evidence towards an explanation.
 
