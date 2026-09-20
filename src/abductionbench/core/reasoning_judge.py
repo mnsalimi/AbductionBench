@@ -101,9 +101,12 @@ _REQUIRED_TEMPLATES = {
 #: Kept raw so they can be re-aggregated or plotted as histograms later, which
 #: an average alone cannot support.
 #:
-#: ``reasoning_steps`` doubles as the step count: it is the segmentation every
-#: other list is indexed by, so its length *is* the total, and storing that
-#: total again as its own column would be a second copy that can disagree.
+#: ``reasoning_steps`` is the segmentation every other list is indexed by, so
+#: its length is the authoritative step count. ``reasoning_total_steps`` reports
+#: that length as a number, which is what makes an average step count possible
+#: in a sheet of aggregates -- a column of JSON arrays cannot be averaged. It is
+#: written from ``len(steps)`` and never from anything the judge said, so the
+#: two cannot drift apart.
 REASONING_LIST_COLUMNS: tuple[str, ...] = (
     "reasoning_steps",
     "reasoning_proof_disproof_per_step",
@@ -122,6 +125,7 @@ REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     "reasoning_observations_used",
     "reasoning_observation_coverage",
     # 2. reasoning steps & backtracking
+    "reasoning_total_steps",
     "reasoning_useful_steps",
     "reasoning_useless_steps",
     "reasoning_backtracking_steps",
@@ -315,6 +319,9 @@ def derive_reasoning_metrics(
     else:
         lists["reasoning_steps"] = steps
         total_steps = len(steps)
+        # Always the length of the list above, never a number the judge
+        # reported: one of them has to be authoritative, and it is the list.
+        metrics["reasoning_total_steps"] = float(total_steps)
 
     proofs = _int_list(steps_blob.get("proof_disproof_counts"), total_steps or None)
     if steps is None:
@@ -367,12 +374,27 @@ def derive_reasoning_metrics(
     covered = per_step("observation_coverage", "observations_per_step",
                        "reasoning_observations_per_step")
     if covered is not None:
-        used = sum(covered)
-        metrics["reasoning_observations_used"] = float(used)
-        if observations_total:
-            metrics["reasoning_observation_coverage"] = used / observations_total
+        # Each observation is counted at its first appearance only, so the list
+        # sums to the number of distinct observations the chain reached. The
+        # judge reports that count separately, and the two have to agree: if
+        # they do not, one of the two readings is wrong and neither is reported.
+        from_list = sum(covered)
+        declared = _nonnegative_int(
+            (raw.get("observation_coverage") or {}).get("observations_covered")
+        )
+        if declared is None:
+            errors.append("observation_coverage:invalid_or_missing_observations_covered")
+        elif declared != from_list:
+            errors.append("observation_coverage:per_step_list_does_not_sum_to_the_covered_count")
+        elif observations_total and declared > observations_total:
+            # More observations covered than the question gave.
+            errors.append("observation_coverage:covered_exceeds_the_observation_inventory")
         else:
-            errors.append("observation_coverage:no_inventory_to_normalize_against")
+            metrics["reasoning_observations_used"] = float(declared)
+            if observations_total:
+                metrics["reasoning_observation_coverage"] = declared / observations_total
+            else:
+                errors.append("observation_coverage:no_inventory_to_normalize_against")
 
     # -- metric 3: branchiness, and the n each task shape normalizes by ------- #
     family = "branchiness_selection" if selection_like and not generation_like else (
@@ -877,121 +899,128 @@ class ReasoningJudgeStage:
 
     # -- the two waves ------------------------------------------------------- #
 
+    async def _run_family(
+        self,
+        family: str,
+        selected: list[_Target],
+        field_names: tuple[str, ...],
+        common: dict[int, dict[str, Any]],
+        identity: TaskIdentity | None,
+    ) -> None:
+        """One metric family's calls, and their results filed on the targets."""
+        if not selected:
+            return
+        template = self.templates[family]
+        requests = {
+            str(target.index): {
+                key: common[target.index][key]
+                for key in field_names
+                if common[target.index].get(key) is not None
+            }
+            for target in selected
+        }
+        # A missing dependency is reported, never rendered into the prompt as a
+        # made-up zero.
+        callable_requests = {
+            key: fields
+            for key, fields in requests.items()
+            if all(required in fields for required in template.required_fields)
+        }
+        results = await self._judge_many(
+            family,
+            callable_requests,
+            identity=identity,
+            context={
+                str(target.index): {
+                    "sample_id": self._sample_id(target),
+                    "group_id": getattr(target.sample, "group_id", None),
+                    "repeat_of": (getattr(target.sample, "metadata", {}) or {}).get("repeat_of"),
+                    "target_index": target.index,
+                }
+                for target in selected
+            },
+        )
+        for target in selected:
+            key = str(target.index)
+            if key not in callable_requests:
+                target.errors.append(f"{family}:missing_required_dependency")
+                target.raw[family] = {}
+            elif results.get(key) is None:
+                target.errors.append(f"{family}:judge_failed_or_unparseable")
+                target.raw[family] = {}
+            else:
+                target.raw[family] = results[key]
+
     async def _evaluate(self, targets: list[_Target], identity: TaskIdentity | None = None) -> None:
+        """Buy every metric for one task's chains, in dependency order.
+
+        Two things are independent and go out together: the question's
+        observation inventory, which reads the question, and the segmentation,
+        which reads the chain. Neither is an input to the other, so the wait is
+        the slower of the two rather than their sum.
+
+        Everything after that does depend on the segmentation -- each per-step
+        list is indexed by it -- so it forms a second wave, all of it in
+        parallel once the steps are in hand.
+        """
         inventory_requests: dict[str, dict[str, Any]] = {}
         question_keys: dict[int, str] = {}
+        shared_by: dict[str, list[str]] = {}
         for target in targets:
             question_key = stable_hash({"question": target.question}, length=32)
             question_keys[target.index] = question_key
             inventory_requests.setdefault(question_key, {"question": target.question})
+            shared_by.setdefault(question_key, []).append(self._sample_id(target))
 
-        # The inventory is the one shared purchase: it depends on the question
-        # alone, so it is bought once per distinct question and reused for every
-        # model, repeat and task that asks it.
-        shared_by: dict[str, list[str]] = {}
-        for target in targets:
-            shared_by.setdefault(question_keys[target.index], []).append(
-                self._sample_id(target)
-            )
-        inventories = await self._inventories(
-            inventory_requests,
-            identity=identity,
-            context={
-                key: {
-                    # One inventory answers every sample asking the same
-                    # question, so the audit names all of them rather than
-                    # pretending the call belonged to one.
-                    "sample_id": None,
-                    "shared_with_sample_ids": sorted(set(ids)),
-                    "question_key": key,
-                }
-                for key, ids in shared_by.items()
-            },
-        )
-
-        common: dict[int, dict[str, Any]] = {}
-        for target in targets:
-            inventory = inventories.get(question_keys[target.index])
-            if inventory is None:
-                target.errors.append("observation_inventory:judge_failed_or_unparseable")
-                inventory = {}
-            target.raw["observation_inventory"] = inventory
-            common[target.index] = {
+        common: dict[int, dict[str, Any]] = {
+            target.index: {
                 "question": target.question,
                 "reasoning_chain": target.reasoning,
                 "model_answer": target.answer,
                 "reference_answer": target.reference,
                 "options": target.options,
                 "option_count": len(target.options),
-                # The question's observations, numbered so the coverage judge
-                # and this code agree on which is which.
-                "observations": _numbered(
-                    _string_list(inventory.get("observations")) or []
-                )
-                or None,
             }
+            for target in targets
+        }
 
-        async def run_family(
-            family: str, selected: list[_Target], field_names: tuple[str, ...]
-        ) -> None:
-            template = self.templates[family]
-            requests = {
-                str(target.index): {
-                    key: common[target.index][key]
-                    for key in field_names
-                    if common[target.index].get(key) is not None
-                }
-                for target in selected
-            }
-            # A missing dependency is reported, never rendered into the prompt
-            # as a made-up zero.
-            callable_requests = {
-                key: fields
-                for key, fields in requests.items()
-                if all(required in fields for required in template.required_fields)
-            }
-            results = await self._judge_many(
-                family,
-                callable_requests,
+        # -- wave one: the inventory and the segmentation, concurrently ----- #
+        #
+        # The inventory is the one shared purchase: it depends on the question
+        # alone, so it is bought once per distinct question and reused for every
+        # model, repeat and task that asks it.
+        inventories, _ = await asyncio.gather(
+            self._inventories(
+                inventory_requests,
                 identity=identity,
                 context={
-                    str(target.index): {
-                        "sample_id": self._sample_id(target),
-                        "group_id": getattr(target.sample, "group_id", None),
-                        "repeat_of": (getattr(target.sample, "metadata", {}) or {}).get(
-                            "repeat_of"
-                        ),
-                        "target_index": target.index,
+                    key: {
+                        # One inventory answers every sample asking the same
+                        # question, so the audit names all of them rather than
+                        # pretending the call belonged to one.
+                        "sample_id": None,
+                        "shared_with_sample_ids": sorted(set(ids)),
+                        "question_key": key,
                     }
-                    for target in selected
+                    for key, ids in shared_by.items()
                 },
-            )
-            for target in selected:
-                key = str(target.index)
-                if key not in callable_requests:
-                    target.errors.append(f"{family}:missing_required_dependency")
-                    target.raw[family] = {}
-                elif results.get(key) is None:
-                    target.errors.append(f"{family}:judge_failed_or_unparseable")
-                    target.raw[family] = {}
-                else:
-                    target.raw[family] = results[key]
-
-        # Which branchiness prompt each target gets. Routed on the task's known
-        # shape, never inferred by the judge: whether the candidates are the
-        # question's or the model's changes what "newly proposed" counts.
-        selection = [t for t in targets if t.selection_like and not t.generation_like]
-        selection_ids = {id(t) for t in selection}
-
-        # -- wave one: the segmentation, alone ------------------------------ #
-        #
-        # Metric 2 is a hard dependency, not an optimisation to schedule around:
-        # every list below is indexed by the steps it returns, so none of them
-        # can even be asked until it has. It is also one of only two prompts
-        # that reads the chain itself.
-        await run_family("steps", targets, ("question", "reasoning_chain", "options"))
+            ),
+            self._run_family(
+                "steps", targets, ("question", "reasoning_chain", "options"), common, identity
+            ),
+        )
 
         for target in targets:
+            inventory = inventories.get(question_keys[target.index])
+            if inventory is None:
+                target.errors.append("observation_inventory:judge_failed_or_unparseable")
+                inventory = {}
+            target.raw["observation_inventory"] = inventory
+            # Numbered, so the coverage judge's i-th observation and this code's
+            # i-th observation are the same one.
+            observations = _string_list(inventory.get("observations")) or []
+            common[target.index]["observations"] = _numbered(observations) or None
+
             segmented = _string_list((target.raw.get("steps") or {}).get("steps"))
             if segmented is None:
                 # Nothing downstream can be indexed against a chain that did not
@@ -1008,33 +1037,33 @@ class ReasoningJudgeStage:
         # independent of each other and go out together. Directionality is the
         # exception that still reads the raw chain: it judges the chain as a
         # whole and needs no step boundaries.
+        #
+        # Branchiness is routed on the task's known shape, never inferred by the
+        # judge: whether the candidates are the question's or the model's
+        # changes what "newly proposed" counts. A pipeline task proposes its own
+        # explanations as well as choosing, so it takes the generation prompt.
+        selection_ids = {id(t) for t in targets if t.selection_like and not t.generation_like}
+        run = lambda family, chosen, fields: self._run_family(  # noqa: E731 - a local alias
+            family, chosen, fields, common, identity
+        )
         wave_two = [
-            run_family("observation_coverage", ready, ("observations", "steps")),
-            run_family("directionality", targets, ("question", "reasoning_chain")),
-            run_family("step_directionality", ready, ("steps",)),
-            run_family("differential_elimination", ready, ("steps",)),
-            run_family("uncertainty", ready, ("steps",)),
-            run_family("prior_knowledge", ready, ("steps",)),
-            run_family("unresolved_contradiction", ready, ("steps",)),
+            run("observation_coverage", ready, ("observations", "steps")),
+            run("directionality", targets, ("question", "reasoning_chain")),
+            run("step_directionality", ready, ("steps",)),
+            run("differential_elimination", ready, ("steps",)),
+            run("uncertainty", ready, ("steps",)),
+            run("prior_knowledge", ready, ("steps",)),
+            run("unresolved_contradiction", ready, ("steps",)),
+            run("anchoring_point", [t for t in ready if t.reference],
+                ("steps", "reference_answer")),
+            run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
+                ("steps", "options")),
+            run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
+                ("steps",)),
         ]
-        anchored = [t for t in ready if t.reference]
-        if anchored:
-            wave_two.append(
-                run_family("anchoring_point", anchored, ("steps", "reference_answer"))
-            )
         for target in ready:
             if not target.reference:
                 target.inapplicable.append("anchoring_point:no_reference_answer_to_anchor_on")
-        # A pipeline task proposes its own explanations as well as choosing,
-        # so it takes the generation prompt: its branchiness is the model's.
-        sel_ready = [t for t in ready if id(t) in selection_ids]
-        gen_ready = [t for t in ready if id(t) not in selection_ids]
-        if sel_ready:
-            wave_two.append(
-                run_family("branchiness_selection", sel_ready, ("steps", "options"))
-            )
-        if gen_ready:
-            wave_two.append(run_family("branchiness_generation", gen_ready, ("steps",)))
         await asyncio.gather(*wave_two)
 
     async def _inventories(
@@ -1217,9 +1246,7 @@ class ReasoningJudgeStage:
                 conversations.append(messages)
                 sent[request_id] = [m.to_dict() for m in messages]
             sampling = SamplingParams(
-                max_tokens=self.config.max_tokens_by_family.get(
-                    family, self.config.max_tokens
-                ),
+                max_tokens=self._budget_for(family, chunk),
                 temperature=self.config.temperature,
                 extra=self._sampling_extra(),
             )
@@ -1380,6 +1407,45 @@ class ReasoningJudgeStage:
             *(run_chunk(chunk) for chunk in iter_chunks(keyed, self.config.group_size))
         )
         return out
+
+    def _budget_for(self, family: str, chunk: list[tuple[str, dict[str, Any], str]]) -> int:
+        """How many output tokens one group of calls may use.
+
+        Every family but one answers with a short list of integers, and the
+        configured budget is generous for that. ``steps`` is different in kind:
+        it returns the chain's segmentation, so its reply is about as long as
+        the chain it read. A fixed budget is the wrong shape for that -- too
+        small and a long chain is cut off mid-JSON, which costs the sample every
+        metric that indexes against the segmentation; too large and every short
+        chain pays for headroom it never uses.
+
+        So the steps budget follows its input: the chain's own length plus a
+        constant for the JSON scaffolding and the judge's overhead. A batch
+        shares one sampling object, so the group takes the largest chain in it
+        -- sizing to the smallest would truncate the rest.
+        """
+        configured = self.config.max_tokens_by_family.get(family, self.config.max_tokens)
+        if family != "steps":
+            return configured
+        longest = 0
+        for _request_id, fields, _key in chunk:
+            chain = str(fields.get("reasoning_chain") or "")
+            longest = max(longest, self._estimate_tokens(chain))
+        if not longest:
+            return configured
+        wanted = longest + self.config.steps_budget_headroom
+        # Never below the configured floor, never above the ceiling that keeps
+        # the request inside the judge's own context window.
+        return max(configured, min(wanted, self.config.max_tokens_ceiling))
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Roughly how many tokens ``text`` is, without paying for a tokenizer.
+
+        Four characters per token is the usual English approximation, and it
+        only has to be good enough to size a budget that already carries
+        headroom on top.
+        """
+        return len(text) // 4
 
     def _sampling_extra(self) -> tuple[tuple[str, Any], ...]:
         """Vendor knobs sent with every judge call."""

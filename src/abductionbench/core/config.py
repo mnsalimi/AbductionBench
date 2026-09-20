@@ -567,7 +567,7 @@ def _reasoning_judge_templates() -> dict[str, str]:
         "observation_inventory": "reasoning_observation_inventory_v2",
         # The canonical segmentation. Runs first; everything below reads it.
         "steps": "reasoning_steps_v2",
-        "observation_coverage": "reasoning_observation_coverage_v1",
+        "observation_coverage": "reasoning_observation_coverage_v2",
         "branchiness_selection": "reasoning_branchiness_selection_v1",
         "branchiness_generation": "reasoning_branchiness_generation_v1",
         # The one other prompt that reads the raw chain.
@@ -610,8 +610,20 @@ class ReasoningJudgeConfig(_Base):
     #: cost of ten short calls to buy headroom one of them needs.
     max_tokens: int = Field(4096, ge=1)
     max_tokens_by_family: dict[str, int] = Field(
-        default_factory=lambda: {"steps": 16384}
+        default_factory=lambda: {"steps": 4096}
     )
+    #: Added to the chain's own estimated length to size the ``steps`` reply.
+    #:
+    #: That reply is the chain segmented into a JSON array, so it is about as
+    #: long as the chain plus the quoting, the commas and the two count lists.
+    #: The constant covers those and leaves room for a judge that is a little
+    #: more verbose than the text it read.
+    steps_budget_headroom: int = Field(2048, ge=0)
+    #: The most any one call may ask for, whatever the chain's length implies.
+    #: A request still has to fit inside the judge's own context window with its
+    #: prompt, and a chain long enough to exceed this was already clipped by
+    #: ``max_chain_chars`` before it got here.
+    max_tokens_ceiling: int = Field(32768, ge=1)
     temperature: float = Field(0.0, ge=0)
     #: How hard the judge may think before answering.
     #:

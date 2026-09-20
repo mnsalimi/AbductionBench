@@ -1,0 +1,6 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+08:38:41 INFO    abductionbench.core.tokenizer: token counting backend: hf
+08:38:41 INFO    abductionbench.core.engine: continuing with a changed configuration; this pass is recorded in run_config.resolved.6.yaml (the original stays in run_config.resolved.yaml)
+08:38:41 INFO    abductionbench.core.sync: artifact sync started: runs/20260918-194821_reasoning -> gdrive:AbductionBench/20260918-194821_reasoning every 60.0s (incremental, in a background thread)
+08:38:41 INFO    abductionbench.core.engine: run 20260918-194821_reasoning: 2 model(s) x 43 dataset(s), output=runs/20260918-194821_reasoning
+08:38:41 INFO    abductionbench.core.sync: artifact sync: final upload of runs/20260918-194821_reasoning

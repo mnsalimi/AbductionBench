@@ -37,7 +37,10 @@ def _raw(**overrides):
             "proof_disproof_counts": [0, 1, 1, 2],
             "backtracking_steps": 1,
         },
-        "observation_coverage": {"observations_per_step": [1, 1, 0, 1]},
+        # First appearance only, so the list sums to the distinct count.
+        "observation_coverage": {
+            "observations_per_step": [1, 1, 0, 1], "observations_covered": 3
+        },
         "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
         "directionality": {"directionality": 0.5},
         "step_directionality": {"directionality_per_step": [1, 0.5, 0.5, 1]},
@@ -80,7 +83,7 @@ def test_every_derived_value_follows_from_the_lists():
     # Metric 1 -- sum of the per-step list over the inventory's size.
     assert metrics["reasoning_observations_total"] == 3.0
     assert metrics["reasoning_observations_used"] == 3.0
-    assert metrics["reasoning_observation_coverage"] == 1.0
+    assert metrics["reasoning_observation_coverage"] == 1.0  # cannot exceed 1
 
     # Metrics 3, 5, 6, 8, 9, 11 -- each list's own aggregate.
     assert metrics["reasoning_branchiness_total"] == 2.0
@@ -99,12 +102,23 @@ def test_every_derived_value_follows_from_the_lists():
     assert metrics["reasoning_anchoring_point_normalized"] == 0.25
 
 
-def test_the_step_count_is_never_stored_only_the_steps():
-    """Its length is the count; a second copy could disagree with the first."""
+def test_the_step_count_is_reported_but_always_read_off_the_list():
+    """A sheet of averages needs a number; a column of JSON cannot be averaged.
+
+    So the count is reported -- but it is written from the length of the step
+    list and never from anything the judge said about it, which is what stops
+    the two from drifting apart.
+    """
     metrics, lists, _errors, _inapplicable = _derive()
-    assert "reasoning_total_steps" not in metrics
-    assert "reasoning_total_steps" not in REASONING_METRIC_COLUMNS
-    assert len(lists["reasoning_steps"]) == 4
+    assert metrics["reasoning_total_steps"] == 4.0
+    assert metrics["reasoning_total_steps"] == float(len(lists["reasoning_steps"]))
+    assert "reasoning_total_steps" in REASONING_METRIC_COLUMNS
+
+    # A judge that also volunteered a total could not override the list.
+    raw = _raw()
+    raw["steps"]["total_steps"] = 99
+    metrics, lists, _e, _i = _derive(raw)
+    assert metrics["reasoning_total_steps"] == 4.0
 
 
 def test_exhaustiveness_is_measured_against_pairs():
@@ -238,9 +252,16 @@ def test_no_judge_prompt_mentions_normalization():
         r"mean of)\b",
         re.I,
     )
+    import yaml
+
     offenders = []
     for path in sorted(JUDGE_PROMPTS.glob("reasoning_*.yaml")):
-        for found in banned.finditer(path.read_text(encoding="utf-8")):
+        blob = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # The messages alone: `description` documents the prompt for whoever
+        # maintains it and is never sent, so scanning it would forbid saying in
+        # a comment what the code is careful not to say to the judge.
+        sent = " ".join(message["content"] for message in blob["messages"])
+        for found in banned.finditer(sent):
             offenders.append((path.name, found.group(0)))
     assert not offenders, f"judge prompts leaking derived values: {offenders}"
 
@@ -430,7 +451,7 @@ def _reasoning_responder(conversation, max_tokens):
             '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
         )
     if '"observations_per_step"' in body:
-        return '{"observations_per_step": [1, 1, 0, 0]}'
+        return '{"observations_per_step": [1, 1, 0, 0], "observations_covered": 2}'
     if '"branchiness_per_step"' in body and '"diversity"' in body:
         return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
     if '"branchiness_per_step"' in body:
@@ -1115,19 +1136,107 @@ def test_a_task_without_chains_gets_blanks_not_zeros():
     assert pd.isna(frame.loc["cot", "reasoning_branchiness_total"])
 
 
-def test_the_segmentation_call_gets_a_bigger_output_budget(tmp_path):
+def test_the_segmentation_budget_follows_the_chain_it_has_to_segment():
     """It returns the chain's steps, not a handful of integers.
 
     Every other prompt answers with a short list because it is handed the
-    segmentation; this one produces it, so its reply is the same order of size
-    as the chain it read. Truncating it costs the sample every metric, since
-    they all index against it -- and paying that budget on all twelve families
-    would buy headroom eleven of them never use.
+    segmentation; this one produces it, so its reply is about as long as the
+    chain it read. A fixed budget is the wrong shape: too small truncates a long
+    chain mid-JSON, which costs that sample every metric indexed against the
+    segmentation, and too large makes every short chain pay for headroom it
+    never uses.
     """
     from abductionbench.core.config import ReasoningJudgeConfig
+    from abductionbench.core.reasoning_judge import ReasoningJudgeStage
 
-    config = ReasoningJudgeConfig(enabled=True, model="m")
-    budget = config.max_tokens_by_family.get("steps", config.max_tokens)
-    assert budget > config.max_tokens
+    class _Stage:
+        config = ReasoningJudgeConfig(enabled=True, model="m")
+        _estimate_tokens = ReasoningJudgeStage._estimate_tokens
+        _budget_for = ReasoningJudgeStage._budget_for
+
+    stage = _Stage()
+
+    def chunk(*chains):
+        return [(str(i), {"reasoning_chain": c}, "k") for i, c in enumerate(chains)]
+
+    floor = stage.config.max_tokens_by_family["steps"]
+    assert stage._budget_for("steps", chunk("x" * 400)) == floor
+    # A long chain buys more room, in proportion to itself.
+    assert stage._budget_for("steps", chunk("x" * 40_000)) > floor
+    assert stage._budget_for("steps", chunk("x" * 60_000)) > stage._budget_for(
+        "steps", chunk("x" * 40_000)
+    )
+    # Bounded, so one runaway chain cannot ask for the whole window.
+    assert stage._budget_for("steps", chunk("x" * 4_000_000)) == (
+        stage.config.max_tokens_ceiling
+    )
+    # A batch shares one sampling object, so it sizes to its longest member --
+    # sizing to the shortest would truncate every other reply in the group.
+    assert stage._budget_for("steps", chunk("x" * 400, "x" * 40_000)) == stage._budget_for(
+        "steps", chunk("x" * 40_000)
+    )
+    # No other family is affected.
     for family in ("uncertainty", "prior_knowledge", "directionality"):
-        assert config.max_tokens_by_family.get(family, config.max_tokens) == config.max_tokens
+        assert stage._budget_for(family, chunk("x" * 60_000)) == stage.config.max_tokens
+
+
+def test_coverage_counts_each_observation_once_so_it_cannot_exceed_one():
+    """The old reading counted an observation again in every step that used it.
+
+    Sum-over-steps divided by the inventory is then a references-per-observation
+    ratio, not a coverage fraction, and it ran above 1 routinely. Counting each
+    observation at its first appearance makes the list sum to the distinct
+    observations reached, which is what the ratio is supposed to be over.
+    """
+    metrics, _lists, errors, _inapplicable = _derive(
+        _raw(
+            observation_inventory={"observations": ["a", "b", "c", "d"]},
+            observation_coverage={
+                "observations_per_step": [2, 1, 0, 0], "observations_covered": 3
+            },
+        )
+    )
+    assert not errors, errors
+    assert metrics["reasoning_observations_used"] == 3.0
+    assert metrics["reasoning_observation_coverage"] == 0.75
+    assert metrics["reasoning_observation_coverage"] <= 1.0
+
+
+def test_the_covered_count_and_the_per_step_list_have_to_agree():
+    """Two readings of the same thing, so a disagreement discards both."""
+    _m, _l, errors, _i = _derive(
+        _raw(observation_coverage={
+            "observations_per_step": [1, 1, 0, 1], "observations_covered": 2
+        })
+    )
+    assert "observation_coverage:per_step_list_does_not_sum_to_the_covered_count" in errors
+
+    # And the chain cannot cover more observations than the question gave.
+    _m2, _l2, errors2, _i2 = _derive(
+        _raw(
+            observation_inventory={"observations": ["a"]},
+            observation_coverage={
+                "observations_per_step": [1, 1, 0, 1], "observations_covered": 3
+            },
+        )
+    )
+    assert "observation_coverage:covered_exceeds_the_observation_inventory" in errors2
+
+
+def test_the_inventory_and_the_segmentation_do_not_wait_on_each_other():
+    """One reads the question, the other the chain; neither feeds the other.
+
+    They are issued together, so the wait is the slower of the two rather than
+    their sum. Only what comes after needs the segmentation.
+    """
+    import inspect
+
+    from abductionbench.core.reasoning_judge import ReasoningJudgeStage
+
+    source = inspect.getsource(ReasoningJudgeStage._evaluate)
+    first_gather = source.index("await asyncio.gather(")
+    # Everything from that gather up to where its results are consumed.
+    consumed = source.index("for target in targets:", first_gather)
+    wave_one = source[first_gather:consumed]
+    assert "_inventories" in wave_one, wave_one
+    assert '"steps"' in wave_one, wave_one
