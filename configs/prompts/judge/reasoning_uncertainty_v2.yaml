@@ -1,0 +1,32 @@
+id: reasoning_uncertainty_v2
+version: "1.0"
+description: >-
+  Metric 8: markers of doubt per step -- hedging language and other explicit
+  signals that the model is unsure.
+task_kinds: [judge]
+required_fields: [steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning.
+
+      For each step, count the phrases marking uncertainty in it: hedges
+      ("might", "possibly", "I am not sure", "it could be"), explicit statements
+      of doubt, and stated alternatives the model cannot decide between.
+
+      Count the markers, not the sentences: one step may hold several. A step
+      that states things plainly counts 0. A step that rejects a hypothesis
+      confidently is not uncertain.
+
+      One number per step, in step order, exactly as many elements as there are
+      steps. Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"uncertainty_per_step": [<integer>, <integer>, ...]}
+output_contract:
+  json_fields:
+    uncertainty_per_step: list_of_nonnegative_integers

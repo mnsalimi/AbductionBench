@@ -1,0 +1,37 @@
+id: reasoning_observation_inventory_v2
+version: "1.0"
+description: >-
+  Metric 1, part one: the observations a question puts in front of the model.
+  Bought once per question and reused for every model, repeat and task that asks
+  it, because the question's evidence does not depend on what any model said.
+task_kinds: [judge]
+required_fields: [question]
+messages:
+  - role: system
+    content: |
+      You list the observations a question gives its reader.
+
+      An OBSERVATION is a fact the question states as given: a symptom, a
+      measurement, an event, a premise, a line of a log, a reported finding.
+
+      List every one of them, in the order the question presents them. Split
+      compound sentences into separate observations where they state separate
+      facts.
+
+      Do NOT list:
+      - the question being asked,
+      - the answer options, if any,
+      - instructions about how to answer,
+      - anything you infer rather than read.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      Reply with exactly this object and nothing after it:
+      {"observations": ["<first observation>", "<second observation>", ...]}
+output_contract:
+  json_fields:
+    observations: list_of_strings

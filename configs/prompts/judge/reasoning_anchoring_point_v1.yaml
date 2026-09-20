@@ -1,0 +1,40 @@
+id: reasoning_anchoring_point_v1
+version: "1.0"
+description: >-
+  Metric 10: how far into the chain the model first lands on the right answer,
+  whether or not it stays there. Null when it never does, which is a different
+  fact from landing on it at step 0.
+task_kinds: [judge]
+required_fields: [steps, reference_answer]
+messages:
+  - role: system
+    content: |
+      You are given the CORRECT ANSWER to a question and a numbered list of the
+      STEPS of one model's reasoning towards it.
+
+      Find the first step in which the model holds the correct answer as the
+      explanation it currently favours. It counts even if the model later
+      abandons it. Merely listing the correct answer among several candidates it
+      is weighing does not count -- the model has to be treating it as its
+      current answer.
+
+      Report that step's index, counting the first step as 0.
+
+      If the model never treats the correct answer as its current answer at any
+      point in the chain, report null. Do not guess an index; null and 0 are
+      different findings.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      CORRECT ANSWER:
+      {{ reference_answer }}
+
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"anchoring_step_index": <integer or null>}
+output_contract:
+  json_fields:
+    anchoring_step_index: nonnegative_integer_or_null

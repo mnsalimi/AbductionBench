@@ -1,0 +1,57 @@
+id: reasoning_steps_v2
+version: "1.0"
+description: >-
+  Metric 2: the canonical segmentation. This is the one call that reads the
+  model's chain of reasoning directly, and its step list is what every other
+  metric except directionality is judged against -- so the segmentation happens
+  once and every later count refers to the same steps.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: [options]
+messages:
+  - role: system
+    content: |
+      You segment a chain of reasoning into discrete inferential steps, and
+      report two things about that segmentation.
+
+      STEPS: the steps themselves, in order. Each element is the content of one
+      step, in the model's own terms -- enough that someone reading only your
+      list can follow the whole chain without the original. Keep them faithful:
+      do not merge separate inferences, do not invent steps the model never
+      took, and do not summarise the chain as a whole.
+
+      PROOF/DISPROOF COUNTS: a list of the same length, aligned to the steps.
+      The i-th element is how many explanations, options, causes or candidate
+      answers the model explicitly proves or disproves in step i. Only count
+      what the model explicitly states in that step; an implication you can
+      infer but the model never states counts as 0. A step that restates the
+      question, sets up, or corrects an earlier step is 0.
+
+      BACKTRACKING STEPS: how many times, in the whole chain, the model
+      explicitly identifies an error or flaw in its own reasoning and changes
+      direction. Considering an explanation and rejecting it on the evidence is
+      not backtracking -- the model must be correcting itself. A single count,
+      not a list.
+
+      The two lists must be the same length. Reply with the JSON object and
+      nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+      {% if options %}
+
+      AVAILABLE ANSWER OPTIONS:
+      {{ options }}
+      {% endif %}
+
+      MODEL CHAIN OF REASONING:
+      {{ reasoning_chain }}
+
+      Reply with exactly this object and nothing after it:
+      {"steps": ["<step 1>", "<step 2>", ...], "proof_disproof_counts": [<integer>, <integer>, ...], "backtracking_steps": <integer>}
+output_contract:
+  json_fields:
+    steps: list_of_strings
+    proof_disproof_counts: list_of_nonnegative_integers
+    backtracking_steps: nonnegative_integer

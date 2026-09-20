@@ -65,7 +65,10 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ReasoningJudgeStage", "derive_reasoning_metrics", "REASONING_METRIC_COLUMNS"]
+__all__ = [
+    "ReasoningJudgeStage", "derive_reasoning_metrics",
+    "REASONING_METRIC_COLUMNS", "REASONING_LIST_COLUMNS",
+]
 
 #: Adapters label an item with their own task kind.  Everything that asks for a
 #: free-form answer is generation-shaped for these metrics, and everything that
@@ -77,48 +80,79 @@ _SELECTION_KINDS = frozenset({"selection", "multi_selection"})
 
 _REQUIRED_TEMPLATES = {
     "observation_inventory",
-    "evidence",
     "steps",
-    "branchiness_diversity",
+    "observation_coverage",
+    "branchiness_selection",
+    "branchiness_generation",
     "directionality",
+    "step_directionality",
     "differential_elimination",
     "uncertainty",
     "prior_knowledge",
+    "anchoring_point",
+    "unresolved_contradiction",
 }
 
-#: Every column this stage can contribute, in reporting order, so the sheet can
-#: show a consistent set of columns even where a value is missing.
+#: Per-step outputs, stored whole as JSON arrays on the sample row.
+#:
+#: One column per list, never one column per step: step counts vary from sample
+#: to sample, so exploding them would give a sheet whose width depends on its
+#: longest chain and whose columns mean different things in different rows.
+#: Kept raw so they can be re-aggregated or plotted as histograms later, which
+#: an average alone cannot support.
+#:
+#: ``reasoning_steps`` doubles as the step count: it is the segmentation every
+#: other list is indexed by, so its length *is* the total, and storing that
+#: total again as its own column would be a second copy that can disagree.
+REASONING_LIST_COLUMNS: tuple[str, ...] = (
+    "reasoning_steps",
+    "reasoning_proof_disproof_per_step",
+    "reasoning_observations_per_step",
+    "reasoning_branchiness_per_step",
+    "reasoning_step_directionality_per_step",
+    "reasoning_comparisons_per_step",
+    "reasoning_uncertainty_per_step",
+    "reasoning_prior_knowledge_per_step",
+    "reasoning_unresolved_per_step",
+)
+
 REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     # 1. observation (evidence) coverage
     "reasoning_observations_total",
     "reasoning_observations_used",
     "reasoning_observation_coverage",
     # 2. reasoning steps & backtracking
-    "reasoning_total_steps",
     "reasoning_useful_steps",
     "reasoning_useless_steps",
     "reasoning_backtracking_steps",
     "reasoning_useful_step_fraction",
     "reasoning_useless_step_fraction",
     "reasoning_backtracking_rate",
-    # 3. branchiness & diversity (generation)
-    "reasoning_branchiness",
+    # 3. branchiness & diversity
+    "reasoning_branchiness_total",
     "reasoning_diversity",
-    # 4. redundancy & completeness
-    "reasoning_redundancy",
-    "reasoning_completeness",
-    "reasoning_redundancy_normalized",
-    "reasoning_completeness_normalized",
-    # 5. directionality
+    "reasoning_option_count",
+    # 4. directionality (whole chain)
     "reasoning_directionality",
-    # 6. differential elimination (selection)
+    # 5. step-level directionality
+    "reasoning_step_directionality_mean",
+    # 6. differential elimination
     "reasoning_differential_elimination",
     "reasoning_differential_elimination_normalized",
-    # 7. uncertainty marking
+    # 7. comparison exhaustiveness
+    "reasoning_comparison_exhaustiveness",
+    # 8. uncertainty marking
     "reasoning_uncertainty_steps",
     "reasoning_uncertainty_rate",
-    # 8. prior knowledge
+    # 9. prior knowledge
     "reasoning_prior_knowledge",
+    "reasoning_prior_knowledge_normalized",
+    # 10. anchoring point
+    "reasoning_anchoring_point",
+    "reasoning_anchoring_point_normalized",
+    # 11. unresolved contradiction
+    "reasoning_unresolved_contradictions",
+    "reasoning_unresolved_contradiction_normalized",
 )
 
 
@@ -171,15 +205,73 @@ def _binary(value: Any) -> int | None:
     return parsed if parsed in (0, 1) else None
 
 
-def comparison_combinations(option_count: int) -> int:
-    """Unordered combinations of two or more options, out of ``option_count``.
 
-    The sum of C(n, k) for k = 2..n, which is 2^n - n - 1.  For three options
-    that is C(3,2) + C(3,3) = 3 + 1 = 4.
+
+def comparison_pairs(option_count: int) -> int:
+    """C(n, 2) -- the unordered pairs that could be compared out of ``n``.
+
+    The denominator for comparison exhaustiveness. Pairs, not all subsets: a
+    chain that weighs every pair once has compared exhaustively, and counting
+    the 2^n - n - 1 larger groupings too would make a complete comparison score
+    far below 1.
     """
     if option_count < 2:
         return 0
-    return (2**option_count) - option_count - 1
+    return option_count * (option_count - 1) // 2
+
+
+def _int_list(value: Any, expected: int | None = None) -> list[int] | None:
+    """A list of non-negative integers, optionally of an exact length."""
+    if not isinstance(value, list):
+        return None
+    out: list[int] = []
+    for item in value:
+        parsed = _nonnegative_int(item)
+        if parsed is None:
+            return None
+        out.append(parsed)
+    if expected is not None and len(out) != expected:
+        return None
+    return out
+
+
+def _binary_list(value: Any, expected: int | None = None) -> list[int] | None:
+    parsed = _int_list(value, expected)
+    if parsed is None or any(item not in (0, 1) for item in parsed):
+        return None
+    return parsed
+
+
+def _directionality_list(value: Any, expected: int | None = None) -> list[float] | None:
+    if not isinstance(value, list):
+        return None
+    out: list[float] = []
+    for item in value:
+        number = _nonnegative_number(item)
+        if number is None or number not in (0.0, 0.5, 1.0):
+            return None
+        out.append(number)
+    if expected is not None and len(out) != expected:
+        return None
+    return out
+
+
+def _numbered(items: list[str]) -> str:
+    """``1. first\n2. second`` -- how a list reaches a judge.
+
+    Numbered rather than bulleted because every per-step list that comes back
+    is positional: the judge has to be able to see which step is which, and the
+    validation downstream rejects a list whose length does not match.
+    """
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return None
+    return [item.strip() for item in value]
 
 
 def derive_reasoning_metrics(
@@ -190,201 +282,205 @@ def derive_reasoning_metrics(
     option_count: int,
     pipeline_like: bool = False,
     bov: bool = False,
-) -> tuple[dict[str, float], list[str], list[str]]:
+) -> tuple[dict[str, float], dict[str, list[Any]], list[str], list[str]]:
     """Validate the judges' raw outputs and compute every derived value.
 
-    Returns ``(metrics, errors, inapplicable)``.  Nothing is coerced: a count
-    that is missing, malformed or impossible produces an entry in ``errors`` and
-    no metric, and a metric that does not apply to this task shape produces an
-    entry in ``inapplicable`` and no metric.  The two are kept apart because
-    they mean opposite things to a reader of the sheet.
+    Returns ``(metrics, lists, errors, inapplicable)``.  Nothing is coerced: a
+    value that is missing, malformed or impossible produces an entry in
+    ``errors`` and no metric, and a metric that does not apply to this task
+    shape produces an entry in ``inapplicable`` and no metric.  The two are kept
+    apart because "the judge could not answer" and "there was nothing to ask"
+    are different facts about a blank cell.
 
-    Every normalization happens here, after the raw values are in hand, and
-    never in a judge prompt.
+    **Every normalization happens here**, after the raw values are in hand. No
+    judge is ever told about a ratio, a denominator or a derived value; each is
+    asked for counts and lists alone, and the arithmetic is this function's.
+
+    **The step list governs everything.** Metric 2 segments the chain once, and
+    every per-step list is indexed by that segmentation, so a list whose length
+    does not match it is rejected rather than padded or truncated -- a
+    mismatched list would silently attribute one step's count to another.
     """
     metrics: dict[str, float] = {}
+    lists: dict[str, list[Any]] = {}
     errors: list[str] = []
     inapplicable: list[str] = []
 
-    # -- 1. observation (evidence) coverage --------------------------------- #
-    # The total is the one value bought once per sample rather than once per
-    # output, so it is the authoritative one here and the normalizer for both
-    # this metric and metric 4.
-    inventory = raw.get("observation_inventory") or {}
-    total_observations = _nonnegative_int(inventory.get("total_observations"))
-    if total_observations is None:
-        errors.append("observation_inventory:invalid_or_missing_total")
+    # -- metric 2: the canonical segmentation, first because all else needs it #
+    steps_blob = raw.get("steps") or {}
+    steps = _string_list(steps_blob.get("steps"))
+    if steps is None:
+        errors.append("steps:invalid_or_missing_step_list")
+        total_steps = 0
     else:
-        metrics["reasoning_observations_total"] = float(total_observations)
+        lists["reasoning_steps"] = steps
+        total_steps = len(steps)
 
-    # Metrics 1 and 4 come from one call, so the three counts are one reading of
-    # one inventory and can be checked against each other -- which two separate
-    # calls could not be.
-    evidence = raw.get("evidence") or {}
-    observations_used = _nonnegative_int(evidence.get("observations_used"))
-    echoed_total = _nonnegative_int(evidence.get("total_observations"))
-    redundant = _nonnegative_int(evidence.get("redundancy"))
-    complete = _nonnegative_int(evidence.get("completeness"))
-
-    if observations_used is None:
-        errors.append("evidence:invalid_or_missing_used_count")
-    elif total_observations is None:
-        errors.append("evidence:no_inventory_to_count_against")
-    elif observations_used > total_observations:
-        errors.append("evidence:used_exceeds_inventory_total")
+    proofs = _int_list(steps_blob.get("proof_disproof_counts"), total_steps or None)
+    if steps is None:
+        pass  # already reported; nothing downstream can be indexed
+    elif proofs is None:
+        errors.append("steps:proof_disproof_list_missing_or_not_one_value_per_step")
     else:
-        if echoed_total is not None and echoed_total != total_observations:
-            # Worth recording but not worth voiding the count: the inventory is
-            # the authority and the used count was taken against it.
-            errors.append("evidence:echoed_total_differs_from_inventory")
-        metrics["reasoning_observations_used"] = float(observations_used)
-        if total_observations > 0:
-            metrics["reasoning_observation_coverage"] = observations_used / total_observations
-        else:
-            errors.append("evidence:inventory_total_is_zero")
+        lists["reasoning_proof_disproof_per_step"] = proofs
+        useless = sum(1 for count in proofs if count == 0)
+        useful = total_steps - useless
+        metrics["reasoning_useful_steps"] = float(useful)
+        metrics["reasoning_useless_steps"] = float(useless)
+        if total_steps:
+            metrics["reasoning_useful_step_fraction"] = useful / total_steps
+            metrics["reasoning_useless_step_fraction"] = useless / total_steps
 
-    # -- 2. reasoning steps & backtracking ---------------------------------- #
-    steps = raw.get("steps") or {}
-    total_steps = _nonnegative_int(steps.get("total_steps"))
-    useless_steps = _nonnegative_int(steps.get("useless_steps"))
-    useful_steps = _nonnegative_int(steps.get("useful_steps"))
-    backtracking = _nonnegative_int(steps.get("backtracking_steps"))
-    if (
-        total_steps is None
-        or useless_steps is None
-        or useful_steps is None
-        or useful_steps + useless_steps != total_steps
-    ):
-        # Every step is useful or useless, so a pair that does not add up is a
-        # judge that did not segment the chain rather than a partial reading.
-        errors.append("steps:invalid_counts_or_sum")
-        total_steps = None
-    else:
-        metrics.update(
-            {
-                "reasoning_total_steps": float(total_steps),
-                "reasoning_useful_steps": float(useful_steps),
-                "reasoning_useless_steps": float(useless_steps),
-            }
-        )
-        if total_steps > 0:
-            metrics["reasoning_useful_step_fraction"] = useful_steps / total_steps
-            metrics["reasoning_useless_step_fraction"] = useless_steps / total_steps
-        else:
-            errors.append("steps:total_is_zero")
-
+    backtracking = _nonnegative_int(steps_blob.get("backtracking_steps"))
     if backtracking is None:
         errors.append("steps:invalid_or_missing_backtracking_count")
-    elif total_steps is not None and backtracking > total_steps:
-        # A backtrack is a step, so more backtracks than steps is not a value
-        # with a missing normalizer -- it is a judge that did not count. Keeping
-        # such a raw number is how one reply of "147" against a 14-step chain
-        # once moved this metric's mean by fifty-fold.
+    elif steps is not None and backtracking > total_steps:
+        # More corrections than steps cannot be a reading of this chain.
         errors.append("steps:backtracking_exceeds_total_steps")
     else:
-        if (
-            total_steps is not None
-            and useless_steps is not None
-            and backtracking > useless_steps
-        ):
-            # Definitionally a backtrack is one of the useless steps. Recorded,
-            # not fatal: the count itself is still a count of backtracks.
-            errors.append("steps:backtracking_exceeds_useless_steps")
         metrics["reasoning_backtracking_steps"] = float(backtracking)
-        if total_steps is not None and total_steps > 0:
+        if total_steps:
             metrics["reasoning_backtracking_rate"] = backtracking / total_steps
-        else:
-            errors.append("steps:no_step_total_to_rate_backtracking_against")
 
-    # -- 3. branchiness & diversity (generation only) ----------------------- #
-    if generation_like or pipeline_like:
-        branch = raw.get("branchiness_diversity") or {}
-        branchiness = _nonnegative_int(branch.get("branchiness"))
-        diversity = _binary(branch.get("diversity"))
-        if branchiness is None or diversity is None:
-            errors.append("branchiness_diversity:invalid_or_missing_output")
+    def per_step(family: str, key: str, column: str, kind=_int_list) -> list[Any] | None:
+        """One per-step list, validated against the canonical step count."""
+        if steps is None:
+            inapplicable.append(f"{family}:no_step_list_to_index_against")
+            return None
+        parsed = kind((raw.get(family) or {}).get(key), total_steps)
+        if parsed is None:
+            errors.append(f"{family}:missing_or_not_one_value_per_step")
+            return None
+        lists[column] = parsed
+        return parsed
+
+    # -- metric 1: observation coverage --------------------------------------- #
+    inventory = raw.get("observation_inventory") or {}
+    observations = _string_list(inventory.get("observations"))
+    if observations is None:
+        errors.append("observation_inventory:invalid_or_missing_observation_list")
+        observations_total = 0
+    else:
+        observations_total = len(observations)
+        metrics["reasoning_observations_total"] = float(observations_total)
+
+    covered = per_step("observation_coverage", "observations_per_step",
+                       "reasoning_observations_per_step")
+    if covered is not None:
+        used = sum(covered)
+        metrics["reasoning_observations_used"] = float(used)
+        if observations_total:
+            metrics["reasoning_observation_coverage"] = used / observations_total
         else:
-            metrics["reasoning_branchiness"] = float(branchiness)
+            errors.append("observation_coverage:no_inventory_to_normalize_against")
+
+    # -- metric 3: branchiness, and the n each task shape normalizes by ------- #
+    family = "branchiness_selection" if selection_like and not generation_like else (
+        "branchiness_generation"
+    )
+    branchiness = per_step(family, "branchiness_per_step", "reasoning_branchiness_per_step")
+    branchiness_total: int | None = None
+    if branchiness is not None:
+        branchiness_total = sum(branchiness)
+        metrics["reasoning_branchiness_total"] = float(branchiness_total)
+
+    if family == "branchiness_generation":
+        diversity = _binary((raw.get(family) or {}).get("diversity"))
+        if diversity is None:
+            errors.append("branchiness_generation:invalid_or_missing_diversity")
+        else:
             metrics["reasoning_diversity"] = float(diversity)
+        inapplicable.append("option_count:generation_task_has_no_answer_options")
+        hypothesis_count = branchiness_total
     else:
-        inapplicable.append("branchiness_diversity:generation_only")
-
-    # -- 4. redundancy & completeness --------------------------------------- #
-    # Same call as metric 1 above, so this can hold the two to each other: every
-    # observation the chain used is either removable or necessary, and a pair
-    # that does not add up to the used count is a judge that did not partition
-    # the evidence rather than one that found an unusual chain.
-    if redundant is None or complete is None:
-        errors.append("evidence:invalid_or_missing_redundancy_completeness")
-    elif observations_used is not None and redundant + complete != observations_used:
-        errors.append("evidence:redundancy_plus_completeness_is_not_the_used_count")
-    else:
-        metrics["reasoning_redundancy"] = float(redundant)
-        metrics["reasoning_completeness"] = float(complete)
-        if total_observations is None:
-            errors.append("evidence:no_inventory_to_normalize_against")
-        elif total_observations == 0:
-            errors.append("evidence:inventory_total_is_zero")
-        elif redundant > total_observations or complete > total_observations:
-            errors.append("evidence:count_exceeds_inventory_total")
+        judged_options = _nonnegative_int((raw.get(family) or {}).get("option_count"))
+        if judged_options is None:
+            errors.append("branchiness_selection:invalid_or_missing_option_count")
         else:
-            metrics["reasoning_redundancy_normalized"] = redundant / total_observations
-            metrics["reasoning_completeness_normalized"] = complete / total_observations
+            metrics["reasoning_option_count"] = float(judged_options)
+        inapplicable.append("diversity:selection_candidates_are_the_questions_not_the_models")
+        # The question's own option count is the ground truth where we have it;
+        # the judge's reading is a fallback, not an override.
+        hypothesis_count = option_count if option_count >= 2 else judged_options
 
-    # -- 5. directionality --------------------------------------------------- #
-    directionality = _nonnegative_number((raw.get("directionality") or {}).get("directionality"))
-    if directionality not in (0.0, 0.5, 1.0):
+    # -- metric 4: directionality over the whole chain ------------------------ #
+    direction = _nonnegative_number((raw.get("directionality") or {}).get("directionality"))
+    if direction is None or direction not in (0.0, 0.5, 1.0):
         errors.append("directionality:expected_0_0.5_or_1")
     else:
-        metrics["reasoning_directionality"] = directionality
+        metrics["reasoning_directionality"] = direction
 
-    # -- 6. differential elimination (selection, and pipeline) --------------- #
-    if selection_like or pipeline_like:
-        if bov:
-            # A BOV request shows one candidate per call, so there is no set of
-            # options in the chain for combinations to be drawn from.
-            inapplicable.append("differential_elimination:bov_shows_one_option_per_chain")
-        elif option_count < 2:
-            errors.append("differential_elimination:fewer_than_two_visible_options")
+    # -- metric 5: directionality per step ------------------------------------ #
+    step_direction = per_step("step_directionality", "directionality_per_step",
+                              "reasoning_step_directionality_per_step",
+                              kind=_directionality_list)
+    if step_direction is not None and total_steps:
+        metrics["reasoning_step_directionality_mean"] = sum(step_direction) / total_steps
+
+    # -- metrics 6 and 7: elimination, and how exhaustive it was -------------- #
+    comparisons = per_step("differential_elimination", "comparisons_per_step",
+                           "reasoning_comparisons_per_step")
+    if comparisons is not None:
+        compared = sum(comparisons)
+        metrics["reasoning_differential_elimination"] = float(compared)
+        if total_steps:
+            metrics["reasoning_differential_elimination_normalized"] = compared / total_steps
+        pairs = comparison_pairs(hypothesis_count or 0)
+        if pairs:
+            metrics["reasoning_comparison_exhaustiveness"] = compared / pairs
+        elif bov:
+            inapplicable.append("comparison_exhaustiveness:bov_shows_one_option_per_chain")
         else:
-            differential = _nonnegative_int(
-                (raw.get("differential_elimination") or {}).get("differential_elimination")
-            )
-            combinations = comparison_combinations(option_count)
-            if differential is None:
-                errors.append("differential_elimination:invalid_or_missing_output")
-            elif differential > combinations:
-                errors.append("differential_elimination:exceeds_possible_combinations")
+            inapplicable.append("comparison_exhaustiveness:fewer_than_two_hypotheses_to_pair")
+
+    # -- metric 8: uncertainty ------------------------------------------------ #
+    uncertainty = per_step("uncertainty", "uncertainty_per_step",
+                           "reasoning_uncertainty_per_step")
+    if uncertainty is not None:
+        marked = sum(uncertainty)
+        metrics["reasoning_uncertainty_steps"] = float(marked)
+        if total_steps:
+            metrics["reasoning_uncertainty_rate"] = marked / total_steps
+
+    # -- metric 9: prior knowledge -------------------------------------------- #
+    prior = per_step("prior_knowledge", "prior_knowledge_per_step",
+                     "reasoning_prior_knowledge_per_step")
+    if prior is not None:
+        borrowed = sum(prior)
+        metrics["reasoning_prior_knowledge"] = float(borrowed)
+        if total_steps:
+            metrics["reasoning_prior_knowledge_normalized"] = borrowed / total_steps
+
+    # -- metric 10: anchoring point ------------------------------------------- #
+    anchor_blob = raw.get("anchoring_point") or {}
+    if "anchoring_step_index" not in anchor_blob:
+        errors.append("anchoring_point:missing_output")
+    else:
+        anchor = anchor_blob["anchoring_step_index"]
+        if anchor is None:
+            # The model never held the right answer. A real finding, and a
+            # different one from holding it at step 0, so it stays blank rather
+            # than becoming a number.
+            inapplicable.append("anchoring_point:correct_answer_never_considered")
+        else:
+            index = _nonnegative_int(anchor)
+            if index is None or (steps is not None and index >= total_steps):
+                errors.append("anchoring_point:not_an_index_into_the_step_list")
             else:
-                metrics["reasoning_differential_elimination"] = float(differential)
-                metrics["reasoning_differential_elimination_normalized"] = (
-                    differential / combinations
-                )
-    else:
-        inapplicable.append("differential_elimination:selection_and_pipeline_only")
+                metrics["reasoning_anchoring_point"] = float(index)
+                if total_steps:
+                    metrics["reasoning_anchoring_point_normalized"] = index / total_steps
 
-    # -- 7. uncertainty marking ---------------------------------------------- #
-    uncertainty = _nonnegative_int((raw.get("uncertainty") or {}).get("uncertainty_steps"))
-    if uncertainty is None:
-        errors.append("uncertainty:invalid_or_missing_output")
-    elif total_steps is not None and uncertainty > total_steps:
-        # Same rule as backtracking: it counts steps, so it cannot exceed them.
-        errors.append("uncertainty:exceeds_total_steps")
-    else:
-        metrics["reasoning_uncertainty_steps"] = float(uncertainty)
-        if total_steps is not None and total_steps > 0:
-            metrics["reasoning_uncertainty_rate"] = uncertainty / total_steps
-        else:
-            errors.append("uncertainty:no_step_total_to_rate_against")
+    # -- metric 11: unresolved contradictions --------------------------------- #
+    unresolved = per_step("unresolved_contradiction", "unresolved_per_step",
+                          "reasoning_unresolved_per_step", kind=_binary_list)
+    if unresolved is not None:
+        left = sum(unresolved)
+        metrics["reasoning_unresolved_contradictions"] = float(left)
+        if total_steps:
+            metrics["reasoning_unresolved_contradiction_normalized"] = left / total_steps
 
-    # -- 8. prior knowledge --------------------------------------------------- #
-    prior = _binary((raw.get("prior_knowledge") or {}).get("prior_knowledge"))
-    if prior is None:
-        errors.append("prior_knowledge:invalid_or_missing_output")
-    else:
-        metrics["reasoning_prior_knowledge"] = float(prior)
-
-    return metrics, errors, inapplicable
+    return metrics, lists, errors, inapplicable
 
 
 class ReasoningJudgeStage:
@@ -586,7 +682,7 @@ class ReasoningJudgeStage:
         # metric 1 and metric 4 both divide by.
         log_lines: list[dict[str, Any]] = []
         for target in targets:
-            metrics, errors, inapplicable = derive_reasoning_metrics(
+            metrics, raw_lists, errors, inapplicable = derive_reasoning_metrics(
                 target.raw,
                 generation_like=target.generation_like,
                 selection_like=target.selection_like,
@@ -602,6 +698,12 @@ class ReasoningJudgeStage:
                 details["reasoning_judge_errors"] = errors
             if inapplicable:
                 details["reasoning_metrics_inapplicable"] = inapplicable
+            # The per-step lists ride on the record rather than on the metrics,
+            # because metrics are numbers a task can average and these are not.
+            # Kept whole: the point of asking per step was to be able to plot
+            # the distribution later, which an average has already thrown away.
+            if raw_lists:
+                details["reasoning_lists"] = raw_lists
             updated[target.index] = (
                 target.sample,
                 target.response,
@@ -629,6 +731,7 @@ class ReasoningJudgeStage:
                     # back to the reply it came from.
                     "raw": target.raw,
                     "metrics": {name: metrics.get(name) for name in REASONING_METRIC_COLUMNS},
+                    "lists": {name: raw_lists.get(name) for name in REASONING_LIST_COLUMNS},
                     "errors": errors,
                     "inapplicable": inapplicable,
                 }
@@ -820,7 +923,12 @@ class ReasoningJudgeStage:
                 "reference_answer": target.reference,
                 "options": target.options,
                 "option_count": len(target.options),
-                "total_observations": _nonnegative_int(inventory.get("total_observations")),
+                # The question's observations, numbered so the coverage judge
+                # and this code agree on which is which.
+                "observations": _numbered(
+                    _string_list(inventory.get("observations")) or []
+                )
+                or None,
             }
 
         async def run_family(
@@ -869,49 +977,65 @@ class ReasoningJudgeStage:
                 else:
                     target.raw[family] = results[key]
 
-        generation = [t for t in targets if t.generation_like or t.pipeline_like]
-        differential = [
-            t
-            for t in targets
-            if (t.selection_like or t.pipeline_like) and not t.bov and len(t.options) >= 2
-        ]
+        # Which branchiness prompt each target gets. Routed on the task's known
+        # shape, never inferred by the judge: whether the candidates are the
+        # question's or the model's changes what "newly proposed" counts.
+        selection = [t for t in targets if t.selection_like and not t.generation_like]
+        selection_ids = {id(t) for t in selection}
 
-        # Wave one: everything that needs at most the observation inventory.
-        # Six families' batches are in flight together here -- one fewer than
-        # before, because the used count and the redundant/necessary split are
-        # one call now rather than two readings of the same evidence.
-        wave_one = [
-            run_family(
-                "evidence",
-                targets,
-                ("question", "reasoning_chain", "total_observations", "model_answer",
-                 "reference_answer"),
-            ),
-            run_family("steps", targets, ("question", "reasoning_chain", "options")),
-            run_family("directionality", targets, ("question", "reasoning_chain")),
-            run_family("prior_knowledge", targets, ("question", "reasoning_chain")),
-        ]
-        if generation:
-            wave_one.append(
-                run_family("branchiness_diversity", generation, ("question", "reasoning_chain"))
-            )
-        if differential:
-            wave_one.append(
-                run_family(
-                    "differential_elimination",
-                    differential,
-                    ("question", "reasoning_chain", "options", "option_count"),
-                )
-            )
-        await asyncio.gather(*wave_one)
+        # -- wave one: the segmentation, alone ------------------------------ #
+        #
+        # Metric 2 is a hard dependency, not an optimisation to schedule around:
+        # every list below is indexed by the steps it returns, so none of them
+        # can even be asked until it has. It is also one of only two prompts
+        # that reads the chain itself.
+        await run_family("steps", targets, ("question", "reasoning_chain", "options"))
 
-        # Wave two: uncertainty counts steps, so it has to see the same step
-        # count metric 2 produced -- the one thing here that genuinely waits.
         for target in targets:
-            common[target.index]["total_steps"] = _nonnegative_int(
-                (target.raw.get("steps") or {}).get("total_steps")
+            segmented = _string_list((target.raw.get("steps") or {}).get("steps"))
+            if segmented is None:
+                # Nothing downstream can be indexed against a chain that did not
+                # segment. Reported once here rather than nine times below.
+                target.errors.append("steps:no_segmentation_so_no_per_step_metric")
+                continue
+            common[target.index]["steps"] = _numbered(segmented)
+
+        ready = [t for t in targets if "steps" in common[t.index]]
+
+        # -- wave two: everything the segmentation unlocked ----------------- #
+        #
+        # All of these read the step list rather than the chain, so they are
+        # independent of each other and go out together. Directionality is the
+        # exception that still reads the raw chain: it judges the chain as a
+        # whole and needs no step boundaries.
+        wave_two = [
+            run_family("observation_coverage", ready, ("observations", "steps")),
+            run_family("directionality", targets, ("question", "reasoning_chain")),
+            run_family("step_directionality", ready, ("steps",)),
+            run_family("differential_elimination", ready, ("steps",)),
+            run_family("uncertainty", ready, ("steps",)),
+            run_family("prior_knowledge", ready, ("steps",)),
+            run_family("unresolved_contradiction", ready, ("steps",)),
+        ]
+        anchored = [t for t in ready if t.reference]
+        if anchored:
+            wave_two.append(
+                run_family("anchoring_point", anchored, ("steps", "reference_answer"))
             )
-        await run_family("uncertainty", targets, ("question", "reasoning_chain", "total_steps"))
+        for target in ready:
+            if not target.reference:
+                target.inapplicable.append("anchoring_point:no_reference_answer_to_anchor_on")
+        # A pipeline task proposes its own explanations as well as choosing,
+        # so it takes the generation prompt: its branchiness is the model's.
+        sel_ready = [t for t in ready if id(t) in selection_ids]
+        gen_ready = [t for t in ready if id(t) not in selection_ids]
+        if sel_ready:
+            wave_two.append(
+                run_family("branchiness_selection", sel_ready, ("steps", "options"))
+            )
+        if gen_ready:
+            wave_two.append(run_family("branchiness_generation", gen_ready, ("steps",)))
+        await asyncio.gather(*wave_two)
 
     async def _inventories(
         self,

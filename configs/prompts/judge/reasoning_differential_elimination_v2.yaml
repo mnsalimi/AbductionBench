@@ -1,0 +1,38 @@
+id: reasoning_differential_elimination_v2
+version: "1.0"
+description: >-
+  Metric 6: how many times per step the model weighs hypotheses directly against
+  each other. Counts comparison events, not hypotheses, so a step weighing four
+  candidates together is one event.
+task_kinds: [judge]
+required_fields: [steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning.
+
+      For each step, count the distinct COMPARISON EVENTS in it. A comparison
+      event is the model directly weighing two or more hypotheses against each
+      other -- preferring one over another, ruling one out in favour of another,
+      or contrasting what each would predict.
+
+      Count events, not hypotheses:
+      - one event that compares three or more hypotheses together counts as 1,
+        not 3;
+      - comparing the same set of hypotheses again within the same step, in any
+        order, is not a new event;
+      - a step that discusses a single hypothesis without setting it against
+        another counts 0.
+
+      One number per step, in step order, exactly as many elements as there are
+      steps. Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"comparisons_per_step": [<integer>, <integer>, ...]}
+output_contract:
+  json_fields:
+    comparisons_per_step: list_of_nonnegative_integers

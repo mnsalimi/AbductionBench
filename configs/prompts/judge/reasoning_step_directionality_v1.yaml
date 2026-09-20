@@ -1,0 +1,35 @@
+id: reasoning_step_directionality_v1
+version: "1.0"
+description: >-
+  Metric 5: the direction of reasoning within each individual step, using the
+  same definitions as the whole-chain metric but scoped to one step at a time.
+task_kinds: [judge]
+required_fields: [steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning.
+
+      For each step on its own, judge which direction that step reasons in:
+
+        1   -- the step reasons from the evidence towards an explanation.
+        0   -- the step starts from an assumed or guessed explanation and works
+               backward to justify it against the evidence.
+        0.5 -- the step does both, or the direction cannot be told.
+
+      Judge each step by what happens inside it. A step that neither reasons
+      from evidence nor defends a guess -- a restatement, a setup, a
+      bookkeeping step -- is 0.5.
+
+      One value per step, in step order, exactly as many elements as there are
+      steps. Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"directionality_per_step": [<0, 0.5 or 1>, ...]}
+output_contract:
+  json_fields:
+    directionality_per_step: list_of_directionality_values

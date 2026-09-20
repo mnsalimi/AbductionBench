@@ -1,0 +1,38 @@
+id: reasoning_branchiness_selection_v1
+version: "1.0"
+description: >-
+  Metric 3, selection form: hypotheses newly raised per step, plus how many
+  answer options the question offered. A separate prompt from the generation
+  form so the judge is never left to infer which kind of task it is looking at.
+task_kinds: [judge]
+required_fields: [steps, options]
+messages:
+  - role: system
+    content: |
+      You are given the answer OPTIONS a question offered, and a numbered list of
+      the STEPS of one model's reasoning over them.
+
+      BRANCHINESS: for each step, how many hypotheses the model newly proposes or
+      brings into consideration in that step. Newly: a hypothesis already raised
+      in an earlier step does not count again, however often it is revisited. A
+      step that raises none counts 0. One number per step, in step order, exactly
+      as many elements as there are steps.
+
+      NUMBER OF OPTIONS: how many distinct answer choices the question offers.
+      This is a property of the question, not of the reasoning.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      ANSWER OPTIONS GIVEN IN THE QUESTION:
+      {{ options }}
+
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"branchiness_per_step": [<integer>, <integer>, ...], "option_count": <integer>}
+output_contract:
+  json_fields:
+    branchiness_per_step: list_of_nonnegative_integers
+    option_count: nonnegative_integer

@@ -1,4 +1,11 @@
-"""The reasoning-metric judge: what it measures, and what it refuses to."""
+"""The reasoning-metric judge: what it measures, and what it refuses to.
+
+Every metric that is about something happening *across* a chain is asked for as
+a per-step list rather than a total, so the distribution survives to be plotted
+and not just its mean.  Metric 2 segments the chain once and every other list is
+indexed by that segmentation, which is why a list of the wrong length is an
+error here rather than something to pad.
+"""
 
 from __future__ import annotations
 
@@ -8,40 +15,47 @@ from pathlib import Path
 import pytest
 
 from abductionbench.core.reasoning_judge import (
+    REASONING_LIST_COLUMNS,
     REASONING_METRIC_COLUMNS,
     ReasoningJudgeStage,
-    comparison_combinations,
+    comparison_pairs,
     derive_reasoning_metrics,
 )
 
 JUDGE_PROMPTS = Path("configs/prompts/judge")
 
+#: Four steps, so every per-step list below has to have four elements.
+STEPS = ["read the rash", "consider measles", "consider rubella", "settle on measles"]
+
 
 def _raw(**overrides):
-    """A complete, self-consistent set of judge outputs."""
+    """A complete, self-consistent set of judge outputs for a generation task."""
     base = {
-        "observation_inventory": {"total_observations": 8},
-        # Metrics 1 and 4 in one call: used = redundancy + completeness.
-        "evidence": {
-            "total_observations": 8,
-            "observations_used": 6,
-            "redundancy": 2,
-            "completeness": 4,
-        },
+        "observation_inventory": {"observations": ["rash", "fever", "cough"]},
         "steps": {
-            "total_steps": 10,
-            "useful_steps": 7,
-            "useless_steps": 3,
-            "backtracking_steps": 2,
+            "steps": list(STEPS),
+            "proof_disproof_counts": [0, 1, 1, 2],
+            "backtracking_steps": 1,
         },
-        "branchiness_diversity": {"branchiness": 4, "diversity": 1},
+        "observation_coverage": {"observations_per_step": [1, 1, 0, 1]},
+        "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
         "directionality": {"directionality": 0.5},
-        "differential_elimination": {"differential_elimination": 3},
-        "uncertainty": {"uncertainty_steps": 3},
-        "prior_knowledge": {"prior_knowledge": 1},
+        "step_directionality": {"directionality_per_step": [1, 0.5, 0.5, 1]},
+        "differential_elimination": {"comparisons_per_step": [0, 0, 0, 1]},
+        "uncertainty": {"uncertainty_per_step": [0, 1, 1, 0]},
+        "prior_knowledge": {"prior_knowledge_per_step": [0, 2, 1, 0]},
+        "anchoring_point": {"anchoring_step_index": 1},
+        "unresolved_contradiction": {"unresolved_per_step": [0, 0, 1, 0]},
     }
     base.update(overrides)
     return base
+
+
+def _derive(raw=None, **kwargs):
+    kwargs.setdefault("generation_like", True)
+    kwargs.setdefault("selection_like", False)
+    kwargs.setdefault("option_count", 0)
+    return derive_reasoning_metrics(raw if raw is not None else _raw(), **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -49,285 +63,278 @@ def _raw(**overrides):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_raw_and_derived_value_is_reported():
-    metrics, errors, inapplicable = derive_reasoning_metrics(
-        _raw(), generation_like=False, selection_like=True, option_count=3
-    )
-    assert not errors
-    assert not inapplicable or inapplicable == ["branchiness_diversity:generation_only"]
-    # metric 1
-    assert metrics["reasoning_observations_total"] == 8
-    assert metrics["reasoning_observations_used"] == 6
-    assert metrics["reasoning_observation_coverage"] == 6 / 8
-    # metric 2: four raw counts and three derived values
-    assert metrics["reasoning_total_steps"] == 10
-    assert metrics["reasoning_useful_steps"] == 7
-    assert metrics["reasoning_useless_steps"] == 3
-    assert metrics["reasoning_backtracking_steps"] == 2
-    assert metrics["reasoning_useful_step_fraction"] == 0.7
-    assert metrics["reasoning_useless_step_fraction"] == 0.3
-    assert metrics["reasoning_backtracking_rate"] == 0.2
-    # metric 4 normalizes on metric 1's per-sample total, not on its own counts
-    assert metrics["reasoning_redundancy_normalized"] == 2 / 8
-    assert metrics["reasoning_completeness_normalized"] == 4 / 8
-    # metric 5, 6, 7, 8
-    assert metrics["reasoning_directionality"] == 0.5
-    assert metrics["reasoning_differential_elimination"] == 3
-    assert metrics["reasoning_differential_elimination_normalized"] == 3 / 4
-    assert metrics["reasoning_uncertainty_steps"] == 3
-    assert metrics["reasoning_uncertainty_rate"] == 0.3
-    assert metrics["reasoning_prior_knowledge"] == 1
+def test_every_derived_value_follows_from_the_lists():
+    """Each normalization is this code's arithmetic, never the judge's."""
+    metrics, lists, errors, _inapplicable = _derive()
+    assert not errors, errors
+
+    # Metric 2 -- the segmentation, and what follows from the proof list.
+    assert lists["reasoning_steps"] == STEPS
+    assert lists["reasoning_proof_disproof_per_step"] == [0, 1, 1, 2]
+    assert metrics["reasoning_useless_steps"] == 1.0      # one zero in the list
+    assert metrics["reasoning_useful_steps"] == 3.0
+    assert metrics["reasoning_useful_step_fraction"] == 0.75
+    assert metrics["reasoning_useless_step_fraction"] == 0.25
+    assert metrics["reasoning_backtracking_rate"] == 0.25  # 1 of 4 steps
+
+    # Metric 1 -- sum of the per-step list over the inventory's size.
+    assert metrics["reasoning_observations_total"] == 3.0
+    assert metrics["reasoning_observations_used"] == 3.0
+    assert metrics["reasoning_observation_coverage"] == 1.0
+
+    # Metrics 3, 5, 6, 8, 9, 11 -- each list's own aggregate.
+    assert metrics["reasoning_branchiness_total"] == 2.0
+    assert metrics["reasoning_step_directionality_mean"] == 0.75
+    assert metrics["reasoning_differential_elimination"] == 1.0
+    assert metrics["reasoning_differential_elimination_normalized"] == 0.25
+    assert metrics["reasoning_uncertainty_steps"] == 2.0
+    assert metrics["reasoning_uncertainty_rate"] == 0.5
+    assert metrics["reasoning_prior_knowledge"] == 3.0
+    assert metrics["reasoning_prior_knowledge_normalized"] == 0.75
+    assert metrics["reasoning_unresolved_contradictions"] == 1.0
+    assert metrics["reasoning_unresolved_contradiction_normalized"] == 0.25
+
+    # Metric 10 -- an index into the step list, and where it falls in the chain.
+    assert metrics["reasoning_anchoring_point"] == 1.0
+    assert metrics["reasoning_anchoring_point_normalized"] == 0.25
 
 
-def test_the_combination_count_is_every_subset_of_two_or_more():
-    # The specification's own worked example: C(3,2) + C(3,3) = 3 + 1 = 4.
-    assert comparison_combinations(3) == 4
-    assert comparison_combinations(2) == 1
-    assert comparison_combinations(4) == 11
-    assert comparison_combinations(1) == 0
-
-
-def test_generation_gets_branchiness_and_selection_gets_elimination():
-    generation, _e, gen_inapplicable = derive_reasoning_metrics(
-        _raw(), generation_like=True, selection_like=False, option_count=0
-    )
-    assert "reasoning_branchiness" in generation
-    assert "reasoning_diversity" in generation
-    assert "reasoning_differential_elimination" not in generation
-    assert gen_inapplicable == ["differential_elimination:selection_and_pipeline_only"]
-
-    selection, _e, sel_inapplicable = derive_reasoning_metrics(
-        _raw(), generation_like=False, selection_like=True, option_count=3
-    )
-    assert "reasoning_differential_elimination" in selection
-    assert "reasoning_branchiness" not in selection
-    assert sel_inapplicable == ["branchiness_diversity:generation_only"]
-
-
-def test_a_pipeline_task_gets_both_generation_and_selection_families():
-    """A benchmark that generates and selects in one task does both things."""
-    metrics, errors, inapplicable = derive_reasoning_metrics(
-        _raw(),
-        generation_like=False,
-        selection_like=False,
-        pipeline_like=True,
-        option_count=3,
-    )
-    assert not errors
-    assert not inapplicable
-    assert "reasoning_branchiness" in metrics
-    assert "reasoning_differential_elimination" in metrics
-
-
-# --------------------------------------------------------------------------- #
-# what it refuses: an impossible count is dropped, never coerced
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    ("raw", "gone", "error"),
-    [
-        # More backtracks than steps is a judge that did not count. One reply of
-        # "147" against a 14-step chain moved this metric's mean fifty-fold.
-        (
-            _raw(steps={"total_steps": 4, "useful_steps": 2, "useless_steps": 2,
-                        "backtracking_steps": 9}),
-            "reasoning_backtracking_steps",
-            "steps:backtracking_exceeds_total_steps",
-        ),
-        (
-            _raw(evidence={"total_observations": 8, "observations_used": 99,
-                           "redundancy": 50, "completeness": 49}),
-            "reasoning_observations_used",
-            "evidence:used_exceeds_inventory_total",
-        ),
-        (
-            _raw(steps={"total_steps": 10, "useful_steps": 7, "useless_steps": 9,
-                        "backtracking_steps": 1}),
-            "reasoning_total_steps",
-            "steps:invalid_counts_or_sum",
-        ),
-        (
-            _raw(uncertainty={"uncertainty_steps": 40}),
-            "reasoning_uncertainty_steps",
-            "uncertainty:exceeds_total_steps",
-        ),
-        (
-            _raw(directionality={"directionality": 0.7}),
-            "reasoning_directionality",
-            "directionality:expected_0_0.5_or_1",
-        ),
-        (
-            _raw(evidence={"total_observations": 8, "observations_used": 6,
-                           "redundancy": 20, "completeness": 1}),
-            "reasoning_redundancy_normalized",
-            "evidence:redundancy_plus_completeness_is_not_the_used_count",
-        ),
-        (
-            _raw(prior_knowledge={"prior_knowledge": 7}),
-            "reasoning_prior_knowledge",
-            "prior_knowledge:invalid_or_missing_output",
-        ),
-    ],
-)
-def test_an_impossible_count_is_dropped_with_a_reason(raw, gone, error):
-    metrics, errors, _inapplicable = derive_reasoning_metrics(
-        raw, generation_like=True, selection_like=False, option_count=0
-    )
-    assert gone not in metrics
-    assert error in errors
-
-
-def test_more_comparisons_than_combinations_is_rejected():
-    metrics, errors, _ = derive_reasoning_metrics(
-        _raw(differential_elimination={"differential_elimination": 99}),
-        generation_like=False,
-        selection_like=True,
-        option_count=3,
-    )
-    assert "reasoning_differential_elimination" not in metrics
-    assert "differential_elimination:exceeds_possible_combinations" in errors
-
-
-def test_a_zero_observation_inventory_blocks_the_ratios_but_keeps_the_counts():
-    """Dividing by it would be a made-up number; the raw counts still stand."""
-    metrics, errors, _ = derive_reasoning_metrics(
-        _raw(
-            observation_inventory={"total_observations": 0},
-            evidence={"total_observations": 0, "observations_used": 0,
-                      "redundancy": 0, "completeness": 0},
-        ),
-        generation_like=True,
-        selection_like=False,
-        option_count=0,
-    )
-    assert metrics["reasoning_observations_total"] == 0
-    assert metrics["reasoning_observations_used"] == 0
-    assert "reasoning_observation_coverage" not in metrics
-    assert "reasoning_redundancy_normalized" not in metrics
-    assert "evidence:inventory_total_is_zero" in errors
-
-
-def test_a_missing_family_costs_only_its_own_metrics():
-    metrics, errors, _ = derive_reasoning_metrics(
-        {**_raw(), "steps": {}},
-        generation_like=True,
-        selection_like=False,
-        option_count=0,
-    )
+def test_the_step_count_is_never_stored_only_the_steps():
+    """Its length is the count; a second copy could disagree with the first."""
+    metrics, lists, _errors, _inapplicable = _derive()
     assert "reasoning_total_steps" not in metrics
-    assert "reasoning_uncertainty_rate" not in metrics  # normalizer is gone
-    assert metrics["reasoning_uncertainty_steps"] == 3  # the raw count survives
-    assert metrics["reasoning_observation_coverage"] == 6 / 8  # untouched
-    assert "steps:invalid_counts_or_sum" in errors
+    assert "reasoning_total_steps" not in REASONING_METRIC_COLUMNS
+    assert len(lists["reasoning_steps"]) == 4
+
+
+def test_exhaustiveness_is_measured_against_pairs():
+    """C(n, 2): a chain that has weighed every pair has compared exhaustively."""
+    assert comparison_pairs(4) == 6
+    assert comparison_pairs(3) == 3
+    assert comparison_pairs(2) == 1
+    # Nothing to pair.
+    assert comparison_pairs(1) == 0
+    assert comparison_pairs(0) == 0
+
+
+def test_a_per_step_list_of_the_wrong_length_is_refused():
+    """Padding it would file one step's count against another step."""
+    metrics, lists, errors, _inapplicable = _derive(
+        _raw(uncertainty={"uncertainty_per_step": [0, 1]})
+    )
+    assert "uncertainty:missing_or_not_one_value_per_step" in errors
+    assert not [key for key in metrics if "uncertainty" in key]
+    assert "reasoning_uncertainty_per_step" not in lists
+    # ...and it costs that metric alone.
+    assert metrics["reasoning_prior_knowledge"] == 3.0
+
+
+def test_without_a_segmentation_nothing_per_step_can_be_asked():
+    """Metric 2 is a dependency, so its failure is reported once, not nine times."""
+    metrics, lists, errors, inapplicable = _derive(_raw(steps={"backtracking_steps": 0}))
+    assert "steps:invalid_or_missing_step_list" in errors
+    assert not [key for key in lists if key.endswith("_per_step")]
+    assert not [key for key in metrics if "uncertainty" in key]
+    # Each dependent family says why it could not be computed.
+    assert len([entry for entry in inapplicable if "no_step_list" in entry]) >= 7
+    # The one metric that does not need the segmentation still lands.
+    assert metrics["reasoning_directionality"] == 0.5
+
+
+def test_selection_and_generation_ask_different_branchiness_questions():
+    """Diversity is the model's candidates; option count is the question's."""
+    generation, _l, _e, gen_inapplicable = _derive()
+    assert generation["reasoning_diversity"] == 1.0
+    assert "reasoning_option_count" not in generation
+    assert any("option_count" in entry for entry in gen_inapplicable)
+
+    selection_raw = _raw()
+    selection_raw.pop("branchiness_generation")
+    selection_raw["branchiness_selection"] = {
+        "branchiness_per_step": [1, 1, 0, 0], "option_count": 4
+    }
+    selection, _l2, errors, sel_inapplicable = _derive(
+        selection_raw, generation_like=False, selection_like=True, option_count=4
+    )
+    assert not errors, errors
+    assert selection["reasoning_option_count"] == 4.0
+    assert "reasoning_diversity" not in selection
+    assert any("diversity" in entry for entry in sel_inapplicable)
+    # One comparison against C(4, 2) = 6 possible pairs.
+    assert selection["reasoning_comparison_exhaustiveness"] == pytest.approx(1 / 6)
+
+
+def test_generation_normalizes_exhaustiveness_by_what_the_model_proposed():
+    """No options to pair, so the hypotheses the chain raised are the n."""
+    raw = _raw(
+        branchiness_generation={"branchiness_per_step": [0, 2, 1, 0], "diversity": 1},
+        differential_elimination={"comparisons_per_step": [0, 1, 1, 1]},
+    )
+    metrics, _lists, errors, _inapplicable = _derive(raw)
+    assert not errors, errors
+    assert metrics["reasoning_branchiness_total"] == 3.0
+    # 3 comparisons against C(3, 2) = 3 pairs.
+    assert metrics["reasoning_comparison_exhaustiveness"] == 1.0
+
+
+def test_a_chain_that_never_reaches_the_answer_is_blank_not_zero():
+    """Null and step 0 are different findings about where the model landed."""
+    metrics, _lists, errors, inapplicable = _derive(
+        _raw(anchoring_point={"anchoring_step_index": None})
+    )
+    assert not errors, errors
+    assert "reasoning_anchoring_point" not in metrics
+    assert "reasoning_anchoring_point_normalized" not in metrics
+    assert any("never_considered" in entry for entry in inapplicable)
+
+    # An index past the end of the chain is a judge error, not a finding.
+    _m, _l, bad, _i = _derive(_raw(anchoring_point={"anchoring_step_index": 9}))
+    assert "anchoring_point:not_an_index_into_the_step_list" in bad
+
+
+def test_an_empty_observation_inventory_blocks_the_ratio_but_keeps_the_counts():
+    metrics, _lists, errors, _inapplicable = _derive(
+        _raw(observation_inventory={"observations": []})
+    )
+    assert "observation_inventory:invalid_or_missing_observation_list" in errors
+    assert metrics["reasoning_observations_used"] == 3.0
+    assert "reasoning_observation_coverage" not in metrics
+
+
+def test_redundancy_and_completeness_are_gone():
+    """Removed outright, not left computing quietly."""
+    metrics, lists, _errors, _inapplicable = _derive()
+    for column in (*REASONING_METRIC_COLUMNS, *REASONING_LIST_COLUMNS, *metrics, *lists):
+        assert "redundancy" not in column, column
+        assert "completeness" not in column, column
 
 
 # --------------------------------------------------------------------------- #
-# the judge prompts
+# the prompts
 # --------------------------------------------------------------------------- #
-
-
-def _judge_prompt_files():
-    return sorted(JUDGE_PROMPTS.glob("reasoning_*.yaml"))
 
 
 def test_one_prompt_per_metric_family_ships():
     from abductionbench.core.config import ReasoningJudgeConfig
 
-    ids = {path.stem for path in _judge_prompt_files()}
-    assert set(ReasoningJudgeConfig().templates.values()) == ids
-    assert len(ids) == 8
+    for family, template_id in ReasoningJudgeConfig().templates.items():
+        assert (JUDGE_PROMPTS / f"{template_id}.yaml").is_file(), family
 
 
 def test_no_judge_prompt_mentions_normalization():
-    """Raw counts only: every ratio is computed in code, after the fact.
+    """The judge is asked for raw values and never told what they become.
 
-    A judge asked for a ratio has to do arithmetic on its own counts, and the
-    sheet can then disagree with its own columns.
+    A judge that knows a count is about to be divided by the step total has a
+    reason to shade the count. Every ratio in this stage is computed in code,
+    after the raw values are in hand.
     """
     import re
 
-    forbidden = re.compile(
-        r"normali|\bdivide|\bdivided\b|\bratio\b|\bfraction\b|\bpercent|\bper step\b|÷",
-        re.IGNORECASE,
+    # Whole words: "sepa-rate" and "va-ria-tion" are not ratios, and a
+    # substring match would flag every prompt that says "separate".
+    banned = re.compile(
+        r"\b(normalis\w*|normaliz\w*|divide[ds]?|dividing|ratio|ratios|percentage|"
+        r"per cent|fraction|fractions|rate|rates|proportion|proportions|average|averaged|"
+        r"mean of)\b",
+        re.I,
     )
     offenders = []
-    for path in _judge_prompt_files():
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            found = forbidden.search(line)
-            if found:
-                offenders.append((path.name, number, found.group(0)))
-    assert not offenders, f"judge prompt mentions normalization: {offenders}"
+    for path in sorted(JUDGE_PROMPTS.glob("reasoning_*.yaml")):
+        for found in banned.finditer(path.read_text(encoding="utf-8")):
+            offenders.append((path.name, found.group(0)))
+    assert not offenders, f"judge prompts leaking derived values: {offenders}"
+
+
+def test_only_two_prompts_see_the_raw_chain():
+    """Everything else reads metric 2's segmentation instead.
+
+    That is what makes the per-step lists comparable: one segmentation, and
+    every list indexed by it. It also means those judges cannot silently
+    re-segment the chain their own way.
+    """
+    import yaml
+
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    reads_chain, reads_steps = set(), set()
+    for family, template_id in ReasoningJudgeConfig().templates.items():
+        blob = yaml.safe_load((JUDGE_PROMPTS / f"{template_id}.yaml").read_text())
+        fields = set(blob.get("required_fields") or []) | set(blob.get("optional_fields") or [])
+        if "reasoning_chain" in fields:
+            reads_chain.add(family)
+        if "steps" in fields:
+            reads_steps.add(family)
+    assert reads_chain == {"steps", "directionality"}, reads_chain
+    assert "steps" not in reads_steps, "the segmenter cannot consume its own output"
+    # And no prompt gets both, which would let it ignore the segmentation.
+    assert not (reads_chain & reads_steps)
+
+
+def test_the_segmentation_and_its_counts_come_from_one_call():
+    """One reading of the chain, or the lists could not be aligned to it."""
+    import yaml
+
+    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_steps_v2.yaml").read_text())
+    declared = set(blob["output_contract"]["json_fields"])
+    assert declared == {"steps", "proof_disproof_counts", "backtracking_steps"}
 
 
 def test_every_judge_prompt_asks_for_exactly_its_declared_fields():
-    """The contract the parser enforces has to be the one the prompt asks for."""
-    from abductionbench.core.config import load_yaml
+    import yaml
 
-    for path in _judge_prompt_files():
-        blob = load_yaml(path)
-        declared = set((blob.get("output_contract") or {}).get("json_fields") or {})
-        assert declared, path.name
-        body = "\n".join(message["content"] for message in blob["messages"])
-        for name in declared:
-            assert f'"{name}"' in body, (path.name, name)
+    for path in sorted(JUDGE_PROMPTS.glob("reasoning_*.yaml")):
+        blob = yaml.safe_load(path.read_text(encoding="utf-8"))
+        rendered = " ".join(message["content"] for message in blob["messages"])
+        for field in blob["output_contract"]["json_fields"]:
+            assert f'"{field}"' in rendered, f"{path.name} never shows {field}"
 
 
-def test_the_step_counts_are_one_prompt_and_not_four():
-    """Four counts from four calls would be four different segmentations."""
-    from abductionbench.core.config import load_yaml
+def test_the_column_lists_cover_every_value_the_derivation_can_emit():
+    """A value with no column is a value nobody sees."""
+    metrics, lists, _errors, _inapplicable = _derive()
+    for name in metrics:
+        assert name in REASONING_METRIC_COLUMNS, name
+    for name in lists:
+        assert name in REASONING_LIST_COLUMNS, name
 
-    blob = load_yaml(JUDGE_PROMPTS / "reasoning_steps_v1.yaml")
-    assert set((blob.get("output_contract") or {}).get("json_fields")) == {
-        "total_steps",
-        "useless_steps",
-        "useful_steps",
-        "backtracking_steps",
+    selection_raw = _raw()
+    selection_raw.pop("branchiness_generation")
+    selection_raw["branchiness_selection"] = {
+        "branchiness_per_step": [1, 1, 0, 0], "option_count": 4
     }
+    sel_metrics, sel_lists, _e, _i = _derive(
+        selection_raw, generation_like=False, selection_like=True, option_count=4
+    )
+    for name in sel_metrics:
+        assert name in REASONING_METRIC_COLUMNS, name
+    for name in sel_lists:
+        assert name in REASONING_LIST_COLUMNS, name
 
 
-# --------------------------------------------------------------------------- #
-# parsing a judge that thinks out loud
-# --------------------------------------------------------------------------- #
-
-
-class _Template:
-    ref = "t@1"
-    output_contract = {"json_fields": {"total_steps": "nonnegative_integer"}}
+def test_the_list_columns_and_metric_columns_do_not_overlap():
+    assert not set(REASONING_LIST_COLUMNS) & set(REASONING_METRIC_COLUMNS)
 
 
 @pytest.mark.parametrize(
-    ("reply", "expected"),
+    "reply,expected",
     [
-        ('{"total_steps": 3}', 3),
-        ('```json\n{"total_steps": 4}\n```', 4),
-        ("Let me think. First... Therefore:\n{\"total_steps\": 5}", 5),
-        # An echoed example followed by the real verdict: the last one wins.
-        ('{"total_steps": <integer>} ... my answer: {"total_steps": 6}', 6),
-        ('I counted {a} steps. {"total_steps": 7}', 7),
+        ('{"directionality": 1}', {"directionality": 1}),
+        ('here you go: {"directionality": 1} hope that helps', {"directionality": 1}),
+        ('```json\n{"directionality": 1}\n```', {"directionality": 1}),
     ],
 )
 def test_the_verdict_is_read_out_of_whatever_the_judge_wrote_around_it(reply, expected):
-    parsed = ReasoningJudgeStage._parse_json(reply, _Template())
-    assert parsed is not None and parsed["total_steps"] == expected
+    class _T:
+        output_contract = {"json_fields": {"directionality": "x"}}
+
+    assert ReasoningJudgeStage._parse_json(reply, _T()) == expected
 
 
 def test_a_reply_without_the_declared_fields_is_unparsed():
-    assert ReasoningJudgeStage._parse_json('{"something_else": 1}', _Template()) is None
-    assert ReasoningJudgeStage._parse_json("no json at all", _Template()) is None
+    class _T:
+        output_contract = {"json_fields": {"steps": "x", "backtracking_steps": "y"}}
 
-
-# --------------------------------------------------------------------------- #
-# the stage as a whole
-# --------------------------------------------------------------------------- #
-
-
-def test_the_column_list_covers_every_metric_the_derivation_can_emit():
-    metrics, _e, _i = derive_reasoning_metrics(
-        _raw(), generation_like=True, selection_like=True, option_count=3
-    )
-    assert set(metrics) <= set(REASONING_METRIC_COLUMNS)
-    assert len(REASONING_METRIC_COLUMNS) == len(set(REASONING_METRIC_COLUMNS))
+    assert ReasoningJudgeStage._parse_json('{"steps": ["a"]}', _T()) is None
 
 
 def test_io_outputs_are_never_judged(tmp_path):
@@ -407,31 +414,41 @@ class _FakeAdapter:
 
 
 def _reasoning_responder(conversation, max_tokens):
-    """A judge that answers whichever reasoning prompt it was handed."""
+    """A judge that answers whichever reasoning prompt it was handed.
+
+    Routed on the field each prompt asks for, so it exercises the real
+    dependency: the segmentation has to come back before any per-step list can
+    be asked for, and every list it returns is four long because the
+    segmentation it returned was.
+    """
     body = " ".join(str(message.get("content", "")) for message in conversation)
-    if "total_observations" in body and "observations_used" not in body:
-        return '{"total_observations": 2}'
-    if "observations_used" in body:
-        # One call for metrics 1 and 4; used must equal redundancy + completeness.
+    if '"observations"' in body and '"observations_per_step"' not in body:
+        return '{"observations": ["first thing", "second thing"]}'
+    if '"steps"' in body and '"proof_disproof_counts"' in body:
         return (
-            '{"total_observations": 2, "observations_used": 2, '
-            '"redundancy": 1, "completeness": 1}'
+            '{"steps": ["one", "two", "three", "four"], '
+            '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
         )
-    if "backtracking_steps" in body:
-        return (
-            '{"total_steps": 4, "useless_steps": 1, "useful_steps": 3, '
-            '"backtracking_steps": 1}'
-        )
-    if "branchiness" in body:
-        return '{"branchiness": 2, "diversity": 1}'
-    if "directionality" in body:
+    if '"observations_per_step"' in body:
+        return '{"observations_per_step": [1, 1, 0, 0]}'
+    if '"branchiness_per_step"' in body and '"diversity"' in body:
+        return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
+    if '"branchiness_per_step"' in body:
+        return '{"branchiness_per_step": [1, 1, 0, 0], "option_count": 3}'
+    if '"directionality_per_step"' in body:
+        return '{"directionality_per_step": [1, 1, 0.5, 1]}'
+    if '"directionality"' in body:
         return '{"directionality": 1}'
-    if "differential_elimination" in body:
-        return '{"differential_elimination": 1}'
-    if "uncertainty_steps" in body:
-        return '{"uncertainty_steps": 2}'
-    if "prior_knowledge" in body:
-        return '{"prior_knowledge": 0}'
+    if '"comparisons_per_step"' in body:
+        return '{"comparisons_per_step": [0, 0, 1, 0]}'
+    if '"uncertainty_per_step"' in body:
+        return '{"uncertainty_per_step": [0, 1, 0, 0]}'
+    if '"prior_knowledge_per_step"' in body:
+        return '{"prior_knowledge_per_step": [0, 0, 1, 0]}'
+    if '"anchoring_step_index"' in body:
+        return '{"anchoring_step_index": 2}'
+    if '"unresolved_per_step"' in body:
+        return '{"unresolved_per_step": [0, 0, 0, 0]}'
     return "Answer: something"
 
 
@@ -730,11 +747,11 @@ def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):
     task_dir.mkdir(parents=True)
     records = [
         {"sample_id": "a", "prompt_fingerprint": "1",
-         "metrics": {"accuracy": 1.0, "reasoning_total_steps": 5.0}},
+         "metrics": {"accuracy": 1.0, "reasoning_useful_steps": 5.0}},
         {"sample_id": "b", "prompt_fingerprint": "1",
          "metrics": {"accuracy": 0.0}},                      # judge skipped this one
         {"sample_id": "c", "prompt_fingerprint": "1",
-         "metrics": {"accuracy": 1.0, "reasoning_total_steps": 3.0}},
+         "metrics": {"accuracy": 1.0, "reasoning_useful_steps": 3.0}},
     ]
     (task_dir / "records.jsonl").write_text(
         "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
@@ -753,39 +770,9 @@ def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):
     assert by_metric["accuracy"]["skipped"] == 0
     assert by_metric["accuracy"]["coverage"] == 1.0
     # The metric one record never produced is visible as a gap, not as a zero.
-    assert by_metric["reasoning_total_steps"]["kept"] == 2
-    assert by_metric["reasoning_total_steps"]["skipped"] == 1
-    assert by_metric["reasoning_total_steps"]["coverage"] == round(2 / 3, 4)
-
-
-def test_the_evidence_counts_must_partition_the_observations_used():
-    """What merging metrics 1 and 4 into one call buys.
-
-    Every observation the chain used is either removable or necessary, so
-    redundancy and completeness partition the used count. As two separate calls
-    this could not be checked at all: each read the evidence on its own, and a
-    used count of 6 sitting beside a redundancy of 2 and a completeness of 5 was
-    simply reported, because nothing knew the two readings were meant to be the
-    same one.
-    """
-    metrics, errors, _ = derive_reasoning_metrics(
-        _raw(evidence={"total_observations": 8, "observations_used": 6,
-                       "redundancy": 2, "completeness": 5}),   # 2 + 5 != 6
-        generation_like=True, selection_like=False, option_count=0,
-    )
-    assert "evidence:redundancy_plus_completeness_is_not_the_used_count" in errors
-    assert "reasoning_redundancy" not in metrics
-    assert "reasoning_completeness" not in metrics
-    # The used count itself still stands: it is not what failed.
-    assert metrics["reasoning_observations_used"] == 6
-
-    ok, errors, _ = derive_reasoning_metrics(
-        _raw(evidence={"total_observations": 8, "observations_used": 6,
-                       "redundancy": 2, "completeness": 4}),
-        generation_like=True, selection_like=False, option_count=0,
-    )
-    assert not errors
-    assert ok["reasoning_redundancy"] == 2 and ok["reasoning_completeness"] == 4
+    assert by_metric["reasoning_useful_steps"]["kept"] == 2
+    assert by_metric["reasoning_useful_steps"]["skipped"] == 1
+    assert by_metric["reasoning_useful_steps"]["coverage"] == round(2 / 3, 4)
 
 
 # --------------------------------------------------------------------------- #
@@ -1114,7 +1101,7 @@ def test_a_task_without_chains_gets_blanks_not_zeros():
         run_id="r", run_dir=Path("/tmp"), config=None,
         tasks=[
             _summary_task("io", {"hypothesis_judged": 0.4}),
-            _summary_task("cot", {"hypothesis_judged": 0.5, "reasoning_total_steps": 0.0}),
+            _summary_task("cot", {"hypothesis_judged": 0.5, "reasoning_useful_steps": 0.0}),
         ],
     )
     frame = build_summary_frame(result).set_index("prompt_mode")
@@ -1123,6 +1110,6 @@ def test_a_task_without_chains_gets_blanks_not_zeros():
         assert pd.isna(frame.loc["io", column]), f"io must be blank in {column}"
 
     # A genuine zero on a judged task survives as a zero, not a blank.
-    assert frame.loc["cot", "reasoning_total_steps"] == 0.0
+    assert frame.loc["cot", "reasoning_useful_steps"] == 0.0
     # ...and a column the judge never produced for that task is still blank.
-    assert pd.isna(frame.loc["cot", "reasoning_branchiness"])
+    assert pd.isna(frame.loc["cot", "reasoning_branchiness_total"])

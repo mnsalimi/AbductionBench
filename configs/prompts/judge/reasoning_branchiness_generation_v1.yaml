@@ -1,0 +1,38 @@
+id: reasoning_branchiness_generation_v1
+version: "1.0"
+description: >-
+  Metric 3, generation form: hypotheses newly raised per step, plus whether the
+  explanations raised across the chain are meaningfully different from each
+  other. Diversity is asked here and nowhere else -- a selection task's
+  candidates are the question's, not the model's.
+task_kinds: [judge]
+required_fields: [steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, which
+      proposes its own explanations rather than choosing from a list.
+
+      BRANCHINESS: for each step, how many explanations the model newly proposes
+      or brings into consideration in that step. Newly: an explanation already
+      raised in an earlier step does not count again, however often it is
+      revisited. A step that raises none counts 0. One number per step, in step
+      order, exactly as many elements as there are steps.
+
+      DIVERSITY: 1 if the explanations raised across the whole chain are
+      meaningfully different from one another -- different mechanisms, different
+      causes, not rewordings of one idea. 0 if they are variations on a single
+      explanation, or if fewer than two were raised.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"branchiness_per_step": [<integer>, <integer>, ...], "diversity": <0 or 1>}
+output_contract:
+  json_fields:
+    branchiness_per_step: list_of_nonnegative_integers
+    diversity: binary

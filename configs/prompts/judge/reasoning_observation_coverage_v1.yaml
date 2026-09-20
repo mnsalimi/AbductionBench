@@ -1,0 +1,37 @@
+id: reasoning_observation_coverage_v1
+version: "1.0"
+description: >-
+  Metric 1, part two: how many of the question's observations each step refers
+  to. Judged against the canonical step list and the observation list, never
+  against the raw chain, so the coverage counts and the step numbering agree.
+task_kinds: [judge]
+required_fields: [observations, steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of OBSERVATIONS taken from a question, and a
+      numbered list of the STEPS of one model's reasoning.
+
+      For each step, count how many of the listed observations that step refers
+      to or uses. An observation counts when the step draws on it -- restating
+      it, reasoning from it, or ruling something out because of it. A step that
+      refers to none of them counts 0. The same observation referred to twice in
+      one step counts once.
+
+      Your list must have exactly one number per step, in step order, and the
+      same number of elements as the step list.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      OBSERVATIONS GIVEN IN THE QUESTION:
+      {{ observations }}
+
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"observations_per_step": [<integer>, <integer>, ...]}
+output_contract:
+  json_fields:
+    observations_per_step: list_of_nonnegative_integers

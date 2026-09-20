@@ -1,0 +1,37 @@
+id: reasoning_unresolved_contradiction_v1
+version: "1.0"
+description: >-
+  Metric 11: claims the chain later contradicts and never goes back to fix. The
+  judge is given the whole step list precisely so it can see what comes after
+  each step.
+task_kinds: [judge]
+required_fields: [steps]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, in
+      order. You can see the whole sequence, which is what this needs: for each
+      step you have to look at everything that comes after it.
+
+      For each step i, report 1 when BOTH of these hold:
+        - some later step contradicts what the model claimed in step i, and
+        - the model never goes back to acknowledge or resolve that
+          contradiction.
+
+      Report 0 otherwise. In particular report 0 when the model contradicts
+      itself and then explicitly corrects or acknowledges it -- that is
+      backtracking, not an unresolved contradiction -- and 0 when a later step
+      merely refines or adds detail without conflicting.
+
+      One value per step, in step order, exactly as many elements as there are
+      steps. Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"unresolved_per_step": [<0 or 1>, ...]}
+output_contract:
+  json_fields:
+    unresolved_per_step: list_of_binary_values

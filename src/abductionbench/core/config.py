@@ -550,25 +550,34 @@ class JudgeConfig(_Base):
 def _reasoning_judge_templates() -> dict[str, str]:
     """The audited prompt behind each reasoning-structure measurement.
 
-    One entry per metric family, and one judge call per family per output --
-    the grouping is the measurement's, not an optimisation: metric 2's four
-    counts have to come from a single segmentation of the chain, so they are
-    one prompt and not four.
+    Grouping is the measurement's, not an optimisation. Two prompts see the
+    model's raw chain: ``steps``, which segments it, and ``directionality``,
+    which judges the chain as a whole and needs no step boundaries. Everything
+    else is judged against ``steps``' segmentation instead of the raw text, so
+    every per-step list is indexed by the same steps and can be read beside the
+    others.
+
+    ``branchiness`` is two prompts rather than one with a branch in it: whether
+    the candidates are the question's or the model's changes what is being
+    counted, and leaving the judge to infer which kind of task it is looking at
+    is exactly the inference this suite does not buy.
     """
     return {
-        "observation_inventory": "reasoning_observation_inventory_v1",
-        # Metrics 1 and 4 share a prompt for the same reason metric 2's four
-        # counts do: they are counts over one set of observations, and separate
-        # calls read that set separately -- the used count and the
-        # redundant/necessary split could disagree with each other and nothing
-        # would notice.
-        "evidence": "reasoning_evidence_v1",
-        "steps": "reasoning_steps_v1",
-        "branchiness_diversity": "reasoning_branchiness_diversity_v1",
+        # Bought once per question: its observations do not depend on any model.
+        "observation_inventory": "reasoning_observation_inventory_v2",
+        # The canonical segmentation. Runs first; everything below reads it.
+        "steps": "reasoning_steps_v2",
+        "observation_coverage": "reasoning_observation_coverage_v1",
+        "branchiness_selection": "reasoning_branchiness_selection_v1",
+        "branchiness_generation": "reasoning_branchiness_generation_v1",
+        # The one other prompt that reads the raw chain.
         "directionality": "reasoning_directionality_v1",
-        "differential_elimination": "reasoning_differential_elimination_v1",
-        "uncertainty": "reasoning_uncertainty_v1",
-        "prior_knowledge": "reasoning_prior_knowledge_v1",
+        "step_directionality": "reasoning_step_directionality_v1",
+        "differential_elimination": "reasoning_differential_elimination_v2",
+        "uncertainty": "reasoning_uncertainty_v2",
+        "prior_knowledge": "reasoning_prior_knowledge_v2",
+        "anchoring_point": "reasoning_anchoring_point_v1",
+        "unresolved_contradiction": "reasoning_unresolved_contradiction_v1",
     }
 
 

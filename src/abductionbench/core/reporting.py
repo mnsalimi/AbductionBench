@@ -25,6 +25,7 @@ Outputs written under a run directory:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import textwrap
@@ -36,7 +37,7 @@ import pandas as pd
 
 from .checkpoint import dedupe_records, load_records
 from .engine import RunResult, TaskResult
-from .reasoning_judge import REASONING_METRIC_COLUMNS
+from .reasoning_judge import REASONING_LIST_COLUMNS, REASONING_METRIC_COLUMNS
 from .types import AdapterDocumentation
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,18 @@ def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.
                 ),
                 "reasoning_judge_errors": _clip(details.get("reasoning_judge_errors"), clip),
             }
+            # One column per per-step list, holding the whole ordered list as
+            # JSON. Not exploded into a column per step: chains differ in
+            # length, so that would give a sheet as wide as its longest chain
+            # and columns that mean a different step in every row.
+            reasoning_lists = details.get("reasoning_lists") or {}
+            for column in REASONING_LIST_COLUMNS:
+                values = reasoning_lists.get(column)
+                row[column] = (
+                    _clip(json.dumps(values, ensure_ascii=False), clip)
+                    if values is not None
+                    else None
+                )
             for metric, value in (record.get("metrics") or {}).items():
                 row[f"metric.{metric}"] = _fmt(value)
             rows.append(row)
