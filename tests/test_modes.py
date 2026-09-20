@@ -197,12 +197,17 @@ def test_io_asks_for_the_answer_and_cot_asks_for_reasoning_first():
     reasoned = _adapter(TaskModes(prompt_mode="cot", selection_mode="SCS"))
     sample = direct.build_samples()[0]
 
-    io_text = direct.build_messages(sample)[0][-1].content
-    cot_text = reasoned.build_messages(sample)[0][-1].content
-    assert "Do not explain your reasoning" in io_text
-    assert "step by step" in cot_text
+    # The mode instruction ends the system prompt; the evidence and the answer
+    # contract are the user turn.
+    io_system, io_user = (m.content for m in direct.build_messages(sample)[0])
+    cot_system, cot_user = (m.content for m in reasoned.build_messages(sample)[0])
+    assert "Do not explain your reasoning" in io_system
+    assert "step by step" in cot_system
+    # ...and nowhere else, so neither mode is said twice.
+    assert "Do not explain your reasoning" not in io_user
+    assert "step by step" not in cot_user
     # Same evidence, same answer contract: only the elicitation differs.
-    for text in (io_text, cot_text):
+    for text in (io_user, cot_user):
         assert "the lawn is wet" in text
         assert "Answer:" in text
 
@@ -219,10 +224,18 @@ def test_self_consistency_asks_the_same_question_as_cot():
 
 
 def test_the_system_prompt_comes_from_the_dataset():
+    """The dataset owns the system prompt; the mode appends one line to it.
+
+    That line is the only thing the core adds, and it goes last, so the
+    dataset's own wording is never interleaved with it.
+    """
+    from abductionbench.adapters._prompting import mode_instruction
+
     adapter = _adapter(TaskModes())
     messages, _ = adapter.build_messages(adapter.build_samples()[0])
     assert messages[0].role == "system"
-    assert messages[0].content == "You pick the best explanation."
+    assert messages[0].content.startswith("You pick the best explanation.")
+    assert messages[0].content.endswith(mode_instruction(TaskModes()))
 
 
 def test_no_universal_system_prompt_exists_in_the_core():

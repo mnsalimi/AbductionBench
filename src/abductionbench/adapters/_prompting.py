@@ -46,7 +46,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ..core.modes import BOV, COT, IO, MCS, SCS, SELF_CONSISTENCY, TaskModes
+from ..core.modes import BOV, COT, MCS, SCS, SELF_CONSISTENCY, TaskModes
 from ..core.types import ChatMessage
 
 __all__ = [
@@ -59,7 +59,8 @@ __all__ = [
 ANSWER_PREFIX = "Answer:"
 
 _COT_INSTRUCTION = (
-    "Work through the evidence step by step before answering. Consider what each "
+    "Reason and explain explicitly by working through the evidence step by step "
+    "before answering. Consider what each "
     "candidate explanation would have to be true for, and whether it accounts for "
     "everything observed rather than only part of it."
 )
@@ -68,7 +69,8 @@ _COT_INSTRUCTION = (
 #: list. The general instruction says "consider what *each* candidate would have
 #: to be true for", which under BOV points at candidates the model was not shown.
 _COT_INSTRUCTION_BOV = (
-    "Work through the evidence step by step before answering. Consider what this "
+    "Reason and explain explicitly by working through the evidence step by step "
+    "before answering. Consider what this "
     "hypothesis would have to be true for, and whether it accounts for everything "
     "observed rather than only part of it."
 )
@@ -249,6 +251,20 @@ def _options_block(parts: PromptParts, labels: list[str]) -> str:
     return (parts.options_heading or "Candidate hypotheses:") + "\n" + "\n".join(lines)
 
 
+def _label_noun(labels: list[str]) -> str:
+    """What to call these labels in an instruction: "numbers" or "letters".
+
+    The MCS closing used to say "answer with only their numbers" whatever the
+    labels were, so three datasets keyed by letter -- ddxplus, scir,
+    true_detective -- were shown A, B, C and told to reply with numbers. The
+    noun now follows the labels actually rendered, which is the only thing that
+    can keep the two in step as datasets come and go.
+    """
+    if labels and all(str(label)[:1].isalpha() for label in labels):
+        return "letters"
+    return "numbers"
+
+
 def _label_list(labels: list[str]) -> str:
     """``"1, 2 or 3"`` -- how the closing line names the admissible answers."""
     if not labels:
@@ -323,15 +339,23 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
         example = ", ".join(labels[:2]) if len(labels) > 1 else (labels[0] if labels else "1")
         return (
             "Select every hypothesis that applies -- there may be one or several.\n"
-            "Answer with only their numbers, separated by commas.\n"
+            f"Answer with only their {_label_noun(labels)}, separated by commas.\n"
             + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} {example}")
         ), contract
 
     if modes.selection_mode == SCS:
         contract.update({"style": "single_label", "labels_from_field": "option_labels"})
+        # "Answer with only one of" forbids the explanation cot has just asked
+        # for, so under cot the restriction is scoped to the final answer
+        # instead of to the whole reply. io keeps the answer-only form.
+        lead = (
+            f"In the end, your final answer should be only one of: {_label_list(labels)}."
+            if modes.prompt_mode in (COT, SELF_CONSISTENCY)
+            else f"Answer with only one of: {_label_list(labels)}."
+        )
         return (
             "Select exactly one hypothesis.\n"
-            f"Answer with only one of: {_label_list(labels)}.\n"
+            f"{lead}\n"
             + _where_the_answer_goes(
                 modes, f"{ANSWER_PREFIX} {labels[0] if labels else '1'}"
             )
@@ -375,19 +399,20 @@ def build_messages(
     elif parts.options:
         body.append(_options_block(parts, labels))
 
-    if modes.prompt_mode in (COT, SELF_CONSISTENCY):
-        one_at_a_time = bool(parts.options) and modes.selection_mode == BOV
-        body.append(_COT_INSTRUCTION_BOV if one_at_a_time else _COT_INSTRUCTION)
-    elif modes.prompt_mode == IO:
-        body.append(_IO_INSTRUCTION)
-
     closing, contract = _closing(parts, modes, labels)
     body.append(closing)
     contract["option_labels"] = labels
     contract.update(parts.contract)
 
+    # The mode instruction ends the system prompt, in every dataset and every
+    # mode. It used to sit in the user turn between the requirements and the
+    # closing, which put the one line that says whether to reason in the middle
+    # of the task description; at the end of the system prompt it is the last
+    # standing instruction before the question, and there is exactly one of it.
+    one_at_a_time = bool(parts.options) and modes.selection_mode == BOV
+    mode_line = mode_instruction(modes, one_at_a_time=one_at_a_time)
     messages: list[ChatMessage] = []
-    system = (parts.system or "").strip()
+    system = "\n\n".join(part for part in ((parts.system or "").strip(), mode_line) if part)
     if system:
         messages.append(ChatMessage(role="system", content=system))
     messages.append(ChatMessage(role="user", content="\n\n".join(b for b in body if b).strip()))

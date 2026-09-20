@@ -187,10 +187,9 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         "age, sex and presenting complaint, and you may ask about any symptom or antecedent "
         "one at a time. The patient answers only what you ask.\n\n"
         "Reply with a single JSON object and nothing else:\n"
-        '{"reasoning": "...", "action": "ask", "query": "your question to the patient"}\n'
+        '{"action": "ask", "query": "your question to the patient"}\n'
         "or, once the picture is clear:\n"
-        '{"reasoning": "...", "action": "diagnosis", "query": "<the number of your '
-        'chosen diagnosis>"}\n\n'
+        '{"action": "diagnosis", "query": "<the letter of your chosen diagnosis>"}\n\n'
         "Ask about what would discriminate between the diagnoses you are considering, not "
         "about what you already know. Commit as soon as the evidence supports one diagnosis."
     )
@@ -230,7 +229,7 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
             "Candidate diagnoses:",
             listing,
             "",
-            "Take a history, then give the number of your diagnosis.",
+            "Take a history, then give the letter of your diagnosis.",
         ]
         # The patient's answers: every evidence the record holds, keyed by the
         # question the release asks for it.
@@ -239,9 +238,11 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         state = {"evidence": store, "counts": {}, "final": None}
         # The interview prompt is this harness's, not the release's -- DDXPlus
         # publishes the questions and the patient's answers but no prompt to
-        # frame the interview with -- so the mode instruction is ours to add,
-        # and io and cot genuinely differ here. The four interactive datasets
-        # that *do* quote their release set authors_prompt and run one mode.
+        # frame the interview with -- so the mode instruction is ours to add.
+        # It runs io only (see io_only), which is why the JSON above has no
+        # reasoning field: asking for one under "Answer directly. Do not explain
+        # your reasoning." is the contradiction the other four protocols had
+        # removed and this one kept.
         return (
             [
                 ChatMessage(
@@ -265,8 +266,7 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
             if state["parse_errors"] > 2:
                 return None
             return (
-                'Reply with one JSON object: {"reasoning": "...", "action": "ask"|"diagnosis", '
-                '"query": "..."}'
+                'Reply with one JSON object: {"action": "ask"|"diagnosis", "query": "..."}'
             )
 
         self.bump(state, "ask")

@@ -344,14 +344,23 @@ def multi_selection_score(
     """Score a selection answered as a set (MCS, or a rebuilt BOV set)."""
     chosen = extract_choice_labels(response.text, labels, output_contract)
     if chosen is None:
-        score = unparsed_score([metric_name, "set_f1"], raw=response.text[:300])
+        score = unparsed_score(
+            [metric_name, "set_exact_match", "set_f1"], raw=response.text[:300]
+        )
         score.metrics.update(extra_metrics or {})
         return score
     selected = {str(label).strip().upper() for label in chosen}
     gold = {str(label).strip().upper() for label in gold_labels if str(label).strip()}
     prf = set_prf(selected, gold)
+    exact = float(selected == gold)
     metrics = {
-        metric_name: float(selected == gold),
+        metric_name: exact,
+        # The same number under the name that says what it is. Under MCS the
+        # primary metric is an exact *set* match, not the per-item accuracy the
+        # word suggests, and a sheet that shows "accuracy 0.41" beside
+        # "set_f1 0.68" invites the reader to think the first is a stricter view
+        # of the second rather than a different measure entirely.
+        "set_exact_match": exact,
         "set_f1": prf["f1"],
         "set_precision": prf["precision"],
         "set_recall": prf["recall"],

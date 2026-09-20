@@ -254,11 +254,9 @@ def test_io_and_cot_prompts_differ_only_where_the_mode_requires():
     cot = build_messages(parts, TaskModes(prompt_mode="cot"))[0][-1].content
     assert io != cot
 
-    # Everything above the mode instruction -- system, evidence, task,
-    # requirements -- is the same text in both.
-    io_head = io.split("Answer directly. Do not explain your reasoning.")[0]
-    cot_head = cot.split("Work through the evidence step by step")[0]
-    assert io_head == cot_head
+    # The mode instruction now ends the system prompt, so the user turn's
+    # only difference is the closing each mode requires.
+    assert "Answer directly" not in io and "step by step" not in cot
 
     # And the only difference below it is the closing each mode requires.
     assert "Your entire response must be" in io and "on the last line" not in io.lower()
@@ -1042,3 +1040,63 @@ def test_uncommonsense_still_asks_for_an_explanation():
     assert "likely, not merely possible" in prompt, "the task's own constraint stands"
     assert cls.answer_format == "1 to 3 sentences"
     assert cls.primary_metric == "plausibility_judged"
+
+
+def test_the_mode_instruction_ends_the_system_prompt_and_appears_once():
+    """One place for the line that says whether to reason, in every dataset.
+
+    It used to sit in the user turn between the requirements and the closing,
+    which put it in the middle of the task description. At the end of the system
+    prompt it is the last standing instruction before the question -- and, more
+    importantly, there is exactly one of it, so no dataset can end up carrying a
+    second copy somewhere else.
+    """
+    from abductionbench.adapters._prompting import mode_instruction
+    from abductionbench.core.modes import BOV, MCS, SCS, TaskModes
+
+    for dataset_id, cls in _shipped_adapters():
+        for selection in (None, SCS, MCS, BOV):
+            for prompt_mode in ("io", "cot"):
+                modes = TaskModes(prompt_mode=prompt_mode, selection_mode=selection)
+                text = _closings_for(cls, selection, prompt_mode)
+                line = mode_instruction(modes, one_at_a_time=selection == BOV)
+                assert text.count(line) == 1, (dataset_id, selection, prompt_mode)
+
+
+def test_the_multi_select_instruction_names_the_labels_it_shows():
+    """Three datasets were shown A, B, C and told to reply with numbers."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    for labels, noun in ((["1", "2", "3"], "numbers"), (["A", "B", "C"], "letters")):
+        parts = PromptParts(
+            system="S", observation="O", options=["x", "y", "z"], option_labels=labels
+        )
+        text = build_messages(parts, TaskModes(prompt_mode="io", selection_mode="MCS"))[0][
+            -1
+        ].content
+        assert f"their {noun}" in text, labels
+        other = "letters" if noun == "numbers" else "numbers"
+        assert f"their {other}" not in text, labels
+
+
+def test_no_shipped_selection_dataset_is_told_the_wrong_label_kind():
+    """The suite-wide version, over what actually ships.
+
+    ddxplus, scir and true_detective key their options by letter and were all
+    told to answer with numbers under MCS.
+    """
+    import re
+
+    from abductionbench.core.modes import MCS, SCS
+
+    offenders = []
+    for dataset_id, cls in _shipped_adapters():
+        if not getattr(cls, "selection_cardinality", None):
+            continue
+        for selection in (SCS, MCS):
+            text = _closings_for(cls, selection, "io")
+            lettered = re.search(r"^A\. ", text, re.M) is not None
+            if lettered and "their numbers" in text:
+                offenders.append((dataset_id, selection))
+    assert not offenders, f"lettered options told to answer with numbers: {offenders}"
