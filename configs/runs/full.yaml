@@ -89,13 +89,16 @@ models:
   # the engine died mid-service with CUBLAS_STATUS_INTERNAL_ERROR. The 20b is
   # 13 GiB and leaves ~50 GiB free.
   - file: ../models/gpt-oss-20b-local.yaml
+  # The larger judge, served alone: at GPU_MEMORY_UTILIZATION 0.90 it holds
+  # 88.4 of 97.9 GiB, so nothing is evaluated while it is up. Select it with
+  # ABENCH_JUDGE_MODEL=gpt-oss-120b-local.
+  - file: ../models/gpt-oss-120b-local.yaml
 
   # Add every model you want compared in the same run. Each keeps its own batch
   # group size, sampling and limits, and all of them see the identical 300
   # samples per dataset (prompt sets are built once, before any model is
   # called), so the columns of the result grid are directly comparable.
   #
-  # - file: ../models/gpt-oss-120b-local.yaml      # when that service is back up
   # - file: ../models/qwen3.5-2b-local.yaml        # copy a gemma config and edit
   #                                               # id / model_name / port
   #
