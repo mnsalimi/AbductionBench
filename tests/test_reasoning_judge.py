@@ -1113,3 +1113,21 @@ def test_a_task_without_chains_gets_blanks_not_zeros():
     assert frame.loc["cot", "reasoning_useful_steps"] == 0.0
     # ...and a column the judge never produced for that task is still blank.
     assert pd.isna(frame.loc["cot", "reasoning_branchiness_total"])
+
+
+def test_the_segmentation_call_gets_a_bigger_output_budget(tmp_path):
+    """It returns the chain's steps, not a handful of integers.
+
+    Every other prompt answers with a short list because it is handed the
+    segmentation; this one produces it, so its reply is the same order of size
+    as the chain it read. Truncating it costs the sample every metric, since
+    they all index against it -- and paying that budget on all twelve families
+    would buy headroom eleven of them never use.
+    """
+    from abductionbench.core.config import ReasoningJudgeConfig
+
+    config = ReasoningJudgeConfig(enabled=True, model="m")
+    budget = config.max_tokens_by_family.get("steps", config.max_tokens)
+    assert budget > config.max_tokens
+    for family in ("uncertainty", "prior_knowledge", "directionality"):
+        assert config.max_tokens_by_family.get(family, config.max_tokens) == config.max_tokens

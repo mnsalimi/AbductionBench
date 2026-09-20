@@ -1217,7 +1217,9 @@ class ReasoningJudgeStage:
                 conversations.append(messages)
                 sent[request_id] = [m.to_dict() for m in messages]
             sampling = SamplingParams(
-                max_tokens=self.config.max_tokens,
+                max_tokens=self.config.max_tokens_by_family.get(
+                    family, self.config.max_tokens
+                ),
                 temperature=self.config.temperature,
                 extra=self._sampling_extra(),
             )

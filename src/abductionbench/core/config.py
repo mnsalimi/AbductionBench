@@ -597,7 +597,21 @@ class ReasoningJudgeConfig(_Base):
     #: hidden chain as well as the JSON: a judge whose chain eats the whole
     #: budget returns empty content, and every metric in that call is lost.  A
     #: ceiling, not an allocation -- the reply still ends at the JSON.
+    #: Output budget per call, and the one family that needs a bigger one.
+    #:
+    #: Most of these prompts answer with a short list of integers, and 4,096 is
+    #: generous for that. ``steps`` is different in kind: it returns the chain's
+    #: segmentation -- the step text itself, because every other metric is
+    #: judged against that list rather than the raw chain -- so its reply is the
+    #: same order of size as the chain it read. At 4,096 a long chain's
+    #: segmentation is cut off mid-JSON and comes back unparseable, and because
+    #: every other metric depends on it, one truncation costs the sample all of
+    #: them. Paying the larger budget on every family instead would multiply the
+    #: cost of ten short calls to buy headroom one of them needs.
     max_tokens: int = Field(4096, ge=1)
+    max_tokens_by_family: dict[str, int] = Field(
+        default_factory=lambda: {"steps": 16384}
+    )
     temperature: float = Field(0.0, ge=0)
     #: How hard the judge may think before answering.
     #:
