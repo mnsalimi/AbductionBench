@@ -24,7 +24,11 @@ model:
       base_url_command: null
       batch_base_url_command: null
   limits:
-    max_parallel_batches: 2
+    # 8 x 8 = 64 in flight, matching MAX_NUM_SEQS=64. Measured at this
+    # budget the server reports 1,563,500 tokens of KV cache -- 95x worst-case
+    # concurrency at a full 16,384-token request -- so the sequence cap is the
+    # binding limit here, not the cache, and the client has to reach it.
+    max_parallel_batches: 8
     requests_per_minute: null
     tokens_per_minute: null
     # MAX_MODEL_LEN from gemma-4-e2b/.env.
