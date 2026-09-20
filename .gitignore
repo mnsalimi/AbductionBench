@@ -1,3 +1,4 @@
+.gitignore
 .venv/
 __pycache__/
 *.pyc
@@ -21,3 +22,14 @@ full_run.log
 # frame per episode). 254 of these were committed once by a `git add -A`; they
 # are generated, large, and belong to nothing that is read back.
 video/
+.history
+AGENTS.md
+.codex
+graphify-out
+outputs
+prompt_export.md
+_prompt_export_extract.py
+_prompt_export_render.mjs
+test_prompt_export.py
+export_prompts.py
+prompt_export_sources.json
