@@ -247,20 +247,22 @@ def test_medqdx_uses_the_papers_benchmarking_cap_not_the_construction_loop():
     assert MedQDxAdapter.category_limits == {"ask": 5}
 
 
-def test_medqdx_stops_at_the_cap_and_then_asks_for_the_diagnosis():
+def test_medqdx_stops_at_the_cap():
+    """Exactly `cap` questions are answered, however many turns that takes.
+
+    The interview alternates question and interim diagnosis, so the cap is on
+    questions, not on turns.
+    """
     adapter, samples = _adapter("medqdx", MEDQDX)
     cap = adapter.category_limits["ask"]
     sample = samples[0]
     _messages, state = adapter.interactive_start(sample)
-    replies = [
-        _step(adapter, sample, state, f"Have you noticed symptom {i}?")
-        for i in range(1, cap + 1)
-    ]
-    assert all(r is not None for r in replies)
-    # Exactly `cap` questions are answered; the last reply asks for the
-    # diagnosis rather than inviting one more.
-    assert "Ask your next question" in replies[cap - 2]
-    assert "Name the condition" in replies[-1]
+    for _ in range(14):
+        text = "Any fever?" if state.get("phase") != "interim" else "Pneumonia"
+        if _step(adapter, sample, state, text) is None:
+            break
+    assert state["counts"]["ask"] == cap
+    # And the episode is over: a further turn ends it rather than continuing.
     assert _step(adapter, sample, state, "Pneumonia") is None
 
 
@@ -308,11 +310,15 @@ def test_medqdx_unrecorded_details_get_the_releases_answer():
     patient_line = reply.splitlines()[0]
     assert "I have not noticed that" in patient_line
     assert "I'm not sure" not in patient_line
+
     # The DOCTOR's rules do still mention it, because the release's
     # doctor-side prompt does: "If the patient responded \"I'm not sure,\"
     # ask a broader or differently phrased question". Only the patient's own
-    # wording changed.
-    assert "I'm not sure" in reply
+    # wording changed. Those rules ride on the turn that asks for the NEXT
+    # question, which now follows the interim diagnosis.
+    follow_up = _step(adapter, sample, state, "Pneumonia")
+    assert "I'm not sure" in follow_up
+    assert "Ask your next question" in follow_up
 
 
 # --------------------------------------------------------------------------- #
@@ -812,3 +818,74 @@ def test_vivabench_an_unmentioned_investigation_is_normal_not_unavailable():
     assert "not available" in VivaBenchAdapter._NOTHING_RECORDED["imaging"].lower()
     # And no invented reference range travels with the default.
     assert "(" not in VivaBenchAdapter._NOTHING_RECORDED["investigation"]
+
+
+def test_medqdx_attempts_a_diagnosis_after_every_answer():
+    """The paper, S1: "After each answer, the clinician-agent attempts a
+    diagnosis, producing a sequence of question-answer-diagnosis steps that
+    capture the agent's reasoning trajectory."
+
+    Not decoration: MQD is defined over that sequence. With one diagnosis at
+    the end there is no questions-to-first-correct to observe.
+    """
+    adapter, samples = _adapter("medqdx", MEDQDX)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    tasks = []
+    for _ in range(12):
+        text = "Any fever?" if state.get("phase") != "interim" else "Pneumonia"
+        reply = _step(adapter, sample, state, text)
+        if reply is None:
+            break
+        tasks.append(next(
+            (line for line in reply.splitlines() if line.startswith("Task:")), ""
+        ))
+
+    # question -> answer + "name the condition" -> diagnosis -> "ask your next"
+    assert "name the condition you now think" in tasks[0]
+    assert "Ask your next question" in tasks[1]
+    assert state["counts"]["ask"] == adapter.category_limits["ask"]
+    assert len(state["interim"]) == adapter.category_limits["ask"]
+    # The last one asks for the closing diagnosis rather than a sixth question.
+    assert "no questions left" in tasks[-1]
+
+
+def test_medqdx_reports_questions_to_correct_diagnosis():
+    """MQD: "the average number of questions a model asks before producing the
+    correct diagnosis for the first time... if the correct diagnosis is not
+    produced within this limit, the case is marked as a failure and assigned
+    the maximum question count" (S3.B).
+
+    The benchmark is named for questioning efficiency, so reporting only
+    whether the last answer was right measures the wrong thing.
+    """
+    from abductionbench.core.types import ModelResponse, ResponseStatus
+
+    adapter, samples = _adapter("medqdx", MEDQDX)
+    sample = samples[0]
+    gold = sample.reference["gold"]
+    cap = adapter.category_limits["ask"]
+
+    def _run(guesses):
+        _messages, state = adapter.interactive_start(sample)
+        supply = iter(guesses)
+        for _ in range(14):
+            text = "Any fever?" if state.get("phase") != "interim" else next(supply, "x")
+            if _step(adapter, sample, state, text) is None:
+                break
+        sample.metadata["_episode_state"] = state
+        response = ModelResponse(
+            sample_id=sample.sample_id, model_id="m",
+            status=ResponseStatus.OK, content=gold,
+        )
+        return adapter.score_request(sample, response, output_contract=None).metrics
+
+    got_it_third = _run(["Flu", "Cold", gold, gold, gold])
+    assert got_it_third["mqd"] == 3.0
+    assert got_it_third["reached_correct_lexically"] == 1.0
+
+    never = _run(["Flu", "Cold", "Asthma", "Gout", "Anemia"])
+    assert never["mqd"] == float(cap), "a failure must be assigned the cap"
+    assert never["reached_correct_lexically"] == 0.0
+    assert never["questions_asked"] == float(cap)

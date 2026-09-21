@@ -46,7 +46,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..core.adapter import SkippedDataset
-from ..core.metrics import aggregate_mean_metrics
+from ..core.metrics import aggregate_mean_metrics, contains_match
 from ..core.types import (
     AdapterDocumentation,
     ChatMessage,
@@ -136,7 +136,11 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     # ------------------------------------------------------------------ #
 
     ACTIONS = ("ask", "diagnosis")
-    max_turns = 12
+    #: Two model turns per round now -- a question and the interim diagnosis
+    #: that follows its answer -- plus the closing diagnosis. Five rounds is
+    #: 11 turns; 14 leaves room for a malformed turn without truncating the
+    #: interview.
+    max_turns = 14
     #: FIVE questions, which is the paper's BENCHMARKING cap, not the three
     #: rounds its dataset was built with. The distinction is easy to miss and
     #: this adapter got it wrong in both directions:
@@ -304,10 +308,39 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         # question in plain language, and the patient answers it. The turn ends
         # when the question budget is spent, and the release then asks for the
         # diagnosis instead.
-        question = (assistant_text or "").strip().split("\n")[-1].strip()
+        reply = (assistant_text or "").strip().split("\n")[-1].strip()
         if state.get("phase") == "diagnose":
             return None
 
+        # AN INTERIM DIAGNOSIS AFTER EVERY ANSWER. The paper: "After each
+        # answer, the clinician-agent attempts a diagnosis, producing a
+        # sequence of question-answer-diagnosis steps that capture the agent's
+        # reasoning trajectory" (S1). It is not decoration -- Mean Questions to
+        # Correct Diagnosis is defined over it: "the average number of
+        # questions a model asks before producing the correct diagnosis for the
+        # first time" (S3.B). With one diagnosis at the end there is no such
+        # number to observe.
+        if state.get("phase") == "interim":
+            state.setdefault("interim", []).append(reply)
+            state["phase"] = "ask"
+            if state["counts"].get("ask", 0) >= self.category_limits["ask"]:
+                # Out of questions: the last interim answer stands as the final
+                # one, and the episode asks for it in the release's own terms.
+                state["phase"] = "diagnose"
+                return self._turn_message(
+                    "",
+                    task="You have no questions left. Name the condition this case is.",
+                    requirements=self._DIAGNOSIS_REQUIREMENTS,
+                    output_format=self._DIAGNOSIS_FORMAT,
+                )
+            return self._turn_message(
+                "",
+                task="Ask your next question.",
+                requirements=self._QUESTION_REQUIREMENTS + self._FOLLOW_UP_REQUIREMENTS,
+                output_format=self._QUESTION_FORMAT,
+            )
+
+        question = reply
         self.bump(state, "ask")
         answer = await self._patient_answer(state, question)
         if answer is None:
@@ -317,21 +350,17 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
         state["history"].append((question, answer))
 
-        # `>=`, not `over_limit`'s `>`: the cap is a cap. `over_limit` fires
+        # Every answer is followed by a diagnosis attempt, whether or not
+        # questions remain. `>=` because the cap is a cap: `over_limit` fires
         # one turn later, so a budget of five would buy six questions.
-        if state["counts"].get("ask", 0) >= self.category_limits["ask"]:
-            state["phase"] = "diagnose"
-            return self._turn_message(
-                answer,
-                task="You have no questions left. Name the condition this case is.",
-                requirements=self._DIAGNOSIS_REQUIREMENTS,
-                output_format=self._DIAGNOSIS_FORMAT,
-            )
+        state["phase"] = "interim"
         return self._turn_message(
             answer,
-            task="Ask your next question.",
-            requirements=self._QUESTION_REQUIREMENTS + self._FOLLOW_UP_REQUIREMENTS,
-            output_format=self._QUESTION_FORMAT,
+            task=(
+                "Given everything so far, name the condition you now think this case is."
+            ),
+            requirements=self._DIAGNOSIS_REQUIREMENTS,
+            output_format=self._DIAGNOSIS_FORMAT,
         )
 
     async def _patient_answer(self, state: dict[str, Any], question: str) -> str | None:
@@ -451,12 +480,62 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         condition = sample.metadata.get("condition", "unknown")
         # The stratum is seeded here and filled by the judge along with the base
         # metric, so each information level is the same verdict seen through a filter.
-        return judged_only_score(
+        scored = judged_only_score(
             response,
             metric="diagnosis_judged",
             output_contract=output_contract,
             extra_metrics={f"diagnosis_judged_{condition}": 0.0},
             details={"gold": str(sample.reference["gold"])[:300]},
+        )
+        return self._with_questioning_efficiency(sample, scored)
+
+    def _with_questioning_efficiency(
+        self, sample: SampleSpec, scored: SampleScore
+    ) -> SampleScore:
+        """Mean Questions to Correct Diagnosis, over the interim answers.
+
+        The paper defines it as "the average number of questions a model asks
+        before producing the correct diagnosis for the first time... A question
+        is counted if it is explicitly posed to the patient agent and elicits
+        new clinical information. Interrogation is capped at five questions to
+        standardize evaluation across models; if the correct diagnosis is not
+        produced within this limit, the case is marked as a failure and
+        assigned the maximum question count" (S3.B).
+
+        The benchmark is named for questioning EFFICIENCY, so reporting only
+        whether the last answer was right measures the wrong thing: two models
+        that both end correct are not equivalent if one got there after one
+        question and the other after five.
+
+        Correctness per round is LEXICAL here -- the authors score each round by
+        cosine similarity between the predicted and ground-truth diagnosis, and
+        this suite's judge takes one request per sample, so the interim rounds
+        cannot each be sent for a verdict. MedQDx golds are single condition
+        names ("Pneumonia", "Hypoglycemia"), which is the case where
+        containment is most reliable, but it is still a proxy and is named one.
+        """
+        state = sample.metadata.get("_episode_state") or {}
+        interim = state.get("interim")
+        if interim is None:
+            return scored
+        cap = self.category_limits["ask"]
+        gold = str(sample.reference.get("gold") or "")
+        metrics = dict(scored.metrics)
+        first_correct = None
+        for round_index, attempt in enumerate(interim, start=1):
+            if gold and contains_match(attempt, gold):
+                first_correct = round_index
+                break
+        # A failure is assigned the cap, as upstream does, so the mean is not
+        # computed over successes alone.
+        metrics["mqd"] = float(first_correct if first_correct is not None else cap)
+        metrics["reached_correct_lexically"] = 1.0 if first_correct is not None else 0.0
+        metrics["questions_asked"] = float((state.get("counts") or {}).get("ask", 0))
+        return SampleScore(
+            metrics=metrics,
+            prediction=scored.prediction,
+            parse_ok=scored.parse_ok,
+            details={**scored.details, "interim_diagnoses": list(interim)[:8]},
         )
 
     def judge_request(
@@ -567,7 +646,24 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "A simulator that cannot be reached ends the episode as an ERROR rather "
                 "than a wrong answer, so an outage lowers the sample count rather than the "
                 "score.",
-                "TWO OF THE PAPER'S THREE METRICS ARE NOT REPRODUCED. Q4Dx scores models "
+                "MQD IS NOW REPRODUCED; ZDA AND ISE ARE NOT. The interview attempts a "
+                "diagnosis after every answer, as the paper does ('after each answer, the "
+                "clinician-agent attempts a diagnosis'), and `mqd` reports the questions "
+                "asked before the first correct one, with a failure assigned the cap of "
+                "five exactly as upstream does. Correctness per ROUND is lexical "
+                "containment against the gold condition name, not a judge verdict: the "
+                "authors score each round by cosine similarity, and this suite's judge "
+                "takes one request per sample, so the interim rounds cannot each be sent "
+                "for one. MedQDx golds are single condition names, which is where "
+                "containment is most reliable, but `reached_correct_lexically` is named as "
+                "a proxy. The closing diagnosis is judged as usual.",
+                "STILL NOT REPRODUCED: ISE compares the model's question sequence with the "
+                "recorded reference sequence by BERTScore under sequence alignment; the "
+                "reference questions ship in the dataset but the metric is not computed "
+                "here. ZDA is the zero-shot condition at the 100% level with exact match "
+                "against a predefined diagnosis list; the static form here judges all "
+                "three disclosure levels with an open vocabulary instead.",
+                "Q4Dx scores models "
                 "on ZDA (zero-shot accuracy at the 100% disclosure level, exact match "
                 "against a predefined diagnosis list), MQD (mean questions asked before "
                 "the FIRST correct diagnosis, capped at five, failures assigned the cap) "
