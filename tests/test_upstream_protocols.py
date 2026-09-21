@@ -302,3 +302,78 @@ def test_medqdx_unrecorded_details_get_the_releases_answer():
     # ask a broader or differently phrased question". Only the patient's own
     # wording changed.
     assert "I'm not sure" in reply
+
+
+# --------------------------------------------------------------------------- #
+# cloud_opsbench
+# --------------------------------------------------------------------------- #
+
+CLOUD_OPSBENCH = "cloud_opsbench:CloudOpsBenchAdapter"
+
+
+def test_cloud_opsbench_budget_is_the_releases_twenty_steps():
+    """``diagnosis.max_iterations: 20`` -- cloudops_agent/configs/
+    model_configs.yaml, enforced by AgentRuntime.run as
+    ``while not state.finished and state.current_step < state.max_steps``.
+
+    And no separate tool budget: every ReAct step counts against max_steps and
+    tool calls are capped nowhere. "At most 12 tool calls" was invented here,
+    and was in the prompt.
+    """
+    from abductionbench.adapters.cloud_opsbench import CloudOpsBenchAdapter
+
+    assert CloudOpsBenchAdapter.max_turns == 20
+    assert CloudOpsBenchAdapter.category_limits == {}
+
+
+def test_cloud_opsbench_shows_the_step_counter_every_turn():
+    """``PromptBuilder._build_case_section``:
+
+        Current Step: {state.current_step + 1}
+        Budget Steps: {state.max_steps}
+    """
+    adapter, samples = _adapter("cloud_opsbench", CLOUD_OPSBENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    # The reply to step N is the context for step N+1, so it announces N+1 --
+    # which is what `current_step + 1` is in the prompt built for that step.
+    reply = _step(adapter, sample, state, "Action: GetResources\nAction Input: {}")
+    assert "Current Step: 2" in reply
+    assert "Budget Steps: 20" in reply
+
+    reply = _step(adapter, sample, state, "Action: GetResources\nAction Input: {}")
+    assert "Current Step: 3" in reply
+
+
+def test_cloud_opsbench_forces_the_answer_on_the_last_allowed_step():
+    """``PromptBuilder._build_current_step_instruction`` replaces the protocol
+    on the last step with "This is the final allowed step. You MUST now stop
+    calling tools and output the final diagnosis...".
+
+    This adapter said nothing and simply stopped answering, so an agent that
+    ran out was never told to commit.
+    """
+    adapter, samples = _adapter("cloud_opsbench", CLOUD_OPSBENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    replies = []
+    for _ in range(adapter.max_turns):
+        reply = _step(adapter, sample, state, "Action: GetResources\nAction Input: {}")
+        assert reply is not None, "the environment stopped answering before the budget"
+        replies.append(reply)
+    # Not before the last step is in sight ...
+    assert "final allowed step" not in replies[adapter.max_turns - 3]
+    # ... and on the turn whose next step is the last one.
+    assert "final allowed step" in replies[adapter.max_turns - 2]
+    assert "output the final diagnosis" in replies[adapter.max_turns - 2]
+
+
+def test_cloud_opsbench_does_not_cap_tool_calls_separately():
+    """Twenty tool calls in a row is within the benchmark's budget."""
+    adapter, samples = _adapter("cloud_opsbench", CLOUD_OPSBENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    for index in range(15):
+        reply = _step(adapter, sample, state, "Action: GetResources\nAction Input: {}")
+        assert reply is not None
+        assert "budget exhausted" not in reply.lower(), f"refused at call {index + 1}"

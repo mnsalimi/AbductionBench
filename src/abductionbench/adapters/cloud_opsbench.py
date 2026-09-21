@@ -135,8 +135,18 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     # the investigation -- replayed from the release's own tool cache
     # ------------------------------------------------------------------ #
 
-    max_turns = 15
-    category_limits = {"tool": 12}
+    #: ``diagnosis.max_iterations: 20`` in the release's
+    #: ``cloudops_agent/configs/model_configs.yaml``, passed to
+    #: ``init_case_state(max_steps=...)`` and enforced by ``AgentRuntime.run``
+    #: as ``while not state.finished and state.current_step < state.max_steps``.
+    #: 15 was this adapter's own number.
+    max_turns = 20
+    #: NONE. The release counts every ReAct step against ``max_steps`` and caps
+    #: tool calls nowhere -- there is no tool budget separate from the step
+    #: budget. "You may make at most 12 tool calls" was invented here and, worse,
+    #: stated in the prompt, so the agent was told a rule the benchmark does not
+    #: have.
+    category_limits: dict[str, int] = {}
 
     @staticmethod
     def _tool_signature(key: str) -> tuple[str, str]:
@@ -165,7 +175,6 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "if a tool returns no anomaly, drop that hypothesis and investigate a "
                 "different path",
                 "reach the fault in as few tool calls as you can",
-                f"you may make at most {self.category_limits['tool']} tool calls",
                 "finalise as soon as the evidence establishes the fault",
             ],
             actions=[
@@ -203,8 +212,6 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
 
         self.bump(state, "tool")
-        if self.over_limit(state, "tool"):
-            return "Tool budget exhausted. Finalise your diagnosis now."
         cache = state["cache"]
         output, matched = _lookup(cache, action, arguments)
         state["calls"].append({"action": action, "arguments": arguments, "hit": matched})
@@ -212,11 +219,41 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # The recording holds only the calls the reference agent made. Saying
             # so is honest: inventing a plausible kubectl output would be
             # fabricating cluster state, and the model would reason from it.
-            return (
+            return self._with_budget(
+                state,
                 f"{action}: no recorded output for those arguments in this case. "
-                "Try a different call."
+                "Try a different call.",
             )
-        return C.clip_words(str(output), int(self.context.option("words_per_tool", 400)))
+        body = C.clip_words(str(output), int(self.context.option("words_per_tool", 400)))
+        return self._with_budget(state, body)
+
+    def _with_budget(self, state: dict[str, Any], body: str) -> str:
+        """The step counter, and the release's forced final step.
+
+        ``PromptBuilder._build_case_section`` puts
+
+            Current Step: {state.current_step + 1}
+            Budget Steps: {state.max_steps}
+
+        in the prompt on every step, and
+        ``PromptBuilder._build_current_step_instruction`` replaces the normal
+        protocol on the last one with
+
+            This is the final allowed step. You MUST now stop calling tools and
+            output the final diagnosis JSON only, using the best evidence
+            collected so far.
+
+        This adapter showed neither, so the agent could not see the clock and
+        was never told to commit -- it simply stopped getting answers.
+        """
+        used = (state.get("counts") or {}).get("tool", 0)
+        lines = [body, f"Current Step: {used + 1}", f"Budget Steps: {self.max_turns}"]
+        if used + 1 >= self.max_turns:
+            lines.append(
+                "This is the final allowed step. You MUST now stop calling tools and "
+                "output the final diagnosis, using the best evidence collected so far."
+            )
+        return "\n\n".join(lines)
 
     def load_items(self) -> list[dict[str, Any]]:
         root = C.ensure_git_repo(
