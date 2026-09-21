@@ -7,7 +7,9 @@ files -- without needing any credentials.
 
 from __future__ import annotations
 
+import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -152,13 +154,62 @@ def test_disabled_sync_is_a_no_op(tmp_path: Path):
 
 
 def test_overlapping_ticks_do_not_pile_up(tmp_path: Path):
-    """A slow upload must not have the next tick run on top of it."""
+    """A slow upload must not have the next tick run on top of it.
+
+    An *interval* tick that finds one running simply skips: another pass is
+    already sending whatever changed, and there will be another tick after it.
+    """
     run, remote = _run_dir(tmp_path), tmp_path / "remote"
     syncer = ArtifactSync(_config(remote), run, "run-1")
     syncer._lock.acquire()  # noqa: SLF001 - simulate an upload in progress
     try:
-        syncer.flush()  # should return immediately without a second rclone
+        syncer._tick(reason="interval")  # noqa: SLF001
         assert syncer.stats.ticks == 0
+    finally:
+        syncer._lock.release()  # noqa: SLF001
+
+
+def test_a_closing_pass_waits_for_a_running_one_instead_of_skipping(tmp_path: Path):
+    """`final` and `flush` are the end of the run: skipping them loses data.
+
+    They used to take the same non-blocking path as an interval tick and
+    return silently at DEBUG level. There is no next tick to catch what they
+    drop, so whatever was written last -- in practice the reports, which are
+    written *after* the final upload -- stayed on the box. This waits instead.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._CLOSING_LOCK_WAIT_S = 10.0  # noqa: SLF001 - the real one is 15 minutes
+
+    syncer._lock.acquire()  # noqa: SLF001 - a pass is in flight
+    released = threading.Event()
+
+    def _release_soon() -> None:
+        time.sleep(0.4)
+        syncer._lock.release()  # noqa: SLF001
+        released.set()
+
+    threading.Thread(target=_release_soon, daemon=True).start()
+    syncer.flush()
+    assert released.is_set(), "flush returned before the running pass finished"
+    assert syncer.stats.ticks == 1, "flush must upload, not skip"
+    assert (remote / "run-1" / "engine.log").exists()
+
+
+def test_a_closing_pass_that_cannot_start_says_so_loudly(tmp_path: Path, caplog):
+    """If it really cannot run, that must not be a DEBUG line nobody reads."""
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._CLOSING_LOCK_WAIT_S = 0.2  # noqa: SLF001
+    syncer._lock.acquire()  # noqa: SLF001 - never released
+    try:
+        with caplog.at_level(logging.WARNING, logger="abductionbench.core.sync"):
+            syncer.flush()
+        assert syncer.stats.ticks == 0
+        warned = [r.message for r in caplog.records if "could not start" in r.message]
+        assert warned, "a dropped closing pass went unreported"
+        # And it says how to fix it by hand.
+        assert "rclone copy" in warned[0]
     finally:
         syncer._lock.release()  # noqa: SLF001
 
@@ -649,3 +700,52 @@ def test_an_uncapped_run_with_sync_on_is_warned_about(tmp_path: Path, caplog):
             "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
         }})
     assert not any("max_raw_payloads" in record.message for record in caplog.records)
+
+
+def test_verification_catches_a_file_the_remote_holds_a_different_copy_of(tmp_path: Path):
+    """"Is it there?" is not the same question as "is it right?".
+
+    A pass can report per-file failures and still be counted once, and a
+    truncated or half-written upload leaves a file that *exists*. Asking only
+    which paths are absent called that backed up. The check now reports both
+    what is missing (`+`) and what differs (`*`).
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer.flush()
+    assert syncer._missing_files() == []  # noqa: SLF001
+
+    # The remote holds a copy, but not the copy we sent.
+    (remote / "run-1" / "engine.log").write_text("truncated", encoding="utf-8")
+    stale = syncer._missing_files()  # noqa: SLF001
+    assert "engine.log" in stale, "a differing remote copy was reported as backed up"
+
+    # And the repair pass fixes it rather than leaving it.
+    syncer.verify_and_repair()
+    assert (remote / "run-1" / "engine.log").read_text() == "start\n"
+    assert syncer._missing_files() == []  # noqa: SLF001
+
+
+def test_the_end_of_a_run_leaves_nothing_behind(tmp_path: Path):
+    """stop() -> write reports -> flush(): the whole closing sequence.
+
+    This is the order the CLI uses, and the one that was losing the reports.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote, interval_s=3600), run, "run-1")
+    syncer.start()
+    syncer.stop()  # the engine's final upload
+
+    # The CLI writes reports after the engine returns, then flushes.
+    (run / "reports").mkdir(exist_ok=True)
+    (run / "reports" / "results.xlsx").write_text("the real numbers", encoding="utf-8")
+    (run / "datasets" / "ds" / "model" / "tpl" / "run_documentation.md").write_text(
+        "written last", encoding="utf-8"
+    )
+    syncer.flush()
+
+    assert (remote / "run-1" / "reports" / "results.xlsx").read_text() == "the real numbers"
+    assert (
+        remote / "run-1" / "datasets/ds/model/tpl/run_documentation.md"
+    ).read_text() == "written last"
+    assert syncer._missing_files() == [], "the remote is not a copy of the run"  # noqa: SLF001

@@ -379,7 +379,10 @@ class ArtifactSync:
         if self._thread is not None:
             self._thread.join(timeout=5)
         if final:
-            logger.info("artifact sync: final upload of %s", self.run_dir)
+            # Said as an intention, not an outcome: `_tick` logs whether the
+            # pass actually ran, and this line used to be the only trace of a
+            # "final upload" that the lock had silently dropped.
+            logger.info("artifact sync: starting the final upload of %s", self.run_dir)
             self._tick(reason="final")
             if self.config.verify_after_final:
                 self.verify_and_repair()
@@ -528,11 +531,34 @@ class ArtifactSync:
             f"`rclone config update {remote} client_id <id> client_secret <secret>`."
         )
 
+    #: How long a `final` or `flush` pass waits for a pass already running.
+    #: These are the two that must not be skipped, and the thing they wait for
+    #: is one rclone invocation, which `stop()` has already asked to end.
+    _CLOSING_LOCK_WAIT_S = 900.0
+
     def _tick(self, *, reason: str) -> None:
         # Serialize ticks: a slow upload must not overlap with the next one, or
         # rclone instances would fight over the same files.
-        if not self._lock.acquire(blocking=False):
-            logger.debug("artifact sync: previous upload still running; skipping this tick")
+        #
+        # An interval pass that finds the lock held just skips -- another pass
+        # is already sending what changed. A `final` or `flush` pass WAITS for
+        # it. Those two are the end of the run, and there is no next tick to
+        # catch what they drop: skipping them leaves the reports, and whatever
+        # else was written last, on this box only. It used to skip, silently
+        # and at DEBUG level, which is how a run could log "final upload" and
+        # finish with 232 stale files on the remote.
+        closing = reason in ("final", "flush")
+        if not self._lock.acquire(blocking=closing,
+                                  timeout=self._CLOSING_LOCK_WAIT_S if closing else -1):
+            if closing:
+                logger.warning(
+                    "artifact sync: the %s pass could not start -- an upload has been "
+                    "running for over %.0fs. The remote is missing whatever changed "
+                    "since that upload began; re-send it with: rclone copy %s %s --update",
+                    reason, self._CLOSING_LOCK_WAIT_S, self.run_dir, self.destination,
+                )
+            else:
+                logger.debug("artifact sync: previous upload still running; skipping this tick")
             return
         if not self._may_start(reason):
             self._lock.release()
@@ -597,12 +623,17 @@ class ArtifactSync:
     def verify_and_repair(self) -> list[str]:
         """Re-upload anything the remote is missing.  Returns what is still absent.
 
-        A pass can fail per file and still exit non-zero only once, and Drive
+A pass can fail per file and still exit non-zero only once, and Drive
         answers a burst of small uploads with HTTP 403 rate-limit errors that
         rclone reports at the end.  Either way the visible symptom is the same:
         a run whose report uploaded fine sitting next to
         ``datasets/<dataset>/<model>/<template>/`` directories that are empty,
         because the directory is created before the files land in it.
+
+        "Missing" includes **out of date**: a file the remote holds at an older
+        revision is not backed up either, and that is the ordinary case at the
+        end of a run, because the reports are rewritten after the final
+        upload.
 
         So the end of a run does not trust the exit code.  It asks the remote
         what it actually has, re-sends what is missing, and asks again --
@@ -620,7 +651,7 @@ class ArtifactSync:
                 self._emit("sync_verified", destination=self.destination, missing=0)
                 return []
             logger.warning(
-                "artifact sync: %d file(s) missing on %s after upload (%s%s); re-sending",
+                "artifact sync: %d file(s) missing or out of date on %s after upload (%s%s); re-sending",
                 len(missing),
                 self.destination,
                 ", ".join(missing[:3]),
@@ -645,7 +676,15 @@ class ArtifactSync:
         return remaining
 
     def _missing_files(self) -> list[str]:
-        """Paths present locally but not on the remote, via ``rclone check``."""
+        """Paths the remote does not hold, or holds an out-of-date copy of.
+
+        Both, not just the first.  A file that exists on the remote at an older
+        revision is the failure this end-of-run check exists to catch: the
+        reports are written *after* the final upload, so the remote keeps the
+        previous workbook and every ``run_documentation.md`` from the pass
+        before.  Asking only "is it there?" answered yes and reported the
+        remote complete while 232 files were a revision behind.
+        """
         source = self.stage_dir if self.stage_dir.exists() else self.run_dir
         command = [
             self.config.rclone_binary,
@@ -655,7 +694,9 @@ class ArtifactSync:
             # One-way: extra files on the remote (an older run's leftovers) are
             # not our problem; files we hold and the remote does not are.
             "--one-way",
-            "--missing-on-dst",
+            # `+` is missing on the destination, `*` is present but different,
+            # `=` is a match. Both of the first two need re-sending.
+            "--combined",
             "-",
             "--fast-list",
             "--stats=0",
@@ -672,9 +713,16 @@ class ArtifactSync:
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("artifact sync: cannot verify the remote: %s", exc)
             return []
-        # rclone writes the missing paths to the file named by --missing-on-dst,
-        # which is stdout here; its own progress goes to stderr.
-        return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        # rclone writes one marked line per file to --combined, which is stdout
+        # here; its own progress goes to stderr. A differing file exits
+        # non-zero, so the return code is deliberately not consulted -- the
+        # listing is the answer.
+        out_of_date: list[str] = []
+        for line in completed.stdout.splitlines():
+            marker, _, path = line.partition(" ")
+            if marker in ("+", "*") and path.strip():
+                out_of_date.append(path.strip())
+        return out_of_date
 
     def _repair(self, missing: list[str]) -> None:
         """Re-upload exactly the named files."""
