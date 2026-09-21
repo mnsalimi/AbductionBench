@@ -172,8 +172,16 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     #: The release's action vocabulary (evoclinician/med_inquire/types.py).
     ACTIONS = ("askquestion", "ordertest", "submitdiagnosis")
-    max_turns = 12
-    category_limits = {"askquestion": 8, "ordertest": 6}
+    #: ``EpisodeConfig.max_turns`` in ``evoclinician/med_inquire/types.py``.
+    #: Was 12 here, which is not a number that appears anywhere upstream.
+    max_turns = 20
+    #: NONE, deliberately. ``MedInquireEnv.run_episode`` counts every action
+    #: against one budget of ``max_turns`` and imposes no per-kind cap; the
+    #: "at most 8 questions and 6 tests" this adapter used to enforce, and
+    #: state in its prompt, was invented here. Spending the budget how it
+    #: likes -- twenty questions, or one question and a test -- is part of
+    #: what Med-Inquire measures.
+    category_limits: dict[str, int] = {}
 
     #: The release's action vocabulary, written out as the Actor's own three
     #: choices. The names are the release's (``evoclinician/med_inquire/types.py``)
@@ -276,8 +284,6 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "inexpensive -- time and resources are part of the task",
                 "rule out the conditions that would be dangerous to miss before the "
                 "unlikely ones",
-                f"you may ask at most {self.category_limits['askquestion']} questions and "
-                f"order at most {self.category_limits['ordertest']} tests",
                 "submit the diagnosis as soon as the evidence supports one",
             ],
             actions=list(self._ACTION_HELP),
@@ -303,6 +309,8 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             if match:
                 action.query = match.group(1)
         if action.action == "submitdiagnosis":
+            state["submitted"] = True
+            state["last_action_content"] = action.query_text
             return None
         if not action.action:
             state["parse_errors"] = state.get("parse_errors", 0) + 1
@@ -314,26 +322,43 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             )
 
         self.bump(state, action.action)
-        if self.over_limit(state, action.action):
-            return "No further actions of that kind are available. Please submit your diagnosis."
+        # The last action's CONTENT, kept for the forced diagnosis below. The
+        # release uses `history[-1].action.content` when the budget runs out --
+        # the action's text, not the JSON envelope it arrived in.
+        state["last_action_content"] = action.query_text
         if self.simulator is not None:
             # The release's Patient and Examination agents, each answering from
             # its own half of the case.
-            return await self.simulate(
+            spoken = await self.simulate(
                 state,
                 brief=state["_briefs"][action.action],
                 request=action.query_text,
                 role=action.action,
             )
+            return None if spoken is None else self._with_remaining(state, spoken)
         store: EvidenceStore = state["evidence"]
         reply = store.reveal(action.action, action.query_text, limit=3)
-        if reply:
-            return reply
-        if action.action == "ordertest":
-            # The release's ExaminationAgent returns exactly this for a test the
-            # case does not record.
-            return "NOT AVAILABLE"
-        return "The patient does not report anything about that."
+        if not reply:
+            reply = (
+                # The release's ExaminationAgent returns exactly this for a test
+                # the case does not record.
+                "NOT AVAILABLE" if action.action == "ordertest"
+                else "The patient does not report anything about that."
+            )
+        return self._with_remaining(state, reply)
+
+    def _with_remaining(self, state: dict[str, Any], reply: str) -> str:
+        """Append the turn budget, as ``Actor.decide`` puts it in every prompt.
+
+        ``Turns remaining before forced stop: {max_turns - len(history)}`` is
+        in the release's user message on *every* turn, so the agent is
+        deciding with the budget in front of it. This adapter used to say
+        nothing and then stop, which measures a different thing: an agent that
+        does not know it is nearly out of time cannot choose to commit.
+        """
+        used = sum((state.get("counts") or {}).values())
+        remaining = max(0, self.max_turns - used)
+        return f"{reply}\n\nTurns remaining before forced stop: {remaining}"
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         diagnosis = C.normalize_whitespace(item.get("final_diagnosis"))
@@ -397,11 +422,44 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 output_contract=output_contract,
                 metric_name="accuracy",
             )
-        return judged_only_score(
+        scored = judged_only_score(
             response,
             metric="diagnosis_judged",
             output_contract=output_contract,
             details={"gold": str(sample.reference["gold"])[:300]},
+        )
+        return self._forced_diagnosis(sample, scored)
+
+    @staticmethod
+    def _forced_diagnosis(sample: SampleSpec, scored: SampleScore) -> SampleScore:
+        """What gets judged when the agent never submitted a diagnosis.
+
+        ``MedInquireEnv.run_episode`` ends an exhausted episode with
+
+            transcript.final_diagnosis = history[-1].action.content
+
+        -- the *content* of whatever the agent last did. Here the last turn was
+        whatever it happened to write, so an episode that ran out mid-work-up
+        handed the judge a whole ``{"action_type": "OrderTest", "action_text":
+        "chest x-ray"}`` and asked whether it named the disease. It never does,
+        so a timed-out episode scored zero for the wrong reason: not "the agent
+        was wrong" but "the agent was still working".
+
+        Using the action's content matches the release. It is still usually
+        wrong -- an ordered test is not a diagnosis -- but it is wrong in the
+        same way the published numbers are, and the transcript shows why.
+        """
+        state = sample.metadata.get("_episode_state") or {}
+        if state.get("submitted"):
+            return scored
+        content = (state.get("last_action_content") or "").strip()
+        if not content:
+            return scored
+        return SampleScore(
+            metrics=scored.metrics,
+            prediction=content[:600],
+            parse_ok=scored.parse_ok,
+            details={**scored.details, "forced_diagnosis": "budget exhausted"},
         )
 
     def judge_request(
