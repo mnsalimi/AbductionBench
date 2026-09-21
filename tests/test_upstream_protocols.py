@@ -515,8 +515,8 @@ def test_vivabench_returns_negatives_not_a_shrug():
     assert "normal" in reply.lower()
     assert "no examination finding recorded" not in reply.lower()
 
-    # ... and an investigation it does not hold is "not available", which is
-    # the release's own wording and is deliberately NOT a normal value.
+    # ... and imaging the case does not hold is "not available" -- the paper's
+    # wording, kept because the release ships no imaging default to follow.
     reply = _step(adapter, sample, state,
                   json.dumps({"action": "imaging", "query": "PET-CT whole body"}))
     assert "not available" in reply.lower()
@@ -524,9 +524,13 @@ def test_vivabench_returns_negatives_not_a_shrug():
     assert set(VivaBenchAdapter._NOTHING_RECORDED) == {
         "history", "examination", "investigation", "imaging",
     }
-    # History and physical are negatives; investigations are not-available.
+    # None of the four is the old flat "no finding recorded".
+    for category, answer in VivaBenchAdapter._NOTHING_RECORDED.items():
+        assert "no " not in answer.lower() or "not report" in answer.lower(), category
+    # History is a negative, not an availability statement.
     assert "not available" not in VivaBenchAdapter._NOTHING_RECORDED["history"].lower()
-    assert "not available" in VivaBenchAdapter._NOTHING_RECORDED["investigation"].lower()
+    # Investigations are the code's "Normal" -- see the dedicated test.
+    assert VivaBenchAdapter._NOTHING_RECORDED["investigation"] == "Normal."
 
 
 def test_med_inquire_reports_all_three_of_the_benchmarks_axes():
@@ -740,3 +744,71 @@ def test_medups_pool_is_stratified_along_the_trajectory():
     # And nothing beyond position 8, which the paper's pool excludes.
     adapter, many = _medups(sample_size=200)
     assert all(s.metadata["answer_chunk"] - 1 <= 8 for s in many)
+
+
+def test_vivabench_reports_the_provisional_diagnosis_too():
+    """Table 2 reports Top-k P. beside Top-k F., and the workflow requires a
+    provisional before any investigation ("you should provide a provisional
+    diagnosis, before ordering any investigations" -- ASSISTANT_BASE_PROMPT).
+
+    An agent that reaches the right answer only after the labs come back is
+    doing something different from one that had it at the bedside. Reporting
+    only the final hides that.
+
+    `provisional_match_lexical` is a floor, not the paper's judged accuracy:
+    the judge stage takes one request per sample, so the provisional cannot be
+    sent for a verdict without a second pass. It is named accordingly.
+    """
+    from abductionbench.core.types import ModelResponse, ResponseStatus
+
+    adapter, samples = _adapter("vivabench", VIVABENCH)
+    sample = samples[0]
+    gold = (sample.reference.get("accepted") or [sample.reference["gold"]])[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    for action in ("diagnosis_provisional", "diagnosis_final"):
+        _step(adapter, sample, state, json.dumps(
+            {"action": action, "query": [{"condition": gold, "confidence": 0.8}]}
+        ))
+
+    sample.metadata["_episode_state"] = state
+    response = ModelResponse(
+        sample_id=sample.sample_id, model_id="m", status=ResponseStatus.OK,
+        content=json.dumps(
+            {"action": "diagnosis_final", "query": [{"condition": gold, "confidence": 0.9}]}
+        ),
+    )
+    metrics = adapter.score_request(sample, response, output_contract=None).metrics
+    assert metrics["provisional_given"] == 1.0
+    assert metrics["provisional_match_lexical"] == 1.0
+
+    # An episode that never gave one says so, rather than omitting the column.
+    _messages, fresh = adapter.interactive_start(sample)
+    sample.metadata["_episode_state"] = fresh
+    metrics = adapter.score_request(sample, response, output_contract=None).metrics
+    assert metrics["provisional_given"] == 0.0
+    assert "provisional_match_lexical" not in metrics
+
+
+def test_vivabench_an_unmentioned_investigation_is_normal_not_unavailable():
+    """Code over paper, because they disagree.
+
+    The paper says investigations not in the case are "explicitly noted as not
+    available to prevent information leakage" (S3.2). That string appears
+    NOWHERE in the release. `Investigations.get_prompt` routes an unmatched key
+    to `get_default`, which returns a default lab if one exists and otherwise
+    `f"- {prettify(ix_key)}: Normal"` -- which is the paper's OTHER sentence,
+    about "default normal values", and is what actually ran.
+
+    The "appropriate reference ranges" promised beside those defaults are not
+    implemented either: the method carries
+    `# TODO: Get normal reference values here later`. So a bare "Normal" is
+    returned and no range is invented.
+    """
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+
+    assert VivaBenchAdapter._NOTHING_RECORDED["investigation"] == "Normal."
+    # Imaging keeps the paper's wording: no shipped default to follow.
+    assert "not available" in VivaBenchAdapter._NOTHING_RECORDED["imaging"].lower()
+    # And no invented reference range travels with the default.
+    assert "(" not in VivaBenchAdapter._NOTHING_RECORDED["investigation"]

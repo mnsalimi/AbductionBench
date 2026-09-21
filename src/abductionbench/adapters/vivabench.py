@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.adapter import SkippedDataset
+from ..core.metrics import contains_match
 from ..core.types import (
     AdapterDocumentation,
     ChatMessage,
@@ -365,7 +366,26 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     _NOTHING_RECORDED = {
         "history": "The patient does not report that.",
         "examination": "That examination is normal.",
-        "investigation": "Not available.",
+        # "Normal", not "not available" -- and this one comes from the code
+        # rather than the paper, because they disagree. The paper says
+        # "investigations not available in the case are explicitly noted as
+        # 'not available' to prevent information leakage", but the string
+        # "not available" appears NOWHERE in the release, and
+        # `Investigations.get_prompt` routes an unmatched key to
+        # `get_default`, which returns a default lab if it has one and
+        # otherwise `f"- {prettify(ix_key)}: Normal"`. That is the paper's
+        # OTHER sentence -- "standardized laboratory values not specifically
+        # mentioned in the case are returned as default normal values" -- and
+        # it is what actually ran.
+        #
+        # The "appropriate reference ranges" the paper promises alongside
+        # those defaults are not implemented either: the method carries
+        # `# TODO: Get normal reference values here later`. So a bare "Normal"
+        # is the faithful reproduction, and no range is invented here.
+        "investigation": "Normal.",
+        # Imaging keeps the paper's wording: the release ships no imaging
+        # default, and its parser is not in the published snapshot, so there
+        # is no code to follow.
         "imaging": "Not available.",
     }
 
@@ -753,7 +773,41 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # result: two systems with the same accuracy are not equivalent if
             # one needed four times as many investigations.
             score.metrics["turns_used"] = float(turns)
-        return score
+        return self._with_provisional(sample, score)
+
+    def _with_provisional(self, sample: SampleSpec, score: SampleScore) -> SampleScore:
+        """The provisional diagnosis, which the paper scores too.
+
+        Table 2 reports Top-k P. beside Top-k F., and the workflow requires a
+        provisional before any investigation is ordered ("you should provide a
+        provisional diagnosis, before ordering any investigations",
+        ASSISTANT_BASE_PROMPT). An agent that reaches the right answer only
+        after the labs come back is doing something different from one that had
+        it from the bedside, and reporting only the final hides that.
+
+        This is a MECHANICAL check, not the paper's judged accuracy: the judge
+        stage takes one request per sample, so the provisional cannot be sent
+        for a verdict without a second pass. Containment against the accepted
+        set is therefore a floor -- it will miss a correct provisional phrased
+        unlike any accepted string -- and is named so it cannot be mistaken for
+        the judged number.
+        """
+        state = sample.metadata.get("_episode_state") or {}
+        provisional = (state.get("provisional") or "").strip()
+        metrics = dict(score.metrics)
+        metrics["provisional_given"] = 1.0 if provisional else 0.0
+        if provisional:
+            accepted = sample.reference.get("accepted") or [sample.reference.get("gold", "")]
+            metrics["provisional_match_lexical"] = max(
+                (contains_match(provisional, candidate) for candidate in accepted if candidate),
+                default=0.0,
+            )
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details=score.details,
+        )
 
     @staticmethod
     def _committed_diagnosis(text: str) -> str | None:
@@ -900,13 +954,20 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "confirmatory investigation that names the condition -- ordering one is how a "
                 "viva candidate confirms an answer, and the lexical environment discloses the "
                 "same finding to the same request.",
-                "TWO GAPS AGAINST THE PAPER, BOTH DOCUMENTED RATHER THAN GUESSED. (1) The "
-                "paper returns unmentioned LABORATORY values as 'default normal values with "
-                "appropriate reference ranges' (S3.2); this adapter answers 'Not available' "
-                "for them, because the reference-range table that would make a normal value "
-                "meaningful is not in the release and inventing one would be fabricating "
-                "evidence. A model therefore cannot distinguish 'not tested' from 'normal' "
-                "for a lab, which it could upstream. (2) The paper evaluates the PROVISIONAL "
+                "AN UNMENTIONED INVESTIGATION COMES BACK 'Normal', WHICH IS THE CODE'S "
+                "BEHAVIOUR AND NOT THE PAPER'S WORDING. The paper says investigations not "
+                "available in the case are 'explicitly noted as not available to prevent "
+                "information leakage' (S3.2), but that string appears nowhere in the "
+                "release: Investigations.get_prompt sends an unmatched key to get_default, "
+                "which returns a default lab if one exists and otherwise "
+                "'- <Name>: Normal'. That matches the paper's other sentence about "
+                "'default normal values', and it is what produced the reported results. The "
+                "'appropriate reference ranges' promised beside those defaults are also "
+                "unimplemented -- the method carries '# TODO: Get normal reference values "
+                "here later' -- so a bare 'Normal' is returned and no range is invented. "
+                "Imaging keeps 'Not available.', because the release ships no imaging "
+                "default and its parser is not in the published snapshot.",
+                "The paper evaluates the PROVISIONAL "
                 "diagnosis as well as the final one (Table 2 reports Top-k P. and Top-k F. "
                 "separately); this adapter records the provisional in the episode state but "
                 "scores only the final, so the mid-episode reasoning the paper measures is "
