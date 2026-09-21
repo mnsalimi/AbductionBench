@@ -165,7 +165,20 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         if isinstance(meaning, dict):
             answer = C.normalize_whitespace(meaning.get("en") or meaning.get("fr") or value)
         else:
+            # Six of the release's categorical evidences carry no
+            # `value_meaning` at all: their `possible-values` are the integers
+            # 0-10 and the answer IS the number -- "How intense is the pain?"
+            # answered 7, "How severe is the itching?" answered 3.
+            #
+            # Rendered bare, that is not an answer a reader can use: 7 out of
+            # what? The scale is in the release's own `possible-values`, so it
+            # is stated rather than left to be guessed. Without it the model
+            # was being shown an uninterpretable number and asked to diagnose
+            # from it.
             answer = value.replace("V_", "")
+            scale = [v for v in (entry.get("possible-values") or []) if isinstance(v, int)]
+            if scale and answer.isdigit():
+                answer = f"{answer} (on a scale of {min(scale)}-{max(scale)})"
         return f"{question} -> {answer}"
 
     def _condition_name(self, raw: str) -> str:
@@ -478,7 +491,20 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "What the release does publish is used -- the interview questions are its "
                 "own `question_en` strings and the answers are what the patient record "
                 "says -- but the system prompt that frames the interview is necessarily "
-                "written here, and is therefore NOT the authors'.",
+                "written here, and is therefore NOT the authors'. The turn budget "
+                "(20 turns, 15 questions) is ours for the same reason: the release "
+                "defines no interaction budget because it defines no interaction.",
+                "THE `code_question` GROUPING IS NOT ENFORCED. The release notes that "
+                "evidences sharing a `code_question` form a group whose parent 'needs to "
+                "be simulated/activated for the other members to be eventually "
+                "simulated' -- 8 of the 223 evidences are parents of such a group. That "
+                "rule governs how patients were SYNTHESIZED, not how an interview must "
+                "proceed, and the release publishes no questioning order to reproduce. So "
+                "a model may ask 'Characterize your pain:' without first asking 'Do you "
+                "have pain somewhere?', and is answered from the record. Nothing is "
+                "revealed that the record does not hold -- a child evidence is only "
+                "present when its parent is -- but the natural gating of the interview is "
+                "looser here than the data's own structure implies.",
                 "Patients are synthesized from a medical knowledge base, so findings are "
                 "internally consistent in a way real cases are not.",
                 "Answers are a fixed questionnaire, so a diagnosis is often strongly determined; "

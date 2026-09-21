@@ -377,3 +377,64 @@ def test_cloud_opsbench_does_not_cap_tool_calls_separately():
         reply = _step(adapter, sample, state, "Action: GetResources\nAction Input: {}")
         assert reply is not None
         assert "budget exhausted" not in reply.lower(), f"refused at call {index + 1}"
+
+
+# --------------------------------------------------------------------------- #
+# ddxplus -- a dataset release, not an agent harness
+# --------------------------------------------------------------------------- #
+
+
+def test_ddxplus_uses_the_releases_own_english_fields():
+    """There is no upstream interaction code to follow, so what can be checked
+    is the data handling: the questions are the release's ``question_en`` and a
+    categorical answer is its ``value_meaning[...]["en"]``, not a raw V-code.
+
+    (mila-iqia/ddxplus ships a README, a dialogue PDF and the JSON banks. Its
+    published baselines are supervised models, not a prompted agent.)
+    """
+    import json
+
+    from abductionbench.adapters.ddxplus import DDXPlusAdapter
+
+    evidences = json.loads(Path("data/ddxplus/release_evidences.json").read_text())
+    adapter, _samples = _adapter("ddxplus", "ddxplus:DDXPlusAdapter")
+    adapter._evidences = evidences  # the bank, as loaded from the release
+
+    # A categorical evidence whose values are V-codes with English meanings.
+    code, entry = next(
+        (c, e) for c, e in evidences.items()
+        if e.get("data_type") == "C" and (e.get("value_meaning") or {})
+    )
+    value = [v for v in entry["possible-values"] if v != entry.get("default_value")][0]
+    rendered = adapter._decode(f"{code}_@_{value}")
+
+    assert entry["question_en"] in rendered, "the question is not the release's English one"
+    meaning = entry["value_meaning"][value]["en"]
+    assert meaning in rendered, f"the answer is not the release's English meaning ({meaning!r})"
+    assert value not in rendered, "a raw V-code reached the model"
+    assert isinstance(DDXPlusAdapter.max_turns, int)
+
+
+def test_ddxplus_numeric_scales_are_rendered_with_their_scale():
+    """Six evidences have no ``value_meaning`` and integer possible-values 0-10.
+
+    "How intense is the pain? -> 7" is not an answer anyone can use: seven out
+    of what? The range is in the release's own ``possible-values``, so it is
+    stated rather than left to be inferred.
+    """
+    import json
+
+    evidences = json.loads(Path("data/ddxplus/release_evidences.json").read_text())
+    adapter, _samples = _adapter("ddxplus", "ddxplus:DDXPlusAdapter")
+    adapter._evidences = evidences
+
+    scaled = [
+        (c, e) for c, e in evidences.items()
+        if e.get("data_type") in ("C", "M") and not (e.get("value_meaning") or {})
+    ]
+    assert len(scaled) == 6, "the release's numeric evidences changed"
+    code, entry = scaled[0]
+    rendered = adapter._decode(f"{code}_@_7")
+    assert entry["question_en"] in rendered
+    assert "7" in rendered
+    assert "scale of 0-10" in rendered, f"a bare, uninterpretable number: {rendered!r}"
