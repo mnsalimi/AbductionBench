@@ -21,10 +21,16 @@ available rather than invented.
 The examiner's own replies -- the closed-patient notice, the limit notices, the
 provisional acknowledgement and the out-of-time warning -- are kept verbatim:
 they carry no reasoning request, and the wording is what tells the agent a door
-has closed.  What is also not the release's is the *mapper*: VivaBench resolves a
-free-text request to a finding with an LLM, which would put a second model inside
-the evaluation of the first.  This adapter matches lexically instead --
-deterministic, reproducible, and visible in the transcript when it misses.
+has closed.  **The mapper is configurable.**  VivaBench resolves a free-text
+request to a finding with an LLM (``LLMMapper``/``LLMParser``, gpt-4.1 by
+default).  With ``engine.simulator`` enabled this adapter does the same, and
+keeps the release's split: the model chooses *which* recorded keys the request
+resolves to, and the finding itself is still rendered from the case, so it can
+decide what is disclosed and never what it says.  With the simulator off, a
+lexical matcher stands in -- deterministic and reproducible, and visible in the
+transcript when it misses a request the case does record.  Which one ran is in
+the run's ``Simulators`` sheet, and it changes the score: mapped by a model,
+this dataset is no longer bit-reproducible.
 
 **What the model is shown is the release's own case stem**, not the release's
 ``vignette`` column.  ``vivabench/examiner.py`` builds the examinee's opening
@@ -51,6 +57,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -308,6 +315,33 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         "Your previous message:"
     )
 
+    #: The release resolves a free-text request to the case's own keys with a
+    #: model (``LLMMapper``/``LLMParser``, gpt-4.1 by default) and then has the
+    #: Examiner read the recorded finding back.  This reproduces that split:
+    #: the mapper chooses *which* keys are disclosed, and the finding itself is
+    #: still rendered from the case by :meth:`EvidenceStore.reveal_keys`.  So a
+    #: simulator can decide what the doctor gets to see, and cannot decide what
+    #: it says -- it has no way to invent a result, because it never writes the
+    #: reply.
+    _MAPPER_BRIEF = (
+        "You are the examiner in a clinical viva. A doctor has made one "
+        "request about a case. Your only job is to decide which of the case's "
+        "recorded findings answer it.\n\n"
+        "The findings recorded under '{category}', as key: value:\n"
+        "{catalogue}\n\n"
+        "Rules you must follow:\n"
+        "- Reply with a JSON array of the keys, exactly as written above, "
+        "whose findings answer the request. Nothing else.\n"
+        "- Include a key when the request names that finding, or names a "
+        "region, system or work-up it clearly belongs to.\n"
+        "- If nothing recorded answers the request, reply with exactly: []\n"
+        "- Never invent a key, and never reply with the finding itself.\n"
+        "- At most {limit} keys, the most directly relevant first."
+    )
+    #: How many findings one request may disclose. ``EvidenceStore.reveal``'s
+    #: own default, so the mapper and the matcher are held to the same budget.
+    _MAPPER_KEY_LIMIT = 6
+
     def _evidence(self, item: dict[str, Any]) -> EvidenceStore:
         payload = self._case_json(item)
         store = EvidenceStore()
@@ -446,18 +480,17 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         }
         return build_protocol_messages(self._protocol(sample, payload), self.context.modes), state
 
-    def interactive_step(
+    async def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
         """One examiner turn, following ``Examiner.process_response``.
 
         The routing, the order of the checks and the examiner's replies are the
-        release's. The one thing that is not is how a free-text request is
-        matched to a finding: the release resolves that with a second LLM (its
-        ``LLMMapper``/``LLMParser``, gpt-4.1 by default), and this suite
-        matches lexically instead. That is a deliberate, documented deviation
-        -- an examiner model inside the evaluation makes two runs of the same
-        system disagree because the examiner did -- and it is the only one.
+        release's, and so is the mapping from a free-text request to a finding
+        when ``engine.simulator`` is configured (the release's own default for
+        it is gpt-4.1). Without one, the request is matched lexically instead
+        -- reproducible, and the one place the adapter then departs from the
+        release's behaviour.
         """
         action = parse_action(assistant_text, actions=self.ACTIONS)
         if not action.parsed and not action.action:
@@ -510,7 +543,12 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             )
 
         store: EvidenceStore = state["evidence"]
-        revealed = store.reveal(category, action.query_text)
+        revealed = await self._reveal(state, store, category, action.query_text)
+        if revealed is None:
+            # The examiner stopped answering. The engine ends the episode as an
+            # error; the model's half-finished work-up is not a diagnosis it
+            # chose to give.
+            return None
         if not revealed:
             # The case does not record this finding. Saying so is the honest
             # answer; inventing a normal result would hand the model evidence
@@ -523,6 +561,68 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         if out_of_time:
             body += self._OUT_OF_TIME_MSG
         return body
+
+    async def _reveal(
+        self,
+        state: dict[str, Any],
+        store: EvidenceStore,
+        category: str,
+        query: str,
+    ) -> str | None:
+        """The finding this request discloses, or ``""`` if the case has none.
+
+        ``None`` means the examiner could not be reached, which is not the same
+        as a case that records nothing: one ends the episode as an error, the
+        other is a legitimate answer the doctor has to work around.
+        """
+        if self.simulator is None:
+            return store.reveal(category, query)
+        catalogue = store.categories.get(category) or {}
+        if not catalogue:
+            return ""
+        brief = self._MAPPER_BRIEF.format(
+            category=category,
+            catalogue="\n".join(f"{key}: {value}" for key, value in catalogue.items()),
+            limit=self._MAPPER_KEY_LIMIT,
+        )
+        # One mapping conversation per category: the release maps each request
+        # against the case section it names, and a history request must not be
+        # resolved against the investigations the doctor has not ordered yet.
+        raw = await self.simulate(
+            state, brief=brief, request=query, role=f"mapper:{category}"
+        )
+        if raw is None:
+            return None
+        keys = self._parse_keys(raw, set(catalogue))
+        return store.reveal_keys(category, keys, limit=self._MAPPER_KEY_LIMIT)
+
+    @staticmethod
+    def _parse_keys(raw: str, known: set[str]) -> list[str]:
+        """The keys a mapper reply names, in order, ignoring everything else.
+
+        A model that wraps its array in prose or a fence is still understood; a
+        model that invents a key is not, and the invention is dropped rather
+        than guessed at. Falling back to the lexical matcher here would hide a
+        mapper that had stopped working behind plausible answers, so an
+        unreadable reply discloses nothing -- which the transcript shows as the
+        case recording no such finding.
+        """
+        found: list[str] = []
+        for match in re.finditer(r'"([^"]+)"', raw or ""):
+            key = match.group(1)
+            if key in known and key not in found:
+                found.append(key)
+        if not found:
+            # Unquoted or bare-word replies. Longest keys first, so a parent is
+            # not claimed by a prefix of one of its children -- and on a word
+            # boundary, or a short key would be found inside an unrelated word
+            # and a reply of pure prose would "name" a finding.
+            for key in sorted(known, key=len, reverse=True):
+                if key in found:
+                    continue
+                if re.search(rf"(?<![\w.]){re.escape(key)}(?![\w.])", raw or ""):
+                    found.append(key)
+        return found
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         # THE RELEASE'S STEM, NOT THE `vignette` COLUMN. That column is the
@@ -741,14 +841,23 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "multi-part diagnoses.",
             ],
             caveats=[
-                "REQUESTS ARE MATCHED TO FINDINGS LEXICALLY, NOT BY A SECOND MODEL. The "
-                "release resolves a free-text request with its own LLMMapper/LLMParser "
-                "(gpt-4.1 by default); this snapshot ships neither, and putting an examiner "
-                "model inside the evaluation would let two runs of the same system disagree "
-                "because the examiner did. The cost is that a request phrased unusually can "
-                "be answered with 'no finding recorded' when the case does record it -- "
-                "visible in the transcript, and the one place this adapter departs from the "
-                "release's behaviour.",
+                "THE EXAMINER IS A SECOND MODEL WHEN ONE IS CONFIGURED, AND THE SCORE IS "
+                "THEN NOT BIT-REPRODUCIBLE. The release resolves a free-text request with "
+                "its own LLMMapper/LLMParser (gpt-4.1 by default); with engine.simulator "
+                "enabled this adapter does the same, keeping the release's split -- the "
+                "model picks which recorded keys the request resolves to, and the finding is "
+                "still rendered from the case, so it cannot invent a result. Two runs of the "
+                "same system can now disagree because the mapper did; temperature 0 and a "
+                "seed narrow that and do not remove it. Which model mapped, and how often it "
+                "had to be retried, is in the run's Simulators sheet and in each task's "
+                "simulator_calls.jsonl. With no simulator configured the request is matched "
+                "lexically instead: reproducible, but a request phrased unusually is answered "
+                "'no finding recorded' when the case does record it.",
+                "The examiner holds the whole case except its diagnosis and differentials, "
+                "which are not disclosable through any action. It is not held back from a "
+                "confirmatory investigation that names the condition -- ordering one is how a "
+                "viva candidate confirms an answer, and the lexical environment discloses the "
+                "same finding to the same request.",
                 "The release also scores diagnoses by ICD-10 mapping and sentence-embedding "
                 "similarity at a 0.8 threshold (configs/evaluate.yaml, metrics:). Those "
                 "resources are not in the snapshot either, so the judge stands in, and scores "

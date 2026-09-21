@@ -35,6 +35,7 @@ Failure handling worth knowing about
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Sequence
@@ -71,6 +72,7 @@ from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
+from .simulator import SimulatorPool
 from .sync import ArtifactSync
 from .telemetry import EventLog, clip, setup_logging
 from .tokenizer import build_token_counter
@@ -209,6 +211,12 @@ class RunResult:
     #: table, each with the benchmark formulation that justifies it.
     introduced_modes: list[dict[str, str]] = field(default_factory=list)
     endpoint_reports: list[dict[str, Any]] = field(default_factory=list)
+    #: ``dataset_id -> {model, base_url, temperature, seed, calls, retries,
+    #: failures}`` for every dataset whose environment was played by a model.
+    #: Empty when nothing was simulated.  It belongs in the result because the
+    #: score of a simulated interview is only interpretable beside the model
+    #: that conducted it; it never carries the API key.
+    simulators: dict[str, Any] = field(default_factory=dict)
     sync_stats: dict[str, Any] = field(default_factory=dict)
     started_at: float = 0.0
     finished_at: float = 0.0
@@ -306,6 +314,7 @@ class EvaluationEngine:
         #: Built once and shared by every task, so a question's observation
         #: inventory is bought once and reused across models and repeats.
         self._reasoning_judge: ReasoningJudgeStage | None = None
+        self._simulators: SimulatorPool | None = None
         #: Datasets finishing this pass without the verdict that scores
         #: them, because engine.judge.defer is set.
         self._judge_deferred: list[str] = []
@@ -407,6 +416,13 @@ class EvaluationEngine:
                 )
                 self._clients[model.id] = client
                 self._model_sems[model.id] = asyncio.Semaphore(model.limits.max_parallel_batches)
+
+            # The environment simulator for the interview datasets. Built even
+            # when disabled: `for_dataset` then returns None for every dataset
+            # and the adapters keep their deterministic environments.
+            self._simulators = SimulatorPool(
+                self.engine_cfg.simulator, self.engine_cfg.timeouts, self.run_dir
+            )
 
             self._judge_calls = asyncio.Semaphore(
                 max(
@@ -544,6 +560,13 @@ class EvaluationEngine:
         finally:
             for client in self._clients.values():
                 await client.aclose()
+            if self._simulators is not None:
+                # What each interview dataset's environment was played by, and
+                # how often it had to be retried -- part of the result, because
+                # a score from a simulated environment is only interpretable
+                # next to it.
+                result.simulators = self._simulators.as_record()
+                await self._simulators.aclose()
             result.finished_at = time.time()
             # One last upload of everything the run produced.  Reports are
             # written after this returns, so the CLI calls flush_sync() again.
@@ -621,6 +644,10 @@ class EvaluationEngine:
                 skipped_modes=list(result.skipped_modes),
                 introduced_modes=list(result.introduced_modes),
                 endpoint_reports=list(result.endpoint_reports),
+                # Refreshed from the live pool rather than copied: `simulators`
+                # is only assigned when the run finishes, and an interim report
+                # should still say what is playing the environment.
+                simulators=self._simulators.as_record() if self._simulators else {},
             )
             try:
                 written = await asyncio.to_thread(write_reports, snapshot)
@@ -1059,6 +1086,9 @@ class EvaluationEngine:
             offline=self.offline,
             cache_dir=Path(self.engine_cfg.data_root) / "_cache",
             logger=logging.getLogger(f"adapter.{dataset_cfg.id}"),
+            simulator=self._simulators.for_dataset(dataset_cfg.id)
+            if self._simulators is not None
+            else None,
         )
         return adapter_cls(context)
 
@@ -1910,6 +1940,11 @@ class EvaluationEngine:
                     }
                 )
                 continue
+            # Underscore-prefixed, like `_transcript`: the environment needs
+            # to know which task and sample a turn belongs to so a simulator
+            # can label its audit log, and `_make_record` drops these keys.
+            state["_identity"] = identity
+            state["_sample_id"] = prompt.sample_id
             episodes.append(
                 {
                     "prompt": prompt,
@@ -2055,6 +2090,11 @@ class EvaluationEngine:
                     continue
                 try:
                     reply = adapter.interactive_step(episode["prompt"].sample, episode["state"], text)
+                    # An environment played by a model is async; a
+                    # deterministic one is not. Both are allowed, and which it
+                    # is belongs to the adapter.
+                    if inspect.isawaitable(reply):
+                        reply = await reply
                 except Exception as exc:  # noqa: BLE001 - environments must not break the run
                     logger.warning(
                         "episode %s: environment step failed: %s",
@@ -2078,6 +2118,19 @@ class EvaluationEngine:
         for episode in episodes:
             prompt = episode["prompt"]
             response = episode["response"]
+            failure = episode["state"].get("_environment_failed") if episode["state"] else None
+            if failure:
+                # The environment stopped answering part-way through. The model
+                # was never given the chance to finish, so whatever its last
+                # message happened to say must not be scored: grading it would
+                # charge a simulator outage to the model under evaluation.
+                response = ModelResponse(
+                    sample_id=prompt.sample_id,
+                    model_id=model.id,
+                    status=ResponseStatus.ERROR,
+                    error=f"environment failed mid-episode: {failure}",
+                    error_class=ErrorClass.UNKNOWN.value,
+                )
             if response is None:
                 response = ModelResponse(
                     sample_id=prompt.sample_id,
@@ -2094,6 +2147,15 @@ class EvaluationEngine:
                 "turns": episode["turn"],
                 "transcript_messages": len(episode["transcript"]),
                 "context_exhausted": bool(episode.get("context_exhausted")),
+                # Which model played the environment, per role, for this one
+                # episode -- so a record carries its own provenance and does
+                # not have to be read against the run manifest to be believed.
+                # Absent when the environment was deterministic.
+                **(
+                    {"simulated_by": dict(episode["state"]["_simulator_models"])}
+                    if episode["state"].get("_simulator_models")
+                    else {}
+                ),
             }
             prompt.sample.metadata["turns_used"] = episode["turn"]
             if episode.get("context_exhausted"):

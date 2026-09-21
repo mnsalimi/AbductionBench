@@ -669,6 +669,96 @@ class ReasoningJudgeConfig(_Base):
     templates: dict[str, str] = Field(default_factory=_reasoning_judge_templates)
 
 
+class SimulatorConfig(_Base):
+    """The model that plays the environment in an interactive benchmark.
+
+    Three datasets -- MedQDx, Med-Inquire and VivaBench -- are interviews, and
+    what the evaluated model is interviewing used to be a lexical matcher over
+    the case file.  That was deterministic and reproducible, and it was also not
+    what the papers do: their patient answers in natural language, and a
+    question phrased in a way the matcher missed came back "I'm not sure" when
+    the case plainly held the answer.
+
+    Putting a real model there follows the papers, and it changes what a score
+    means.  The number now depends on a second model's comprehension, and two
+    runs of the same system can differ because the simulator did.  Everything
+    here exists to keep that legible: the model is named in the config and in
+    every result, the sampling is pinned as hard as the vendor allows, and every
+    call is written to an audit log.  See ``core/simulator.py``.
+    """
+
+    enabled: bool = False
+    #: OpenAI-compatible endpoint the simulator is called through.
+    base_url: str = ""
+    #: Read from the environment, never written to a config file or a log.
+    api_key: str | None = None
+    #: The default simulator, for datasets with no entry in ``by_dataset``.
+    model: str = ""
+    #: 0.0 everywhere by default. A patient that answers differently on a re-ask
+    #: makes the evaluated model's score depend on a coin flip, and the point of
+    #: the simulator is to answer from the case, not to improvise.
+    temperature: float = 0.0
+    #: Sent when the vendor supports it. OpenAI honours it best-effort only, so
+    #: it narrows run-to-run variation and does not remove it -- which is why
+    #: the seed is recorded in the results rather than presented as a guarantee.
+    seed: int | None = 20260903
+    #: A patient's turn is a sentence or two; a long reply is a malfunction.
+    max_tokens: int = 512
+    #: Transport retries for one simulator turn before the episode is abandoned.
+    max_retries: int = 3
+    #: How many simulator calls may be in flight across the whole run.
+    max_parallel_calls: int = 8
+    #: ``dataset_id -> {model, temperature, seed, ...}``, overriding the above.
+    #: MedQDx and Med-Inquire simulate a patient, VivaBench an examiner holding
+    #: a full case file, so they do not have to be the same model.
+    by_dataset: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_reachable(self) -> SimulatorConfig:
+        """An enabled simulator with nowhere to call is a silent downgrade.
+
+        Without this the pool would return ``None`` for every dataset and the
+        adapters would quietly fall back to the lexical environment -- a run
+        that looks like it followed the papers and did not.  Better to refuse
+        to start.
+        """
+        if not self.enabled:
+            return self
+        missing = [
+            name for name, value in (("model", self.model), ("base_url", self.base_url))
+            if not str(value).strip()
+        ]
+        if missing:
+            raise ValueError(
+                "engine.simulator is enabled but "
+                + " and ".join(missing)
+                + " is not set; set them, or disable the simulator to use the "
+                "deterministic environment"
+            )
+        return self
+
+    def for_dataset(self, dataset_id: str) -> SimulatorConfig:
+        """This config as it applies to one dataset."""
+        overrides = dict(self.by_dataset.get(dataset_id) or {})
+        if not overrides:
+            return self
+        merged = self.model_dump()
+        merged.update(overrides)
+        merged["by_dataset"] = {}
+        return SimulatorConfig(**merged)
+
+    def as_record(self) -> dict[str, Any]:
+        """What goes in the results: everything that shapes a reply, no key."""
+        return {
+            "model": self.model,
+            "base_url": self.base_url,
+            "temperature": self.temperature,
+            "seed": self.seed,
+            "max_tokens": self.max_tokens,
+            "max_retries": self.max_retries,
+        }
+
+
 class SyncConfig(_Base):
     """Incremental off-box backup of a run's artifacts (see ``core/sync.py``).
 
@@ -793,6 +883,9 @@ class EngineConfig(_Base):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     reasoning_judge: ReasoningJudgeConfig = Field(default_factory=ReasoningJudgeConfig)
+    #: The model that plays the patient or examiner in an interactive
+    #: benchmark. Off unless a run turns it on.
+    simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 

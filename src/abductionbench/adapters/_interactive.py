@@ -13,22 +13,31 @@ pieces are the same whichever benchmark it is, so they live here:
 * :class:`InteractiveMixin` -- the adapter-side glue: turn accounting, per
   category limits, and the transcript that ends up in the record.
 
-Deliberately *lexical*, not model-driven.  Several of these benchmarks map a
-request to a finding using an LLM (VivaBench's ``LLMMapper``) or an embedding
-index.  Doing that here would put a second model inside the evaluation of the
-first: the score would then depend on how well the examiner model understood the
-request, and two runs of the same system could disagree because the examiner
-did.  A deterministic matcher is reproducible and its failures are visible in
-the transcript, which is the trade this suite wants.  Each adapter says so in
-its own caveats.
+**Two environments, and which one ran is recorded.**  Several of these
+benchmarks answer a request with a model -- VivaBench's ``LLMMapper``,
+Med-Inquire's Patient and Examination agents, MedQDx's simulated patient -- and
+this suite can now do the same: configure ``engine.simulator`` and
+:meth:`InteractiveMixin.simulate` puts that model behind the requests.  That
+follows the papers, and it is the reason those datasets' scores are no longer
+bit-reproducible: the number depends on a second model's comprehension, and two
+runs of the same system can disagree because the simulator did.
+
+With no simulator configured, the fallback is :class:`EvidenceStore`: a
+deterministic lexical matcher, reproducible, whose failures are at least
+visible in the transcript.  It is not equivalent -- a question the matcher does
+not recognise comes back unanswered when the case holds the answer -- so which
+of the two ran is recorded per run, and the adapters' caveats say what changes.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from ..core.types import ChatMessage
 
 __all__ = ["Action", "parse_action", "EvidenceStore", "InteractiveMixin", "flatten"]
 
@@ -232,9 +241,26 @@ class EvidenceStore:
         hits = self.search(category, query, limit)
         if not hits:
             return ""
+        return self._render_keys(category, [key for key, _value in hits], limit)
+
+    def reveal_keys(self, category: str, keys: Sequence[str], limit: int = 6) -> str:
+        """The examiner's answer to a request already resolved to case keys.
+
+        The release resolves a free-text request to the keys the case holds
+        with a model (VivaBench's ``LLMMapper``).  When that model is in play it
+        chooses the *keys*; the finding itself is still rendered here, from the
+        case, so the simulator can pick what is disclosed but never what it
+        says.
+        """
+        present = [key for key in keys if key in self.categories.get(category, {})]
+        if not present:
+            return ""
+        return self._render_keys(category, present, limit)
+
+    def _render_keys(self, category: str, keys: Sequence[str], limit: int) -> str:
         fields = self.categories.get(category, {})
         seen: list[str] = []
-        for key, _value in hits:
+        for key in keys:
             parent = key.rsplit(".", 1)[0] if "." in key else key
             if parent not in seen:
                 seen.append(parent)
@@ -324,3 +350,61 @@ class InteractiveMixin:
         if limit is None:
             return False
         return state.setdefault("counts", {}).get(category, 0) > limit
+
+    # ------------------------------------------------------------------ #
+    # the environment, when a model is playing it
+    # ------------------------------------------------------------------ #
+
+    @property
+    def simulator(self) -> Any | None:
+        """The model playing this dataset's environment, or ``None``."""
+        return getattr(getattr(self, "context", None), "simulator", None)
+
+    async def simulate(
+        self,
+        state: dict[str, Any],
+        *,
+        brief: str,
+        request: str,
+        role: str = "environment",
+    ) -> str | None:
+        """One turn of an environment played by a model.
+
+        ``brief`` is the hidden material -- the case, the recorded findings --
+        and goes only into the simulator's system prompt.  ``request`` is what
+        the evaluated model asked.  The two are separate arguments so that the
+        information boundary is enforced by the call rather than by care.
+
+        Each ``role`` keeps its own conversation, because the benchmarks put
+        different agents behind different requests: a patient answering about
+        their symptoms is not the examiner reading back a lab result, and
+        letting one see the other's transcript would leak the work-up into the
+        history.
+
+        Returns the environment's reply, or ``None`` when the simulator could
+        not be reached -- in which case ``state["_environment_failed"]`` is set
+        and the engine ends the episode as an *error*.  A failed call must
+        never reach the model as a plausible-looking "I don't know": that would
+        be scored, and the model would lose marks for the environment's outage.
+        """
+        simulator = self.simulator
+        if simulator is None:  # pragma: no cover - callers check first
+            return None
+        turns: list[Any] = state.setdefault("_sim_turns", {}).setdefault(role, [])
+        pending = [*turns, ChatMessage(role="user", content=request)]
+        reply = await simulator.ask(
+            hidden_brief=brief,
+            conversation=pending,
+            identity=state.get("_identity"),
+            sample_id=state.get("_sample_id"),
+            turn=len(turns) // 2 + 1,
+            role=role,
+        )
+        if not reply.ok:
+            state["_environment_failed"] = f"{role}: {reply.error}"
+            return None
+        turns.extend([pending[-1], ChatMessage(role="assistant", content=reply.text)])
+        # Which model actually answered, per role, so the record says who
+        # played the environment and not merely who was asked to.
+        state.setdefault("_simulator_models", {})[role] = reply.model
+        return reply.text

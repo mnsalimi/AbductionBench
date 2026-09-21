@@ -33,10 +33,10 @@ from __future__ import annotations
 import logging
 import random
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .metrics import extract_answer_span
 from .modes import BOV, IO, MCS, SCS, SELECTION_MODES, SELF_CONSISTENCY, TaskModes
@@ -55,6 +55,9 @@ __all__ = [
     "evaluation_item_id",
     "replace_sample",
 ]
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, not at type time
+    from .simulator import EnvironmentSimulator
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,10 @@ class AdapterContext:
     input_token_budget:
         The input-token ceiling the engine will enforce.  Adapters may use it to
         pre-filter obviously huge items, but enforcement is the engine's job.
+    simulator:
+        The model that plays the environment for the interview datasets, or
+        ``None``.  Only interactive adapters use it, and only those that opt
+        in; see :mod:`abductionbench.core.simulator`.
     offline:
         When ``True``, adapters must not hit the network; they either use
         already-materialized data or raise
@@ -121,6 +128,10 @@ class AdapterContext:
     offline: bool = False
     cache_dir: Path | None = None
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("adapter"))
+    #: The model that plays this dataset's environment, or ``None`` when no
+    #: simulator is configured -- in which case an interactive adapter falls
+    #: back to its deterministic environment and the run is unchanged.
+    simulator: EnvironmentSimulator | None = None
 
     def option(self, key: str, default: Any = None) -> Any:
         """Read an adapter-specific option with a default."""
@@ -458,12 +469,19 @@ class DatasetAdapter(ABC):
 
     def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
-    ) -> str | None:
+    ) -> str | None | Awaitable[str | None]:
         """The environment's reply to one model turn, or ``None`` to end the episode.
 
         Returning ``None`` means the model has committed to an answer (or the
         environment has nothing left to give), and the last assistant message is
         what gets scored.
+
+        May be declared ``async``: an environment played by a model has to make
+        a call, and the engine awaits whatever this returns.  An environment
+        that cannot answer at all should set
+        ``state["_environment_failed"]`` to the reason and return ``None``;
+        the engine then reports the episode as an *error* rather than scoring
+        the model on an interview that was cut short.
         """
         return None
 

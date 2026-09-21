@@ -149,6 +149,25 @@ so an environment implementation costs nothing in throughput. Answer only what
 was asked: an environment that volunteers evidence the model did not request has
 stopped measuring what the benchmark measures.
 
+`interactive_step` may be declared `async` — the engine awaits whatever it
+returns. That is how an environment played by a model works: `self.simulator`
+is the one configured for this dataset (`None` if there is none), and
+`InteractiveMixin.simulate(state, brief=..., request=..., role=...)` makes one
+call, keeps a separate conversation per role, and writes the whole exchange to
+the task's `simulator_calls.jsonl`.
+
+Two rules apply to a simulated environment, and both exist because a second
+model inside the evaluation can fail in ways a lexical matcher cannot:
+
+* **`brief` is hidden, `request` is not.** The brief becomes the simulator's
+  system prompt and reaches the evaluated model through nothing but the reply.
+  Keep the graded label out of it — a patient who knows the answer can hand it
+  over on the first turn.
+* **A failure is not an answer.** `simulate` returns `None` and sets
+  `state["_environment_failed"]` when the call could not be made; the engine
+  then records the episode as an `error`. Never substitute a plausible
+  "I don't know" for a call that did not happen — it would be scored.
+
 ## 3. `score()` and `aggregate()`
 
 ```python

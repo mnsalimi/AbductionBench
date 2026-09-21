@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,19 @@ REPO_ROOT = TESTS_DIR.parent
 sys.path.insert(0, str(TESTS_DIR))  # so 'fake_adapter' is importable by config
 
 from fake_server import FakeServer  # noqa: E402
+
+
+def step(adapter, sample, state, assistant_text):
+    """One environment turn, whether the adapter's is sync or async.
+
+    An environment played by a model has to make a call, so three adapters'
+    ``interactive_step`` are coroutines and the rest are not -- exactly as the
+    engine sees them. Tests call this instead of picking one.
+    """
+    reply = adapter.interactive_step(sample, state, assistant_text)
+    if inspect.isawaitable(reply):
+        return asyncio.run(reply)
+    return reply
 
 
 @pytest.fixture

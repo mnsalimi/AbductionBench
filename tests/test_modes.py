@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import step
 
 from abductionbench.adapters._interactive import EvidenceStore, parse_action
 from abductionbench.adapters._prompting import PromptParts, build_messages
@@ -412,7 +413,7 @@ def test_a_default_episode_is_a_single_turn():
     sample = adapter.build_samples()[0]
     messages, state = adapter.interactive_start(sample)
     assert messages == list(adapter.build_messages(sample)[0])
-    assert adapter.interactive_step(sample, state, "Answer: A") is None
+    assert step(adapter, sample, state, "Answer: A") is None
 
 
 def test_derived_samples_keep_a_handle_on_the_item_they_came_from():

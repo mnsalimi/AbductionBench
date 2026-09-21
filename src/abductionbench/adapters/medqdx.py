@@ -185,6 +185,41 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     _DIAGNOSIS_FORMAT = "Reply with the name of the condition, on one line, and nothing else."
 
+    #: What the simulated patient is told, and all it is told.  The case's
+    #: recorded symptom list is the patient: MedQDx's vignettes are generated
+    #: from exactly that list, so "present" and "absent" are both decidable
+    #: from it and nothing has to be invented either way.
+    #:
+    #: The diagnosis is *not* in here.  MedQDx's gold label is the condition
+    #: name, and a patient who knew it could hand it over on the first turn --
+    #: which is the whole task.  There is a test that renders this brief for a
+    #: real sample and fails if the label appears in it.
+    _PATIENT_BRIEF = (
+        "You are a patient being interviewed by a doctor. Answer from your own "
+        "experience, in the first person, in one or two sentences of plain lay "
+        "language.\n\n"
+        "What you are experiencing:\n{symptoms}\n\n"
+        "Rules you must follow:\n"
+        "- Answer only about what is listed above. If the doctor asks about "
+        "something on the list, confirm it and describe it the way a patient "
+        "would.\n"
+        "- If the doctor asks about a symptom that is not on the list, say you "
+        "are not experiencing it.\n"
+        "- If the doctor asks about something the list cannot settle -- a date, "
+        "a family history, a test result -- reply exactly: I'm not sure.\n"
+        "- Never name or guess a diagnosis, a condition or a disease, even if "
+        "asked directly. You do not know what you have; that is what the "
+        "doctor is for.\n"
+        "- Do not use clinical terminology, and do not volunteer a symptom the "
+        "doctor has not asked about.\n"
+        "- Reply with the patient's words only. No preamble, no labels."
+    )
+
+    def _patient_brief(self, sample: SampleSpec) -> str:
+        symptoms = sample.metadata.get("_symptoms") or []
+        listed = "\n".join(f"- {symptom.replace('_', ' ')}" for symptom in symptoms)
+        return self._PATIENT_BRIEF.format(symptoms=listed or "- (nothing recorded)")
+
     def _history_text(self, state: dict[str, Any]) -> str:
         turns = state.get("history") or []
         if not turns:
@@ -201,7 +236,15 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             symptom.replace("_", " "): "yes, that is present" for symptom in present
         }
         case_text = sample.fields.get("observation", "")
-        state = {"evidence": store, "counts": {}, "history": [], "case_text": case_text}
+        state = {
+            "evidence": store,
+            "counts": {},
+            "history": [],
+            "case_text": case_text,
+            # Built once, here, from the sample -- so `interactive_step` never
+            # touches the sample's hidden fields itself.
+            "_brief": self._patient_brief(sample),
+        }
         parts = ProtocolParts(
             system=self.SYSTEM,
             observation=case_text,
@@ -215,7 +258,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
         )
         return build_protocol_messages(parts, self.context.modes), state
 
-    def interactive_step(
+    async def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
         # MedQDx's protocol has no action vocabulary: the model is asked for a
@@ -227,12 +270,12 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
 
         self.bump(state, "ask")
-        store: EvidenceStore = state["evidence"]
-        found = store.reveal("ask", question, limit=3)
-        # The release's patient answers from the case, and says so plainly when
-        # the symptom is not recorded -- "I'm not sure" is the wording its
-        # follow-up requirements are written to handle.
-        answer = found if found else "I'm not sure."
+        answer = await self._patient_answer(state, question)
+        if answer is None:
+            # The patient could not be reached. The engine turns this into an
+            # error for the episode rather than letting the model be scored on
+            # an interview that stopped half-way.
+            return None
         state["history"].append((question, answer))
 
         if self.over_limit(state, "ask"):
@@ -249,6 +292,25 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             requirements=self._QUESTION_REQUIREMENTS + self._FOLLOW_UP_REQUIREMENTS,
             output_format=self._QUESTION_FORMAT,
         )
+
+    async def _patient_answer(self, state: dict[str, Any], question: str) -> str | None:
+        """What the patient says, from the model if one is configured.
+
+        The release simulates the patient with an LLM answering from the case;
+        without one configured this falls back to the lexical matcher, which
+        answers from the same symptom list but only when the question's wording
+        matches it. Both answer "I'm not sure." to a question the case cannot
+        settle -- that is the wording the follow-up requirements are written
+        for -- but they disagree about *which* questions those are, which is
+        why the run records which one ran.
+        """
+        if self.simulator is not None:
+            return await self.simulate(
+                state, brief=state["_brief"], request=question, role="patient"
+            )
+        store: EvidenceStore = state["evidence"]
+        found = store.reveal("ask", question, limit=3)
+        return found if found else "I'm not sure."
 
     def _turn_message(
         self,
@@ -441,6 +503,22 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "often uninformative ('No, I have not noticed that'), so it is not the default.",
             ],
             caveats=[
+                "THE PATIENT IS A SECOND MODEL WHEN ONE IS CONFIGURED, AND THE INTERACTIVE "
+                "SCORE IS THEN NOT BIT-REPRODUCIBLE. The release simulates the patient "
+                "with an LLM answering from the case; with engine.simulator enabled this "
+                "adapter does the same, on gpt-4o-mini by default. The patient is given "
+                "the case's recorded symptom list and nothing else -- never the condition "
+                "name, which is the answer -- and is instructed not to name a diagnosis. "
+                "Two runs of the same system can now disagree because the patient did; "
+                "temperature 0 and a seed narrow that and do not remove it. Which model "
+                "answered is in the run's Simulators sheet and in each task's "
+                "simulator_calls.jsonl. With no simulator configured the question is "
+                "matched lexically against the symptom list instead: reproducible, but a "
+                "question phrased unusually gets 'I'm not sure' when the case records the "
+                "answer.",
+                "A simulator that cannot be reached ends the episode as an ERROR rather "
+                "than a wrong answer, so an outage lowers the sample count rather than the "
+                "score.",
                 "The vignettes are LLM-generated from a symptom-disease table, not real clinical "
                 "notes; scores reflect textbook symptom-to-disease mapping.",
                 "Only 100 distinct cases exist, so the 300 samples are 3 views of 100 cases -- "

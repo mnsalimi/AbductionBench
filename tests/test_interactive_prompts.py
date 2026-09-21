@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 import pytest
+from conftest import step
 
 from abductionbench.core.adapter import AdapterContext
 from abductionbench.core.modes import TaskModes
@@ -96,7 +97,7 @@ def _compile_conversation(adapter, sample, replies: list[str]) -> list[str]:
     messages, state = adapter.interactive_start(sample)
     seen = [m.content for m in messages]
     for reply in replies:
-        environment = adapter.interactive_step(sample, state, reply)
+        environment = step(adapter, sample, state, reply)
         if environment is None:
             break
         seen.append(environment)
@@ -199,8 +200,8 @@ def test_vivabench_keeps_its_gates_vocabulary_and_diagnosis_shape():
     assert '"reasoning"' not in opening
 
     # The gate still fires: an investigation closes history.
-    adapter.interactive_step(samples[0], state, '{"action": "investigation", "query": "FBC"}')
-    closed = adapter.interactive_step(
+    step(adapter, samples[0], state, '{"action": "investigation", "query": "FBC"}')
+    closed = step(adapter, 
         samples[0], state, '{"action": "history", "query": "Any fevers?"}'
     )
     assert "no longer review the patient" in closed
@@ -210,7 +211,7 @@ def test_vivabench_retry_does_not_reintroduce_the_reasoning_field():
     """The release's ERROR_RETURN_MSG restated the schema including `reasoning`."""
     adapter, samples = _adapter("vivabench", "vivabench:VivaBenchAdapter")
     _messages, state = adapter.interactive_start(samples[0])
-    reply = adapter.interactive_step(samples[0], state, "I would like to examine the patient")
+    reply = step(adapter, samples[0], state, "I would like to examine the patient")
     assert reply is not None
     assert not _offending(reply), reply
     assert '"action"' in reply and '"query"' in reply
@@ -230,7 +231,7 @@ def test_vivabench_still_extracts_the_top_ranked_final_diagnosis():
         '{"condition": "Anaemia", "icd_10_name": "Anaemia", "icd_10": "D64", '
         '"confidence": 0.2}]}'
     )
-    assert adapter.interactive_step(sample, state, submission) is None
+    assert step(adapter, sample, state, submission) is None
     sample.metadata["_episode_state"] = state
     score = adapter.score(
         sample,
@@ -246,7 +247,7 @@ def test_medqdx_hands_off_to_the_diagnosis_turn_without_a_reasoning_request():
     _messages, state = adapter.interactive_start(sample)
     handoff = None
     for index in range(20):
-        reply = adapter.interactive_step(sample, state, f"Is symptom {index} present?")
+        reply = step(adapter, sample, state, f"Is symptom {index} present?")
         if reply is None:
             break
         if "Name the condition" in reply:
@@ -265,11 +266,11 @@ def test_cloud_opsbench_still_replays_a_recorded_tool_call():
     opening = "\n".join(m.content for m in messages)
     assert "Action Input" in opening and "Finalize" in opening
     tool = next(iter(state["cache"])).split(":")[0]
-    reply = adapter.interactive_step(sample, state, f"Action: {tool}\nAction Input: {{}}")
+    reply = step(adapter, sample, state, f"Action: {tool}\nAction Input: {{}}")
     assert reply is not None and reply.strip()
     assert not _offending(reply)
     # Finalising ends the episode, which is what the scorer reads.
-    assert adapter.interactive_step(
+    assert step(adapter, 
         sample, state, 'Action: Finalize\nAction Input: {"root_cause": "x", "fault_object": "a/b"}'
     ) is None
 
@@ -278,10 +279,10 @@ def test_med_inquire_actions_and_unavailable_test_reply():
     adapter, samples = _adapter("med_inquire", "med_inquire:MedInquireAdapter")
     sample = samples[0]
     _messages, state = adapter.interactive_start(sample)
-    reply = adapter.interactive_step(
+    reply = step(adapter, 
         sample, state, '{"action_type": "OrderTest", "action_text": "zzzz unrecorded assay"}'
     )
     assert reply is not None and not _offending(reply)
-    assert adapter.interactive_step(
+    assert step(adapter, 
         sample, state, '{"action_type": "SubmitDiagnosis", "action_text": "Sarcoidosis"}'
     ) is None

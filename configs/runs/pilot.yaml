@@ -47,6 +47,45 @@ engine:
     group_size: ${env:ABENCH_GROUP_SIZE|8}
     cache: true
 
+  # THE MODEL THAT PLAYS THE ENVIRONMENT in the three interview datasets
+  # (medqdx, med_inquire, vivabench). Their papers put an LLM behind the
+  # patient and the examiner; this suite used to put a lexical matcher there
+  # instead, which was reproducible but answered "I'm not sure" to questions
+  # the case plainly covered.
+  #
+  # READ THIS BEFORE COMPARING TWO RUNS. With this on, those three datasets'
+  # scores depend on a second model's comprehension, and two runs of the same
+  # system can differ because the simulator did -- temperature 0 and a seed
+  # narrow that, they do not remove it. Which model answered, and how often it
+  # had to be retried, is in the workbook's `Simulators` sheet and in each
+  # task's `simulator_calls.jsonl`. Set `enabled: false` for the deterministic
+  # environment and bit-reproducible scores on a protocol that is further from
+  # the papers'.
+  simulator:
+    enabled: ${env:ABENCH_SIMULATOR|true}
+    base_url: ${env:ABENCH_SIMULATOR_BASE_URL|https://openrouter.ai/api}
+    # Never written here. `abench` is run from a login shell, which sources
+    # ${WORKSPACE}/.env; put the key there (chmod 600) and it stays out of
+    # the repository and out of every log and result.
+    api_key: ${env:OPENROUTER_API_KEY}
+    # The patient for MedQDx and Med-Inquire: they are interviews whose
+    # subject is not what the benchmark measures, and one small model plays
+    # both so the two are comparable.
+    model: openai/gpt-4o-mini
+    temperature: 0.0
+    seed: 20260903
+    # A patient's turn is a sentence or two. A long reply is a malfunction,
+    # not a thorough answer.
+    max_tokens: 512
+    max_retries: 3
+    max_parallel_calls: 8
+    by_dataset:
+      vivabench:
+        # The release's own default for its LLMMapper/LLMParser, and a harder
+        # job than the other two: it resolves a free-text request against a
+        # whole structured case file rather than answering from a history.
+        model: openai/gpt-4.1
+
 prompts:
   # Only where the judge templates are found. There are no dataset bindings any
   # more -- each dataset's prompt lives with its adapter -- and the three that

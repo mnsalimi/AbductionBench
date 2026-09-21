@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import step
+
 from abductionbench.core.adapter import DatasetAdapter
 from abductionbench.core.config import load_run_config
 from abductionbench.core.engine import EvaluationEngine
@@ -316,7 +318,7 @@ def test_vivabench_runs_the_releases_examiner_protocol():
         assert action in messages[1].content
 
     def act(action, query="something"):
-        return adapter.interactive_step(
+        return step(adapter, 
             sample, state, json.dumps({"reasoning": "r", "action": action, "query": query})
         )
 
@@ -364,7 +366,7 @@ def test_vivabench_stops_answering_a_category_past_its_limit():
     _messages, state = adapter.interactive_start(sample)
 
     replies = [
-        adapter.interactive_step(
+        step(adapter, 
             sample,
             state,
             json.dumps({"reasoning": "r", "action": "imaging", "query": f"scan {n}"}),

@@ -491,6 +491,22 @@ def _clip(value: Any, limit: int) -> Any:
     return text
 
 
+def _build_simulators_frame(result: RunResult) -> pd.DataFrame:
+    """Which model played each interview dataset's environment, and how it went.
+
+    Only present when something was simulated.  It belongs in the workbook
+    because those datasets' scores are not reproducible without it: the number
+    depends on a second model, and a reader comparing two runs has to be able
+    to see whether the environment was the same.  The API key is never in here
+    -- :meth:`SimulatorConfig.as_record` does not return it.
+    """
+    rows = [
+        {"dataset_id": dataset_id, **record}
+        for dataset_id, record in sorted((result.simulators or {}).items())
+    ]
+    return pd.DataFrame(rows)
+
+
 def _safe_sheet_name(name: str, used: set[str]) -> str:
     """Excel sheet names: <=31 chars, no ``[]:*?/\\``, unique."""
     cleaned = "".join("_" if ch in "[]:*?/\\" else ch for ch in name)[:31]
@@ -582,6 +598,9 @@ def write_reports(result: RunResult) -> dict[str, Path]:
                 writer, build_coverage_frame(result), _safe_sheet_name("Coverage", used)
             )
             _write_sheet(writer, models, _safe_sheet_name("Models", used))
+            simulators = _build_simulators_frame(result)
+            if not simulators.empty:
+                _write_sheet(writer, simulators, _safe_sheet_name("Simulators", used))
             if reporting.include_sample_sheets:
                 by_dataset: dict[str, list[Path]] = {}
                 for task in result.all_tasks:

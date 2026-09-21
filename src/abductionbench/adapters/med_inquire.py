@@ -184,6 +184,67 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         ("SubmitDiagnosis", "commit to the diagnosis. This ends the consultation."),
     )
 
+    #: The release runs two agents behind the two request kinds: a Patient who
+    #: answers from the history, and an Examination agent who returns recorded
+    #: findings.  They get separate briefs *and* separate conversations, so a
+    #: question to the patient cannot return an imaging report and the patient
+    #: never learns what the work-up found.
+    _PATIENT_BRIEF = (
+        "You are a patient being interviewed by a doctor. Answer in the first "
+        "person, in one or two sentences of plain lay language.\n\n"
+        "Your history, as you would tell it:\n{history}\n\n"
+        "Rules you must follow:\n"
+        "- Answer only from your history above, and only what was asked.\n"
+        "- If your history does not cover the question, say so plainly in your "
+        "own words -- do not invent a symptom, a date or a number.\n"
+        "- Never name or guess a diagnosis, a condition or a disease. You do "
+        "not know what you have.\n"
+        "- You know nothing about examinations, tests or results. If asked "
+        "about one, say the doctor would have to check.\n"
+        "- Do not use clinical terminology, and do not volunteer what you were "
+        "not asked."
+    )
+    _EXAMINER_BRIEF = (
+        "You report the findings recorded for one case to the doctor working "
+        "it up. You are not the patient and you do not interpret; you report "
+        "what the record holds.\n\n"
+        "The recorded examination and work-up:\n{findings}\n\n"
+        "Rules you must follow:\n"
+        "- The doctor names one examination or test. Report what the record "
+        "holds for it, in one or two lines, with the numbers and units as "
+        "recorded.\n"
+        "- If the record holds nothing for what was named, reply with exactly: "
+        "NOT AVAILABLE\n"
+        "- Never invent a result, and never report a normal finding the record "
+        "does not state.\n"
+        "- Report only the test that was named. Do not volunteer the rest of "
+        "the work-up.\n"
+        "- Never name or suggest a diagnosis."
+    )
+
+    def _briefs(self, sample: SampleSpec) -> dict[str, str]:
+        """The hidden material each agent may see, and nothing else.
+
+        Built here, from the case, so that ``interactive_step`` never reaches
+        into the sample: the split between what the patient knows and what the
+        examiner knows is made once, in one place, where it can be tested.
+        The final diagnosis is in neither -- it is the answer.
+        """
+        case = sample.metadata.get("_case") or {}
+        history = C.normalize_whitespace(case.get("case_information")) or "(nothing recorded)"
+        findings = "\n\n".join(
+            part for part in (
+                f"Physical examination:\n{C.normalize_whitespace(case.get('physical_examination'))}"
+                if case.get("physical_examination") else "",
+                f"Diagnostic tests:\n{C.normalize_whitespace(case.get('diagnostic_tests'))}"
+                if case.get("diagnostic_tests") else "",
+            ) if part
+        ) or "(nothing recorded)"
+        return {
+            "askquestion": self._PATIENT_BRIEF.format(history=history),
+            "ordertest": self._EXAMINER_BRIEF.format(findings=findings),
+        }
+
     def interactive_start(self, sample: SampleSpec) -> tuple[list[ChatMessage], dict[str, Any]]:
         case = sample.metadata.get("_case") or {}
         store = EvidenceStore()
@@ -229,9 +290,10 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         return build_protocol_messages(parts, self.context.modes), {
             "evidence": store,
             "counts": {},
+            "_briefs": self._briefs(sample),
         }
 
-    def interactive_step(
+    async def interactive_step(
         self, sample: SampleSpec, state: dict[str, Any], assistant_text: str
     ) -> str | None:
         action = parse_action(assistant_text, actions=self.ACTIONS)
@@ -254,6 +316,15 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         self.bump(state, action.action)
         if self.over_limit(state, action.action):
             return "No further actions of that kind are available. Please submit your diagnosis."
+        if self.simulator is not None:
+            # The release's Patient and Examination agents, each answering from
+            # its own half of the case.
+            return await self.simulate(
+                state,
+                brief=state["_briefs"][action.action],
+                request=action.query_text,
+                role=action.action,
+            )
         store: EvidenceStore = state["evidence"]
         reply = store.reveal(action.action, action.query_text, limit=3)
         if reply:
@@ -405,6 +476,22 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "the answer itself is a short disease name.",
             ],
             caveats=[
+                "THE PATIENT AND THE EXAMINATION AGENT ARE A SECOND MODEL WHEN ONE IS "
+                "CONFIGURED, AND THE SCORE IS THEN NOT BIT-REPRODUCIBLE. The release runs "
+                "both as LLM agents; with engine.simulator enabled this adapter does the "
+                "same, on gpt-4o-mini by default. They get separate briefs and separate "
+                "conversations -- the patient is given the case history, the examination "
+                "agent the recorded examination and work-up -- so a question to the patient "
+                "cannot return an imaging report and the patient never learns what the "
+                "work-up found. Neither is given final_diagnosis or the release's answer "
+                "options. Two runs of the same system can now disagree because an agent "
+                "did; temperature 0 and a seed narrow that and do not remove it. Which "
+                "model answered is in the run's Simulators sheet and in each task's "
+                "simulator_calls.jsonl. With no simulator configured the request is matched "
+                "lexically against the case's sentences instead.",
+                "A simulator that cannot be reached ends the episode as an ERROR rather "
+                "than a wrong answer, so an outage lowers the sample count rather than the "
+                "score.",
                 "SAME UNDERLYING ITEMS AS diagnosisarena: this test file is the DiagnosisArena "
                 "release re-used by EvoClinician, so the two datasets share their cases. They "
                 "are NOT independent evidence, and a suite-level average over both counts those "

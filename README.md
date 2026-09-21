@@ -498,12 +498,59 @@ needed four times as many investigations.
 | MedQDx | asks about symptoms, then names the condition | the case's symptom list |
 | Cloud-OpsBench | issues `kubectl`-style tool calls, then finalises a root cause | the release's recorded `tool_cache.json` — a real cluster, replayed |
 
-Requests are matched to findings **lexically**, not by a second model. Several
-of these benchmarks resolve a free-text request with an LLM mapper; doing that
-here would put a second model inside the evaluation of the first, so two runs of
-the same system could disagree because the examiner did. A deterministic matcher
-is reproducible and its misses are visible in the transcript. Each adapter says
-so in its own caveats.
+### Who plays the patient
+
+Three of these five — **VivaBench**, **Med-Inquire** and **MedQDx** — are
+interviews, and their papers put an LLM behind the patient and the examiner.
+This suite does the same when `engine.simulator` is configured, which it is by
+default:
+
+| dataset | who the simulator plays | model |
+|---|---|---|
+| MedQDx | the patient, answering from the case's symptom list | `openai/gpt-4o-mini` |
+| Med-Inquire | the Patient and the Examination agent, separately | `openai/gpt-4o-mini` |
+| VivaBench | the examiner's mapper, resolving a request to the case's keys | `openai/gpt-4.1` |
+
+**This changes what those three scores mean, and you have to know it to compare
+two runs.** A number from a simulated interview depends on a second model's
+comprehension. Temperature is 0 and a seed is sent where the vendor takes one,
+which narrows run-to-run variation; it does not remove it, because a hosted
+model is not bit-stable. Every run therefore records which model played each
+environment, on what settings, and how often it had to be retried — in the
+workbook's **`Simulators`** sheet, in `RunResult.simulators`, and per episode in
+the record's `usage.simulated_by`.
+
+Three things are deliberate about the design:
+
+* **The evaluated model never sees the case.** The hidden record goes into the
+  *simulator's* system prompt; the model's conversation holds only what the
+  simulator disclosed in answer to something it asked. The graded label is in no
+  brief at all, and the patient personas are instructed never to name a
+  diagnosis. `tests/test_simulated_environments.py` renders the real briefs for
+  real samples and fails if a gold label appears in one.
+* **VivaBench's simulator picks keys, not words.** The release's `LLMMapper`
+  resolves the request and the Examiner reads the record back; this keeps that
+  split, so the mapper chooses *which* recorded findings are disclosed and the
+  finding itself is still rendered from the case. A simulator has no channel
+  through which to invent a result.
+* **A simulator failure is never a wrong answer.** If the patient cannot be
+  reached, the episode is abandoned and recorded with `status: error`, so an
+  API outage lowers the sample count rather than the score.
+
+Every call — the exact submitted messages, the complete reply, the vendor's
+reasoning channel when it returns one, errors, retries and latency — is appended
+to `simulator_calls.jsonl` beside each task's records, and uploaded with the rest
+of the run. The API key is in none of it: it is read from
+`${WORKSPACE}/.env` via `${env:OPENROUTER_API_KEY}` and never written to a
+config file, a log or a result.
+
+Set `engine.simulator.enabled: false` (or `ABENCH_SIMULATOR=false`) for the
+older behaviour: requests matched to findings **lexically**, which is
+deterministic and bit-reproducible, and which answers "I'm not sure" / "no
+finding recorded" to a request the case does record but whose wording the
+matcher missed. That is a protocol further from the papers', traded for a score
+you can reproduce exactly. DDXPlus and Cloud-OpsBench are unaffected either way:
+their environments are the release's own recorded data, keyed exactly.
 
 `options.delivery: static` runs an interactive benchmark in its single-turn form
 as an ablation — useful for asking what the interaction actually buys.
@@ -514,8 +561,8 @@ loop present but unreachable. It now runs the loop: the agent's system prompt is
 the release's own `ASSISTANT_BASE_PROMPT`, the examiner's replies are the
 release's strings, the workflow gate (`reviewed_patient`) closes history and
 examination once the work-up starts, and the limits are read from the release's
-own `configs/evaluate.yaml`. The one deviation is the lexical matcher above,
-which stands in for the release's LLM mapper.
+own `configs/evaluate.yaml`, and the request-to-finding mapping is the
+release's gpt-4.1 when the simulator is on (see *Who plays the patient*).
 
 ## Making a run faster without touching quality
 
