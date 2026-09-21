@@ -65,6 +65,21 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+#: Characters per token, for sizing a budget rather than for describing prose.
+#:
+#: Four is the usual English approximation and it is wrong for this suite,
+#: which is not prose: measured over one run's own judge prompts the ratio is
+#: 2.89, and JudgeConfig.max_prompt_chars records 2.72 at its densest (abd's
+#: s-expressions) against a 4.57 median. Formal logic, LaTeX and s-expressions
+#: tokenize far finer than English -- and those are exactly the chains long
+#: enough for the budget to matter.
+#:
+#: 2.72, the densest measured, rather than 2.89 or the median. The two errors
+#: are not symmetric: too low a ratio reserves output tokens that are never
+#: generated and so never billed, while too high a ratio truncates the reply
+#: and loses the call outright.
+_CHARS_PER_TOKEN = 2.72
+
 __all__ = [
     "ReasoningJudgeStage", "derive_reasoning_metrics",
     "REASONING_METRIC_COLUMNS", "REASONING_LIST_COLUMNS",
@@ -1611,11 +1626,14 @@ class ReasoningJudgeStage:
     def _estimate_tokens(self, text: str) -> int:
         """Roughly how many tokens ``text`` is, without paying for a tokenizer.
 
-        Four characters per token is the usual English approximation, and it
-        only has to be good enough to size a budget that already carries
-        headroom on top.
+        Deliberately an over-estimate. This sizes ``steps``' output budget, and
+        at four characters per token it was an under-estimate that truncated
+        142 of one run's 1,334 steps calls -- every one of them returning
+        ``finish_reason: "length"`` with the JSON cut off mid-token, and every
+        one costing the sample the whole per-step metric set, since every
+        per-step family indexes against this segmentation.
         """
-        return len(text) // 4
+        return int(len(text) / _CHARS_PER_TOKEN)
 
     def _sampling_extra(self) -> tuple[tuple[str, Any], ...]:
         """Vendor knobs sent with every judge call."""
