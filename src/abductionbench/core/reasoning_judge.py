@@ -1090,7 +1090,15 @@ class ReasoningJudgeStage:
         prompts: list[RenderedPrompt],
         scored: list[tuple[SampleSpec, ModelResponse, SampleScore]],
     ) -> list[tuple[SampleSpec, ModelResponse, SampleScore]]:
-        """Was each action of an interactive episode relevant to the answer?
+        """Did each action of an interactive episode move toward the GOLD answer?
+
+        Relevance is graded with full hindsight against the true answer, not
+        against the answer the model gave. The two are different measurements
+        and only one of them is worth having: judged against the model's own
+        answer, a model that investigated confidently down a wrong path scores
+        a perfect relevance rate for the steps that built its mistake, because
+        every one of them did work toward the answer it ended up giving. Judged
+        against the gold, that episode scores what it earned.
 
         Deliberately separate from :meth:`apply`, and sharing nothing with it
         but the cache, the audit log and the call budget:
@@ -1114,7 +1122,7 @@ class ReasoningJudgeStage:
         updated = list(scored)
         requests: dict[str, dict[str, Any]] = {}
         steps_by_id: dict[str, int] = {}
-        for index, (sample, _response, _score) in enumerate(scored):
+        for index, (sample, response, score) in enumerate(scored):
             prompt = prompt_by_id.get(sample.sample_id)
             if prompt is None:
                 continue
@@ -1123,12 +1131,35 @@ class ReasoningJudgeStage:
                 # One action and nothing before it is not an investigation;
                 # there is no step whose relevance could differ.
                 continue
+            gold = self._gold_answer(adapter, sample, response, score)
+            if not gold:
+                # The standard this metric is measured against is missing, so
+                # there is no measurement to make. Said out loud on the sample
+                # rather than judged against the model's own answer instead,
+                # which is the question this metric deliberately does not ask.
+                _, _, existing = updated[index]
+                updated[index] = (
+                    sample,
+                    response,
+                    SampleScore(
+                        metrics=existing.metrics,
+                        prediction=existing.prediction,
+                        parse_ok=existing.parse_ok,
+                        details={
+                            **(existing.details or {}),
+                            "interaction_step_relevance": (
+                                "unjudged: no reference answer to measure relevance against"
+                            ),
+                        },
+                    ),
+                )
+                continue
             request_id = f"{index}"
             requests[request_id] = {
                 "question": self._opening(sample, prompt),
                 "steps": _numbered(actions),
                 "model_answer": final,
-                "reference_answer": str(sample.reference.get("gold") or "")[:400],
+                "reference_answer": gold,
             }
             steps_by_id[request_id] = len(actions)
 
@@ -1166,6 +1197,56 @@ class ReasoningJudgeStage:
                 ),
             )
         return updated
+
+    @staticmethod
+    def _gold_answer(
+        adapter: DatasetAdapter,
+        sample: SampleSpec,
+        response: ModelResponse,
+        score: SampleScore,
+    ) -> str:
+        """The true answer, as the dataset itself states it.
+
+        Asked of the adapter first, because ``sample.reference`` is not a
+        common shape and reading one key out of it does not generalise:
+        cloud_opsbench keys its answer ``root_cause`` and has no ``gold`` at
+        all, and vivabench's answer is a *list* of accepted diagnoses of which
+        any one counts. ``judge_request`` is where each adapter already states
+        its own answer for the answer judge -- cloud_opsbench's root cause,
+        vivabench's joined accepted list -- so it is the same gold both metrics
+        are measured against rather than a second, divergent one.
+
+        It can decline: vivabench returns nothing for an episode that never
+        committed to a diagnosis, and every adapter returns nothing for an
+        empty response. The gold exists either way, so ``reference`` is the
+        fallback -- and only if that is empty too is there no standard and no
+        measurement.
+        """
+        gold: Any = None
+        try:
+            request = adapter.judge_request(sample, response, score)
+        except Exception as exc:  # noqa: BLE001 - a bad hook must not lose the metric
+            logger.debug(
+                "interaction relevance: %s judge_request failed (%s); "
+                "falling back to sample.reference",
+                getattr(adapter, "dataset_id", "?"), exc,
+            )
+        else:
+            if request:
+                gold = request.get("gold")
+        if not gold:
+            reference = sample.reference or {}
+            gold = reference.get("gold") or reference.get("root_cause")
+            accepted = reference.get("accepted")
+            if not gold and isinstance(accepted, (list, tuple)) and accepted:
+                gold = "; ".join(str(item) for item in accepted)
+        if isinstance(gold, (list, tuple)):
+            gold = "; ".join(str(item) for item in gold)
+        # 600, not 400: vivabench's gold is every accepted diagnosis joined,
+        # and clipping that mid-list would hide alternatives that count as
+        # correct -- so a step ruling one of them in would be graded against a
+        # standard it does not appear in.
+        return str(gold or "").strip()[:600]
 
     @staticmethod
     def _episode_actions(sample: SampleSpec) -> tuple[list[str], str]:

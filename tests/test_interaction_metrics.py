@@ -44,6 +44,23 @@ def _sample(actions, final, sample_id="s1"):
     )
 
 
+class _Adapter:
+    """The gold, stated the way every real adapter states it.
+
+    `judge_request` is the adapter-owned hook the answer judge already reads,
+    so relevance is measured against the same answer accuracy is -- not a
+    second one read out of `reference` by a key that not every dataset uses.
+    """
+
+    dataset_id = "d"
+
+    def __init__(self, gold="Lyme carditis"):
+        self._gold = gold
+
+    def judge_request(self, sample, response, score):
+        return {"candidate": "x", "gold": self._gold} if self._gold else None
+
+
 def _prompt(sample):
     return RenderedPrompt(
         sample=sample, messages=[], template_id="t", template_version="1",
@@ -134,7 +151,7 @@ def _stage_with(reply):
     return stage
 
 
-def _run(stage, sample, metrics=None):
+def _run(stage, sample, metrics=None, adapter=None):
     identity = TaskIdentity(
         run_id="r", dataset_id="d", model_id="m", template_id="io_n-a_interactive",
         template_version="1", data_delivery_mode="interactive",
@@ -144,7 +161,9 @@ def _run(stage, sample, metrics=None):
     )
     scored = [(sample, response, SampleScore(metrics=metrics or {}, prediction="x"))]
     return asyncio.run(
-        stage.apply_interaction(None, identity, [_prompt(sample)], scored)
+        stage.apply_interaction(
+            adapter if adapter is not None else _Adapter(), identity, [_prompt(sample)], scored
+        )
     )[0][2]
 
 
@@ -180,8 +199,53 @@ def test_the_judge_is_shown_the_actions_the_answer_and_the_opening():
     assert "syncope" in fields["question"]
     assert "history: chest pain?" in fields["steps"]
     assert fields["model_answer"] == "final answer here"
-    # The reference is passed as context only; the prompt tells the judge so.
+    # The gold, and it is the standard rather than context: relevance is graded
+    # against it with full hindsight, and `model_answer` is the context.
     assert fields["reference_answer"] == "Lyme carditis"
+
+
+def test_the_gold_comes_from_the_adapter_not_from_a_reference_key():
+    """`sample.reference` is not a common shape, so it cannot be the source.
+
+    cloud_opsbench keys its answer `root_cause` and has no `gold` at all, and
+    vivabench's answer is a list of accepted diagnoses. Reading `reference
+    ["gold"]` would have sent cloud_opsbench an empty standard -- and with
+    `reference_answer` now required, an empty one is not even renderable.
+    """
+    sample = _sample([("kubectl get pods", "CrashLoopBackOff")], "final")
+    sample.reference.clear()
+    sample.reference["root_cause"] = "missing_service_account"
+    stage = _stage_with({"relevance_per_step": [1]})
+    _run(stage, sample, adapter=_Adapter("missing_service_account"))
+    assert next(iter(stage.seen.values()))["reference_answer"] == "missing_service_account"
+
+
+def test_a_reference_the_adapter_declines_falls_back_to_the_sample():
+    """An adapter can decline for a reason that has nothing to do with the gold.
+
+    vivabench returns no judge request for an episode that never committed to a
+    diagnosis, and every adapter returns none for an empty response. The case
+    still has an answer, so the metric is still measurable.
+    """
+    sample = _sample([("a", "r1")], "final")
+    sample.reference.clear()
+    sample.reference["accepted"] = ["Lyme carditis", "Lyme disease with AV block"]
+    stage = _stage_with({"relevance_per_step": [1]})
+    _run(stage, sample, adapter=_Adapter(None))
+    assert next(iter(stage.seen.values()))["reference_answer"] == (
+        "Lyme carditis; Lyme disease with AV block"
+    )
+
+
+def test_no_gold_anywhere_is_unjudged_rather_than_graded_on_the_models_answer():
+    """The fallback is not "use the answer it gave" -- that is the old metric."""
+    sample = _sample([("a", "r1"), ("b", "r2")], "final")
+    sample.reference.clear()
+    stage = _stage_with({"relevance_per_step": [1, 1]})
+    score = _run(stage, sample, adapter=_Adapter(None))
+    assert getattr(stage, "seen", None) is None
+    assert "interaction_step_relevance_rate" not in score.metrics
+    assert "no reference answer" in score.details["interaction_step_relevance"]
 
 
 def test_only_interactive_deliveries_are_judged():
@@ -196,7 +260,9 @@ def test_only_interactive_deliveries_are_judged():
             sample_id="s1", model_id="m", status=ResponseStatus.OK, content="x",
         )
         scored = [(sample, response, SampleScore(metrics={}))]
-        out = asyncio.run(stage.apply_interaction(None, identity, [_prompt(sample)], scored))
+        out = asyncio.run(
+            stage.apply_interaction(_Adapter(), identity, [_prompt(sample)], scored)
+        )
         assert "interaction_step_relevance_rate" not in out[0][2].metrics, mode
 
 
@@ -205,28 +271,72 @@ def test_only_interactive_deliveries_are_judged():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_relevance_prompt_grades_against_the_given_answer_not_the_right_one():
-    """Relevance is not correctness.
-
-    A model that investigated well and concluded wrongly still took relevant
-    steps; grading relevance against the gold would collapse this metric into
-    accuracy and measure nothing new.
-    """
+def _relevance_template():
     from abductionbench.core.prompts import PromptRegistry
 
-    template = PromptRegistry([Path("configs/prompts")]).get("interaction_step_relevance_v1")
-    # Whitespace-normalized: the prompt is wrapped, so a phrase can straddle
-    # a newline and a plain substring test would miss it.
-    text = " ".join(
-        "\n".join(m["content"] for m in template.messages).lower().split()
-    )
-    assert "not judging whether the model was right" in text
-    assert "measured against the answer it gave" in text
-    assert "do not grade relevance against it" in text
-    # And it must not reward hindsight.
-    assert "not on hindsight" in text
-    assert "negative is not thereby irrelevant" in text
+    return PromptRegistry([Path("configs/prompts")]).get("interaction_step_relevance_v1")
+
+
+def _flat(template):
+    """Whitespace-normalized prompt text.
+
+    The prompt is wrapped, so a phrase can straddle a newline and a plain
+    substring test would miss it.
+    """
+    return " ".join("\n".join(m["content"] for m in template.messages).lower().split())
+
+
+def test_the_relevance_prompt_grades_against_the_gold_with_full_hindsight():
+    """The standard is the correct answer, not the one the model gave.
+
+    Graded against the model's own answer, an episode that marched confidently
+    down a wrong path scores a perfect relevance rate: every step it took did
+    work toward the answer it ended up giving. That reads as a well-run
+    investigation and it is the opposite of one. The gold is what makes the
+    number mean "did this action get closer to being right".
+    """
+    template = _relevance_template()
+    text = _flat(template)
+    assert "judge with full hindsight, against the correct answer" in text
+    assert "regardless of what the model ultimately answered" in text
+    assert "it led the investigation away from the correct answer" in text
     assert template.output_contract["json_fields"] == {"relevance_per_step": "list_of_binary"}
+
+
+def test_the_relevance_prompt_keeps_none_of_the_answer_relative_language():
+    """The v1 wording said the opposite, in four places.
+
+    Each of these is a sentence that, left in beside the new instruction, would
+    tell the judge to do exactly what the metric no longer asks for -- and a
+    contradictory prompt does not fail, it just returns something else.
+    """
+    text = _flat(_relevance_template())
+    for gone in (
+        "not judging whether the model was right",
+        "measured against the answer it gave",
+        "do not grade relevance against it",
+        "context for reading the transcript and nothing more",
+        # hindsight is now required, not forbidden
+        "not on hindsight",
+        "what was known when it was taken",
+        # and a move that did not pan out no longer counts
+        "reasonable next move",
+        "negative is not thereby irrelevant",
+    ):
+        assert gone not in text, gone
+
+
+def test_the_relevance_prompt_requires_the_reference_answer():
+    """Optional would make it silently a different metric.
+
+    A prompt rendered without the gold still renders -- `optional_fields` are
+    filled with "" -- and the judge would then fall back to the only answer it
+    could see, the model's own. That is the v1 measurement wearing v2's name.
+    """
+    template = _relevance_template()
+    assert "reference_answer" in template.required_fields
+    assert "reference_answer" not in template.optional_fields
+    assert template.optional_fields == []
 
 
 def test_the_relevance_prompt_is_not_one_of_the_reasoning_chain_judges():
