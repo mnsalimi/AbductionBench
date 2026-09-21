@@ -642,3 +642,101 @@ def test_cloud_opsbench_a_cache_miss_is_unsupported_not_an_absence():
     assert "UnsupportedQuery" in reply
     assert "not evidence" in reply.lower()
     assert "no recorded output" not in reply.lower()
+
+
+# --------------------------------------------------------------------------- #
+# medups
+# --------------------------------------------------------------------------- #
+
+MEDUPS = "medups:MedUPSAdapter"
+
+
+def _medups(sample_size=6):
+    cls = resolve_adapter(f"abductionbench.adapters.{MEDUPS}")
+    adapter = cls(
+        AdapterContext(
+            dataset_id="medups", data_dir=Path("data") / "medups",
+            modes=TaskModes(prompt_mode="io", data_delivery_mode="sequential"),
+            sample_size=sample_size, seed=20260903, offline=True,
+        )
+    )
+    adapter.prepare()
+    return adapter, adapter.build_samples()
+
+
+def test_medups_asks_the_question_that_was_asked():
+    """The task is the NEXT CLINICAL STEP, not the diagnosis.
+
+    MedUPSQA is 21,874 mid-stream decision points, and the paper is explicit
+    that "the accompanying free-text final diagnosis is not used anywhere in
+    this work" (S3.2). Its own examples span Diagnosis, Management, Workup and
+    Pathology (Table 2), and the release ships no question-type column, so the
+    questions arrive mixed.
+
+    This adapter closed every prompt with "Answer: <a single diagnosis>",
+    underneath questions like "What will be the expected radiographic findings
+    to confirm no recurrence of infection?" -- and then judged the reply
+    against a gold describing radiographs.
+    """
+    from abductionbench.adapters.medups import MedUPSAdapter
+
+    assert MedUPSAdapter.answer_format == "the answer to the question asked"
+    assert "diagnosis" not in MedUPSAdapter.answer_format
+
+    adapter, samples = _medups()
+    messages, _contract = adapter.build_messages(samples[0])
+    prompt = messages[-1].content
+    assert "Answer: <the answer to the question asked>" in prompt
+    assert "<a single diagnosis>" not in prompt
+    # The question itself is in the prompt, or there is nothing to answer.
+    assert samples[0].fields["question"][:40] in prompt
+
+
+def test_medups_metric_is_not_named_for_a_task_it_does_not_run():
+    """`diagnosis_judged` invited comparison with every other medical
+    dataset's diagnosis accuracy. Only one of the four question kinds is a
+    diagnosis."""
+    from abductionbench.adapters.medups import MedUPSAdapter
+
+    assert MedUPSAdapter.primary_metric == "next_step_judged"
+    assert MedUPSAdapter.primary_metric_by_mode["generation"] == "next_step_judged"
+
+
+def test_medups_judge_is_told_what_was_asked():
+    """Grading disease identity is wrong for a question about the next test."""
+    from abductionbench.core.types import ModelResponse, ResponseStatus, SampleScore
+
+    adapter, samples = _medups()
+    sample = samples[0]
+    response = ModelResponse(
+        sample_id=sample.sample_id, model_id="m", status=ResponseStatus.OK,
+        content="Answer: repeat radiography showing no lucency",
+    )
+    request = adapter.judge_request(
+        sample, response, SampleScore(metrics={}, prediction="repeat radiography"),
+    )
+    assert sample.fields["question"][:40] in request["context"]
+    assert "same clinical step" in request["criteria"]
+    assert "not answered by a diagnosis" in request["criteria"]
+
+
+def test_medups_pool_is_stratified_along_the_trajectory():
+    """The paper's pool is "stratified by the number of context chunks
+    available at prediction time (1 through 8) so that positions along the
+    trajectory are covered" (S4).
+
+    A plain shuffle draws positions in proportion to how common they are, and
+    this split has a long tail, so a small draw could contain no early decision
+    point at all -- the hardest case, where almost nothing has been revealed.
+    """
+    from collections import Counter
+
+    adapter, samples = _medups(sample_size=40)
+    positions = Counter(s.metadata["answer_chunk"] - 1 for s in samples)
+    assert set(positions) == set(range(1, 9)), f"positions covered: {sorted(positions)}"
+    # Balanced, not merely present.
+    assert max(positions.values()) - min(positions.values()) <= 1
+
+    # And nothing beyond position 8, which the paper's pool excludes.
+    adapter, many = _medups(sample_size=200)
+    assert all(s.metadata["answer_chunk"] - 1 <= 8 for s in many)

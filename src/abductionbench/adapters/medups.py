@@ -4,11 +4,22 @@ Source: https://huggingface.co/collections/oriel9p/medups
 Data:   ``oriel9p/MedUPS_mid_stream`` -- the split the paper evaluates
 
 The collection URL is not itself a dataset repository, so the adapter targets
-the collection's constituent datasets by id.  Only the **final-diagnosis**
-subset is used: it gives a case presentation and the published final diagnosis,
-which is the abductive task.  The mid-stream subset contains generated
-follow-up questions of many kinds (risk factors, next investigations, prognosis)
-and is not abduction-only, so it is excluded rather than guessed at.
+the collection's constituent datasets by id.  The **mid-stream** subset is what
+is used, because it is the benchmark: MedUPSQA is 21,874 mid-stream decision
+points, and the paper is explicit that "the accompanying free-text final
+diagnosis is not used anywhere in this work" (S3.2).  An earlier version of
+this docstring claimed the reverse -- that only a final-diagnosis subset was
+used -- while the code already loaded ``MedUPS_mid_stream``.  The code was
+right.
+
+**The task is the NEXT CLINICAL STEP, not the diagnosis.**  At decision point
+*i* the model sees the accumulated chunks and a question about what comes next,
+and must produce what the case report actually did next.  The paper's own
+examples (Table 2) span four kinds -- Diagnosis, Management, Workup and
+Pathology -- and the release ships no question-type column, so the questions
+arrive mixed.  "What will be the next step in management?" and "What will be
+the expected histopathological findings?" are not diagnoses and must not be
+answered as though they were.
 
 **Fields withheld.** ``cot``, ``final_answer``, ``raw_response`` and
 ``diagnosis_match`` are outputs of the authors' own model; using them as gold
@@ -40,12 +51,20 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
         "would best account for the evidence you are given. You are given an uncommon "
         "published case, delivered as a sequence of clinical steps in the order the "
-        "clinicians received them. State the diagnosis that explains the case given "
-        "everything disclosed so far."
+        "clinicians received them, and a question about what comes next. Answer that "
+        "question from what has been disclosed so far."
     )
     data_delivery_mode = "sequential"
 
-    answer_format = "a single diagnosis"
+    #: NOT "a single diagnosis". The question decides the shape of its own
+    #: answer: a next test, an imaging study, a management step, an expected
+    #: histopathological finding. This adapter used to close every prompt with
+    #: "Your entire response must be: Answer: <a single diagnosis>" underneath
+    #: questions like "What will be the expected radiographic findings to
+    #: confirm no recurrence of infection?", and then judge the reply against a
+    #: gold that describes radiographs. Three of the paper's four question
+    #: kinds are not diagnoses.
+    answer_format = "the answer to the question asked"
     #: Measured, not assumed: the model writes a disease name into an open
     #: vocabulary with no candidate list, so a correct answer routinely differs
     #: from the gold in wording -- synonym, eponym, abbreviation, subtype -- and
@@ -64,12 +83,24 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "are added -- both would replace the benchmark's under-specified-diagnosis task with an "
         "easier closed-set one."
     )
-    primary_metric = "diagnosis_judged"
+    #: NOT `diagnosis_judged`. What is scored is the next clinical step, which
+    #: is a diagnosis in only one of the paper's four question kinds. The name
+    #: mattered: a column called `diagnosis_judged` invites a reader to compare
+    #: it with the diagnosis accuracy of every other medical dataset here, and
+    #: it is not that.
+    #:
+    #: The paper's own evaluation metric is a BINARY equivalence rate -- "at
+    #: evaluation time we use a stricter binary equivalence judge (DeepSeek-Chat)
+    #: that scores a prediction correct only when its clinical action matches
+    #: the reference" (S4) -- which is what this suite's answer judges do, so
+    #: the metric shape matches. (The four-criterion 0-14 rubric in the paper is
+    #: the GRPO training reward, not the reported metric.)
+    primary_metric = "next_step_judged"
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
         # the metric it actually produces rather than inheriting one.
-        "generation": "diagnosis_judged",
+        "generation": "next_step_judged",
         "selection": "accuracy",
     }
 
@@ -112,6 +143,60 @@ class MedUPSAdapter(PooledDatasetAdapter):
             f"{split} ({len(usable)} of {len(rows)} questions) of MedUPS_mid_stream"
         )
         return usable
+
+    #: The paper's evaluation pool covers positions 1 through 8 along the
+    #: trajectory: "a fixed evaluation pool of 500 decision points drawn from
+    #: the 2,226-item test split, stratified by the number of context chunks
+    #: available at prediction time (1 through 8) so that positions along the
+    #: trajectory are covered" (S4).
+    _MAX_CONTEXT_POSITION = 8
+
+    @staticmethod
+    def _context_position(item: dict[str, Any]) -> int | None:
+        """How many chunks the model can see at this decision point.
+
+        The answer is realized in chunk ``answer_chunk_num``, so the context is
+        everything before it.
+        """
+        try:
+            return int(item.get("answer_chunk_num")) - 1
+        except (TypeError, ValueError):
+            return None
+
+    def ordered_pool(self, population: Any, salt: str = "") -> list[Any]:
+        """Stratified by position along the trajectory, as the paper's pool is.
+
+        A plain shuffle draws positions in proportion to how common they are,
+        and in this split that is a long tail: answers sit in chunk 2 through
+        chunk 20-odd. Fifty samples off the top of a shuffle therefore land
+        mostly in the middle of the distribution and may contain no early
+        decision point at all -- which is the hardest and most interesting
+        case, because almost nothing has been revealed yet.
+
+        Positions 1-8 are kept, each position is shuffled independently, and
+        the positions are then interleaved, so a prefix of ANY length is
+        balanced across the trajectory rather than only the full 500.
+        """
+        by_position: dict[int, list[Any]] = {}
+        for item in population:
+            position = self._context_position(item)
+            if position is None or not 1 <= position <= self._MAX_CONTEXT_POSITION:
+                continue
+            by_position.setdefault(position, []).append(item)
+        if not by_position:
+            # No usable position field: fall back rather than return nothing.
+            return super().ordered_pool(population, salt)
+        strata = [
+            super(MedUPSAdapter, self).ordered_pool(items, salt=f"{salt or self.dataset_id}-p{position}")
+            for position, items in sorted(by_position.items())
+        ]
+        self.positions_used = sorted(by_position)
+        interleaved: list[Any] = []
+        for row in range(max(len(stratum) for stratum in strata)):
+            for stratum in strata:
+                if row < len(stratum):
+                    interleaved.append(stratum[row])
+        return interleaved
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         """One mid-stream question: the case so far, and what to infer from it.
@@ -175,7 +260,7 @@ class MedUPSAdapter(PooledDatasetAdapter):
     ) -> SampleScore:
         return judged_only_score(
             response,
-            metric="diagnosis_judged",
+            metric="next_step_judged",
             output_contract=output_contract,
             details={"gold": str(sample.reference["gold"])[:300]},
         )
@@ -196,19 +281,28 @@ class MedUPSAdapter(PooledDatasetAdapter):
             "candidate": (score.prediction or extract_answer_span(response.text, None))[:600],
             "gold": sample.reference["gold"],
             "observation": sample.fields["observation"],
+            # The question, so the judge grades the answer to the question
+            # that was asked. Without it the criteria below are being applied
+            # to an answer whose subject the judge has to guess.
+            "context": f"The question the candidate was answering:\n{sample.fields['question']}",
             "criteria": (
-                "The candidate is correct if it names the same disease entity as the "
-                "reference, however it is written: synonyms, abbreviations, eponyms and "
-                "spelling variants all count. A broader category that does not identify "
-                "the reference disease, or a different disease that shares symptoms with "
-                "it, does not count."
+                "The reference is what the case report actually did next. The candidate "
+                "is correct if it names the same clinical step -- the same test, imaging "
+                "study, management decision, finding or diagnosis -- however it is "
+                "written: synonyms, abbreviations, eponyms, brand and generic drug "
+                "names, and spelling variants all count, and the reference's extra "
+                "narrative detail need not be reproduced. It is incorrect if it names a "
+                "different step, or is so vague that it does not identify one. Judge it "
+                "against the question that was asked: a question about the next "
+                "investigation is not answered by a diagnosis, and a question about "
+                "expected findings is not answered by naming the disease."
             ),
         }
 
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        return apply_judged_metric(score, verdict, "diagnosis_judged")
+        return apply_judged_metric(score, verdict, "next_step_judged")
 
     def documentation(self) -> AdapterDocumentation:
         return AdapterDocumentation(
@@ -262,6 +356,33 @@ class MedUPSAdapter(PooledDatasetAdapter):
                 "case; no distractors are invented.",
             ],
             caveats=[
+                "THE TASK IS THE NEXT CLINICAL STEP, NOT THE DIAGNOSIS. MedUPSQA is 21,874 "
+                "mid-stream decision points, and the paper states that 'the accompanying "
+                "free-text final diagnosis is not used anywhere in this work' (S3.2). The "
+                "questions span the paper's four kinds -- Diagnosis, Management, Workup, "
+                "Pathology -- and the release ships no question-type column, so they arrive "
+                "mixed and cannot be filtered to the diagnostic ones. This adapter used to "
+                "close every prompt with 'Answer: <a single diagnosis>' regardless of what "
+                "was asked; the metric is now `next_step_judged` and the answer format is "
+                "the question's own.",
+                "THE EVALUATION POOL IS STRATIFIED BY POSITION, as the paper's is: 'a fixed "
+                "evaluation pool of 500 decision points drawn from the 2,226-item test "
+                "split, stratified by the number of context chunks available at prediction "
+                "time (1 through 8)' (S4). Positions 1-8 are kept and interleaved, so a "
+                "draw of any size is balanced across the trajectory rather than following "
+                "the split's long tail. Decision points past position 8 are excluded, as "
+                "upstream excludes them.",
+                "THE BINARY JUDGE MATCHES THE PAPER HERE. 'At evaluation time we use a "
+                "stricter binary equivalence judge (DeepSeek-Chat) that scores a prediction "
+                "correct only when its clinical action matches the reference' (S4). The "
+                "four-criterion 0-14 rubric in the paper is the GRPO TRAINING reward, not "
+                "the reported metric, so this suite's binary answer judge is the right "
+                "shape. The judge model differs (gpt-oss-20b here, DeepSeek-Chat there), "
+                "and the paper itself notes judge choice moves scores.",
+                "NOT REPRODUCED: the paper reports the mean over 5 resamples of the 500-point "
+                "pool (seeds 1001-1005) with a 95% t-based interval, which bounds sampling "
+                "variation within the pool. This suite draws one pool at its configured "
+                "sample_size, so no such interval is reported.",
                 "The gold is the case report's own prose and sometimes carries the article's "
                 "figure captions with it (\"Fig. 3 Small bowel series indicated (A) Multiple "
                 "smooth-surface round filling defects...\"). The judge is asked whether the "
