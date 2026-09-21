@@ -1,0 +1,37 @@
+id: reasoning_option_count_v1
+version: "1.0"
+description: >-
+  WAVE ONE, SELECTION TASKS ONLY. Counts the answer options the question
+  offers. Runs before any other reasoning prompt and its count is reused
+  downstream -- branchiness normalizes by it rather than re-reading the
+  question for it. A generation task has no options and is never sent here.
+task_kinds: [judge]
+required_fields: [question]
+messages:
+  - role: system
+    content: |
+      You read a question that was put to a model and count the ANSWER OPTIONS
+      it offers -- the candidates the model was asked to choose between.
+
+      Count an entry when the question presents it as something that could be
+      chosen: a labelled candidate (A, B, C... or 1, 2, 3...), a listed
+      hypothesis, a named alternative.
+
+      Do NOT count: the observations or evidence the question states, the
+      instructions, examples of how to answer, or anything the model would have
+      to think of for itself. Only what the question puts in front of it.
+
+      Count each option once, however many lines it spans. If the question
+      offers no options at all, the count is 0.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      Reply with exactly this object and nothing after it:
+      {"option_count": <integer>}
+output_contract:
+  json_fields:
+    option_count: nonnegative_integer

@@ -37,10 +37,14 @@ def _raw(**overrides):
             "proof_disproof_counts": [0, 1, 1, 2],
             "backtracking_steps": 1,
         },
-        # One call: the total, and first-appearance placement per step. The
-        # list's own sum is the covered count, so it is not asked for twice.
+        # Wave one: the inventory. Its LENGTH is the total -- the judge lists
+        # the observations, it is not asked to count them as well.
+        "observation_inventory": {
+            "observations": ["the lawn is wet", "the sky is clear", "it is 6am"],
+        },
+        # Wave two: first-appearance placement against that fixed inventory.
+        # The list's own sum is the covered count, so it is not asked twice.
         "observation_coverage": {
-            "observations_total": 3,
             "observations_per_step": [1, 1, 0, 1],
         },
         "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
@@ -167,8 +171,9 @@ def test_selection_and_generation_ask_different_branchiness_questions():
     selection_raw = _raw()
     selection_raw.pop("branchiness_generation")
     selection_raw["branchiness_selection"] = {
-        "branchiness_per_step": [1, 1, 0, 0], "option_count": 4
+        "branchiness_per_step": [1, 1, 0, 0]
     }
+    selection_raw["option_count"] = {"option_count": 4}
     selection, _l2, errors, sel_inapplicable = _derive(
         selection_raw, generation_like=False, selection_like=True, option_count=4
     )
@@ -211,12 +216,11 @@ def test_a_chain_that_never_reaches_the_answer_is_blank_not_zero():
 def test_a_question_with_no_observations_blocks_the_ratio():
     """Nothing to cover, so there is no fraction to report."""
     metrics, _lists, errors, _inapplicable = _derive(
-        _raw(observation_coverage={
-            "observations_total": 0,
+        _raw(observation_inventory={"observations": []}, observation_coverage={
             "observations_per_step": [0, 0, 0, 0],
         })
     )
-    assert "observation_coverage:invalid_or_missing_observations_total" in errors
+    assert "observation_inventory:invalid_or_missing_observations" in errors
     assert "reasoning_observation_coverage" not in metrics
 
 
@@ -326,8 +330,9 @@ def test_the_column_lists_cover_every_value_the_derivation_can_emit():
     selection_raw = _raw()
     selection_raw.pop("branchiness_generation")
     selection_raw["branchiness_selection"] = {
-        "branchiness_per_step": [1, 1, 0, 0], "option_count": 4
+        "branchiness_per_step": [1, 1, 0, 0]
     }
+    selection_raw["option_count"] = {"option_count": 4}
     sel_metrics, sel_lists, _e, _i = _derive(
         selection_raw, generation_like=False, selection_like=True, option_count=4
     )
@@ -453,12 +458,16 @@ def _reasoning_responder(conversation, max_tokens):
             '{"steps": ["one", "two", "three", "four"], '
             '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
         )
+    if '"observations"' in body and '"observations_per_step"' not in body:
+        return '{"observations": ["fact one", "fact two", "fact three"]}'
+    if '"option_count"' in body:
+        return '{"option_count": 3}'
     if '"observations_per_step"' in body:
-        return '{"observations_total": 3, "observations_per_step": [1, 1, 0, 0]}'
+        return '{"observations_per_step": [1, 1, 0, 0]}'
     if '"branchiness_per_step"' in body and '"diversity"' in body:
         return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
     if '"branchiness_per_step"' in body:
-        return '{"branchiness_per_step": [1, 1, 0, 0], "option_count": 3}'
+        return '{"branchiness_per_step": [1, 1, 0, 0]}'
     if '"directionality_per_step"' in body:
         return '{"directionality_per_step": [1, 1, 0.5, 1]}'
     if '"directionality"' in body:
@@ -1098,8 +1107,8 @@ def test_coverage_counts_each_observation_once_so_it_cannot_exceed_one():
     """
     metrics, _lists, errors, _inapplicable = _derive(
         _raw(
+            observation_inventory={"observations": ["a", "b", "c", "d"]},
             observation_coverage={
-                "observations_total": 4,
                 "observations_per_step": [2, 1, 0, 0],
             },
         )
@@ -1119,12 +1128,12 @@ def test_a_chain_cannot_reach_more_observations_than_the_question_gave():
     it means one of the two readings is wrong and there is no way to tell which.
     """
     _m, _l, errors, _i = _derive(
-        _raw(observation_coverage={
-            "observations_total": 1,
+        _raw(observation_inventory={"observations": ["only one fact"]},
+             observation_coverage={
             "observations_per_step": [1, 1, 0, 1],
         })
     )
-    assert "observation_coverage:used_exceeds_the_observations_total" in errors
+    assert "observation_coverage:used_exceeds_the_inventory" in errors
     assert "reasoning_observation_coverage" not in _m
 
 
@@ -1191,3 +1200,83 @@ def test_the_prompts_may_call_the_step_list_numbered_because_it_is():
         text = path.read_text(encoding="utf-8")
         if "{{ steps }}" in text:
             assert "numbered list" in text, f"{path.name} consumes steps but never says numbered"
+
+
+# --------------------------------------------------------------------------- #
+# wave one: three readings, once each, before anything else
+# --------------------------------------------------------------------------- #
+
+
+def test_wave_one_is_three_distinct_calls_and_never_merged():
+    """steps, the observation inventory, and the option count are separate.
+
+    Merging any two makes one reading's mistake become the other's: a judge
+    that both inventories the observations and places them can place four of
+    the three it just found, and nothing downstream can tell which half was
+    wrong. Split, the inventory is fixed before anything is measured against
+    it, and the coverage prompt is told not to revise it.
+    """
+    from pathlib import Path
+
+    from abductionbench.core.config import _reasoning_judge_templates
+    from abductionbench.core.prompts import PromptRegistry
+
+    registry = PromptRegistry([Path("configs/prompts")])
+    families = _reasoning_judge_templates()
+    for family in ("steps", "observation_inventory", "option_count"):
+        assert family in families, family
+
+    inventory = registry.get(families["observation_inventory"])
+    coverage = registry.get(families["observation_coverage"])
+    counter = registry.get(families["option_count"])
+    branch = registry.get(families["branchiness_selection"])
+
+    # Wave one reads the question (and, for steps, the chain) and nothing else.
+    assert set(inventory.required_fields) == {"question"}
+    assert set(counter.required_fields) == {"question"}
+
+    # The inventory LISTS; it is not asked to count as well.
+    assert inventory.output_contract["json_fields"] == {"observations": "list_of_strings"}
+    assert counter.output_contract["json_fields"] == {"option_count": "nonnegative_integer"}
+
+    # Wave two CONSUMES them and re-derives neither.
+    assert "observations" in coverage.required_fields
+    assert "observations_total" not in coverage.output_contract["json_fields"], (
+        "coverage is taking its own inventory again"
+    )
+    assert "option_count" in branch.required_fields
+    assert "option_count" not in branch.output_contract["json_fields"], (
+        "branchiness is re-reading the option count"
+    )
+
+
+def test_the_option_count_is_asked_for_selection_tasks_only():
+    """A generation task offers no options, so there is nothing to count.
+
+    It is marked inapplicable rather than asked and scored 0 -- a 0 there would
+    average in as "this question offered no choices", which is true but is not
+    a measurement of the model.
+    """
+    selection_raw = _raw()
+    selection_raw["branchiness_selection"] = {"branchiness_per_step": [1, 1, 0, 0]}
+    selection_raw["option_count"] = {"option_count": 4}
+    selection_raw.pop("branchiness_generation")
+    metrics, _lists, _errors, _inapplicable = _derive(
+        selection_raw, generation_like=False, selection_like=True, option_count=4
+    )
+    assert metrics["reasoning_option_count"] == 4.0
+
+    generation, _l, _e, gen_inapplicable = _derive()
+    assert "reasoning_option_count" not in generation
+    assert any("option_count" in entry for entry in gen_inapplicable)
+
+
+def test_the_inventory_is_kept_so_the_ratio_can_be_audited():
+    """Coverage is a ratio; a ratio whose denominator is invisible is a number
+    nobody can check."""
+    metrics, lists, _errors, _inapplicable = _derive()
+    assert metrics["reasoning_observations_total"] == 3.0
+    assert lists["reasoning_observations"] == [
+        "the lawn is wet", "the sky is clear", "it is 6am",
+    ]
+    assert len(lists["reasoning_observations"]) == metrics["reasoning_observations_total"]

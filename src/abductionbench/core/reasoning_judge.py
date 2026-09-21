@@ -79,7 +79,11 @@ _GENERATION_KINDS = frozenset({"generation", "knowledge_completion"})
 _SELECTION_KINDS = frozenset({"selection", "multi_selection"})
 
 _REQUIRED_TEMPLATES = {
+    # wave one
     "steps",
+    "observation_inventory",
+    "option_count",
+    # wave two
     "observation_coverage",
     "branchiness_selection",
     "branchiness_generation",
@@ -108,6 +112,9 @@ _REQUIRED_TEMPLATES = {
 #: two cannot drift apart.
 REASONING_LIST_COLUMNS: tuple[str, ...] = (
     "reasoning_steps",
+    # The wave-one inventory, kept whole: coverage is a ratio against it, and a
+    # ratio nobody can see the denominator of is not auditable.
+    "reasoning_observations",
     "reasoning_proof_disproof_per_step",
     "reasoning_observations_per_step",
     "reasoning_branchiness_per_step",
@@ -362,15 +369,18 @@ def derive_reasoning_metrics(
 
     # -- metric 1: observation coverage --------------------------------------- #
     #
-    # One call: the same judge identifies the question's observations and places
-    # each one at the step it first enters, so the total and the per-step list
-    # are two readings of one pass rather than of two.
-    coverage_blob = raw.get("observation_coverage") or {}
-    observations_total = _nonnegative_int(coverage_blob.get("observations_total")) or 0
+    # Two calls, deliberately. The wave-one inventory lists the question's
+    # observations and is the denominator; observation_coverage then places
+    # those same observations in the chain and supplies the numerator. Asking
+    # one judge for both let it place more observations than it had just
+    # found, and nothing could tell which half was wrong.
+    inventory = _string_list((raw.get("observation_inventory") or {}).get("observations"))
+    observations_total = len(inventory) if inventory else 0
     if not observations_total:
-        errors.append("observation_coverage:invalid_or_missing_observations_total")
+        errors.append("observation_inventory:invalid_or_missing_observations")
     else:
         metrics["reasoning_observations_total"] = float(observations_total)
+        lists["reasoning_observations"] = list(inventory or [])
 
     covered = per_step("observation_coverage", "observations_per_step",
                        "reasoning_observations_per_step")
@@ -381,9 +391,10 @@ def derive_reasoning_metrics(
         # disagree with itself.
         used = sum(covered)
         if observations_total and used > observations_total:
-            # More observations reached than the question gave. One of the two
-            # readings is wrong and there is no way to tell which.
-            errors.append("observation_coverage:used_exceeds_the_observations_total")
+            # More observations placed than the inventory holds. The inventory
+            # is the fixed list and the coverage judge was told not to add to
+            # it, so this is that judge disagreeing with its own instructions.
+            errors.append("observation_coverage:used_exceeds_the_inventory")
         else:
             metrics["reasoning_observations_used"] = float(used)
             if observations_total:
@@ -408,9 +419,13 @@ def derive_reasoning_metrics(
         inapplicable.append("option_count:generation_task_has_no_answer_options")
         hypothesis_count = branchiness_total
     else:
-        judged_options = _nonnegative_int((raw.get(family) or {}).get("option_count"))
+        # From its own wave-one prompt, not from branchiness. Counting the
+        # options and counting what the model raised are different readings of
+        # the question, and one prompt doing both made the second depend on the
+        # first having gone well.
+        judged_options = _nonnegative_int((raw.get("option_count") or {}).get("option_count"))
         if judged_options is None:
-            errors.append("branchiness_selection:invalid_or_missing_option_count")
+            errors.append("option_count:invalid_or_missing_option_count")
         else:
             metrics["reasoning_option_count"] = float(judged_options)
         inapplicable.append("diversity:selection_candidates_are_the_questions_not_the_models")
@@ -960,10 +975,63 @@ class ReasoningJudgeStage:
             for target in targets
         }
 
-        # -- wave one: the segmentation ------------------------------------- #
-        await self._run_family(
-            "steps", targets, ("question", "reasoning_chain", "options"), common, identity
+        # -- wave one: three readings, once each, before anything else ------ #
+        #
+        # Three calls, not one. Each reads a different thing and each produces
+        # something the second wave depends on:
+        #
+        #   steps                 -- segments the model's chain. Every per-step
+        #                            list below is indexed by what it returns.
+        #   observation_inventory -- lists the question's facts. The denominator
+        #                            of coverage.
+        #   option_count          -- counts the question's answer options.
+        #                            SELECTION TASKS ONLY; a generation task has
+        #                            none and is not sent.
+        #
+        # They are kept apart because merging them makes one reading's mistake
+        # become the other's: a judge that both inventories the observations and
+        # places them can place four of the three it just found, and nothing
+        # downstream can tell which half was wrong. Split, the inventory is
+        # fixed before anything is measured against it.
+        #
+        # They run concurrently -- none reads another's output -- and each
+        # result is then substituted into `common` so wave two receives it
+        # rather than asking for it again.
+        selection_ids = {id(t) for t in targets if t.selection_like and not t.generation_like}
+        needs_options = [t for t in targets if id(t) in selection_ids]
+        await asyncio.gather(
+            self._run_family(
+                "steps", targets, ("question", "reasoning_chain", "options"), common, identity
+            ),
+            self._run_family(
+                "observation_inventory", targets, ("question",), common, identity
+            ),
+            self._run_family(
+                "option_count", needs_options, ("question",), common, identity
+            ),
         )
+
+        for target in targets:
+            # The inventory, numbered so the judge's i-th observation and this
+            # code's i-th are the same one.
+            inventory = _string_list(
+                (target.raw.get("observation_inventory") or {}).get("observations")
+            )
+            if inventory is None:
+                target.errors.append(
+                    "observation_inventory:no_inventory_so_no_coverage"
+                )
+            else:
+                common[target.index]["observations"] = _numbered(inventory)
+            # The judged option count replaces the structural one where we have
+            # it. Selection tasks only; for the rest the key stays as the
+            # question's own len(options), which nothing in wave two reads.
+            if id(target) in selection_ids:
+                judged = _nonnegative_int(
+                    (target.raw.get("option_count") or {}).get("option_count")
+                )
+                if judged is not None:
+                    common[target.index]["option_count"] = judged
 
         for target in targets:
             segmented = _string_list((target.raw.get("steps") or {}).get("steps"))
@@ -985,12 +1053,12 @@ class ReasoningJudgeStage:
         # judge: whether the candidates are the question's or the model's
         # changes what "newly proposed" counts. A pipeline task proposes its own
         # explanations as well as choosing, so it takes the generation prompt.
-        selection_ids = {id(t) for t in targets if t.selection_like and not t.generation_like}
         run = lambda family, chosen, fields: self._run_family(  # noqa: E731 - a local alias
             family, chosen, fields, common, identity
         )
+        inventoried = [t for t in ready if "observations" in common[t.index]]
         wave_two = [
-            run("observation_coverage", ready, ("question", "steps")),
+            run("observation_coverage", inventoried, ("question", "steps", "observations")),
             run("directionality", targets, ("question", "reasoning_chain")),
             run("step_directionality", ready, ("steps",)),
             run("differential_elimination", ready, ("steps",)),
@@ -1000,7 +1068,7 @@ class ReasoningJudgeStage:
             run("anchoring_point", [t for t in ready if t.reference],
                 ("steps", "reference_answer")),
             run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
-                ("steps", "question")),
+                ("steps", "question", "option_count")),
             run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
                 ("steps",)),
         ]

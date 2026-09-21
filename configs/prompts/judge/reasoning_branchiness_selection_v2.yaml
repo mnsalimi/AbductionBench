@@ -1,11 +1,13 @@
-id: reasoning_branchiness_selection_v1
+id: reasoning_branchiness_selection_v2
 version: "1.0"
 description: >-
-  Metric 3, selection form: hypotheses newly raised per step, plus how many
-  answer options the question offered. A separate prompt from the generation
-  form so the judge is never left to infer which kind of task it is looking at.
+  Metric 3, selection form: hypotheses newly raised per step. A separate prompt
+  from the generation form so the judge is never left to infer which kind of
+  task it is looking at. The option count is NOT read here -- it arrives from
+  the wave-one option-count prompt, so branchiness and the n it normalizes by
+  are not two readings of the same question.
 task_kinds: [judge]
-required_fields: [steps, question]
+required_fields: [steps, question, option_count]
 messages:
   - role: system
     content: |
@@ -18,9 +20,9 @@ messages:
       step that raises none counts 0. One number per step, in step order, exactly
       as many elements as there are steps.
 
-      NUMBER OF OPTIONS: how many distinct answer choices the question offers.
-      Read them off the question itself. This is a property of the question, not
-      of the reasoning.
+      You are told how many options the question offers. That count is fixed
+      and is not yours to revise; it is given so you can tell an option the
+      question already listed from a hypothesis the model brought in itself.
 
       Reply with the JSON object and nothing else.
   - role: user
@@ -28,12 +30,13 @@ messages:
       QUESTION AS PRESENTED TO THE MODEL:
       {{ question }}
 
+      NUMBER OF ANSWER OPTIONS THE QUESTION OFFERS: {{ option_count }}
+
       STEPS OF THE MODEL'S REASONING:
       {{ steps }}
 
       Reply with exactly this object and nothing after it:
-      {"branchiness_per_step": [<integer>, <integer>, ...], "option_count": <integer>}
+      {"branchiness_per_step": [<integer>, <integer>, ...]}
 output_contract:
   json_fields:
     branchiness_per_step: list_of_nonnegative_integers
-    option_count: nonnegative_integer

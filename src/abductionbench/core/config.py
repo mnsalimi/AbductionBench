@@ -564,11 +564,30 @@ def _reasoning_judge_templates() -> dict[str, str]:
     is exactly the inference this suite does not buy.
     """
     return {
-        # The canonical segmentation. Runs first; everything below reads it.
+        # -- wave one: three prompts, once per sample, before anything else -- #
+        #
+        # Each reads the question or the chain directly and produces something
+        # the rest depend on. They are three calls and not one because they are
+        # three different readings: a segmentation of the model's chain, an
+        # inventory of the question's facts, and a count of the question's
+        # options. Merging any two would make one prompt's mistake silently
+        # become the other's.
+        #
+        # The canonical segmentation. Everything per-step is indexed by it.
         "steps": "reasoning_steps_v2",
-        # Identifies the question's observations and places them in one call.
-        "observation_coverage": "reasoning_observation_coverage_v3",
-        "branchiness_selection": "reasoning_branchiness_selection_v1",
+        # The question's observations, listed once each. The denominator of
+        # coverage, so it is taken once and reused rather than re-read.
+        "observation_inventory": "reasoning_observation_inventory_v1",
+        # SELECTION TASKS ONLY -- a generation task offers no options, and is
+        # never sent here. The n that branchiness normalizes by.
+        "option_count": "reasoning_option_count_v1",
+        # -- wave two: everything the three above unlocked ------------------ #
+        #
+        # Places the inventory's observations in the chain; does not take its
+        # own inventory.
+        "observation_coverage": "reasoning_observation_coverage_v4",
+        # Branchiness only; the option count arrives from wave one.
+        "branchiness_selection": "reasoning_branchiness_selection_v2",
         "branchiness_generation": "reasoning_branchiness_generation_v1",
         # The one other prompt that reads the raw chain.
         "directionality": "reasoning_directionality_v1",

@@ -1,0 +1,53 @@
+id: reasoning_observation_coverage_v4
+version: "1.0"
+description: >-
+  Metric 1, second half: where each of the question's observations first enters
+  the chain. The INVENTORY is not taken here -- it arrives from the wave-one
+  observation-inventory prompt, so the numerator and the denominator are
+  readings of one list rather than of two.
+task_kinds: [judge]
+required_fields: [question, steps, observations]
+messages:
+  - role: system
+    content: |
+      You are given a QUESTION, the OBSERVATIONS it supplies as a numbered
+      list, and a numbered list of the STEPS of one model's reasoning about it.
+      Work out how much of that evidence the reasoning actually drew on.
+
+      THE INVENTORY IS FIXED. The observations are given to you, already
+      identified. Do not add to it, split it, merge it, or decide that
+      something in it is not really an observation. Your job is only to say
+      where each one enters the reasoning.
+
+      Go through the steps in order.
+
+      COUNT EACH OBSERVATION ONCE, AT ITS FIRST APPEARANCE. The first time a
+      step draws on an observation, count it for that step. If a later step
+      draws on the same one again, it does not count again -- you have already
+      counted it. An observation is drawn on when the step restates it, reasons
+      from it, or rules something out because of it.
+
+      An observation no step ever draws on is counted nowhere. The per-step
+      numbers therefore sum to at most the number of observations you were
+      given, and never more.
+
+      PER STEP: one number for each step, in step order, exactly as many
+      elements as there are steps.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      OBSERVATIONS THE QUESTION SUPPLIES:
+      {{ observations }}
+
+      STEPS OF THE MODEL'S REASONING:
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it:
+      {"observations_per_step": [<integer>, <integer>, ...]}
+output_contract:
+  json_fields:
+    observations_per_step: list_of_nonnegative_integers

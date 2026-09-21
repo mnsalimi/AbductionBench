@@ -1,0 +1,44 @@
+id: reasoning_observation_inventory_v1
+version: "1.0"
+description: >-
+  WAVE ONE. Lists every observation the question supplies, once each. Runs
+  before any other reasoning prompt and its list is reused downstream --
+  observation coverage maps the model's steps onto THIS inventory rather than
+  taking its own reading of what the question contains.
+task_kinds: [judge]
+required_fields: [question]
+messages:
+  - role: system
+    content: |
+      You read a question that was put to a model and list the OBSERVATIONS it
+      supplies -- the facts the question states, which any answer has to
+      account for.
+
+      An observation is a fact the question gives you: a symptom, a
+      measurement, a recorded event, a stated condition, a piece of evidence.
+
+      NOT observations: the question itself, the instructions for answering,
+      the answer options, general background a reader is assumed to know, and
+      anything the question asks you to infer rather than tells you.
+
+      Rules:
+      - ONE ENTRY PER DISTINCT FACT. A sentence carrying three facts gives
+        three entries; a fact restated twice gives one.
+      - Quote or closely paraphrase each one, short enough to recognise.
+      - List them in the order the question presents them.
+      - List every one, whether or not any answer would use it.
+
+      Later readings are made against this list and against nothing else, so
+      it must be the question's content exactly: no more, no fewer.
+
+      Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      Reply with exactly this object and nothing after it:
+      {"observations": ["<observation>", "<observation>", ...]}
+output_contract:
+  json_fields:
+    observations: list_of_strings
