@@ -230,6 +230,43 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         "- Never name or suggest a diagnosis."
     )
 
+    #: ``default_cost_model()`` in ``evoclinician/med_inquire/costs.py``, in
+    #: the release's own normalized units. Cost is one of Med-Inquire's three
+    #: reported axes -- "diagnostic grade, interaction length, and resource
+    #: cost" (paper S3.6; Table 1 reports mean cost per backbone) -- and this
+    #: adapter reported none of it.
+    _BASE_TURN_COST = 1.0
+    _QUESTION_COST = 0.5
+    _DEFAULT_TEST_COST = 10.0
+    _SUBMIT_COST = 0.0
+    _TEST_COSTS = {
+        "cbc": 5.0, "cmp": 6.0, "bmp": 4.0,
+        "ct head": 120.0, "mri brain": 250.0, "chest xray": 25.0,
+    }
+
+    @classmethod
+    def _action_cost(cls, action: str, query: str) -> float:
+        """``CostModel.cost_for_action``: a base turn cost plus what was asked.
+
+        The per-test table is matched on the lowercased name exactly, as the
+        release does, so an unlisted test costs the default rather than being
+        guessed at.
+        """
+        if action == "askquestion":
+            return cls._BASE_TURN_COST + cls._QUESTION_COST
+        if action == "ordertest":
+            return cls._BASE_TURN_COST + cls._TEST_COSTS.get(
+                query.strip().lower(), cls._DEFAULT_TEST_COST
+            )
+        if action == "submitdiagnosis":
+            return cls._BASE_TURN_COST + cls._SUBMIT_COST
+        return cls._BASE_TURN_COST
+
+    def _charge(self, state: dict[str, Any], action: str, query: str) -> None:
+        state["encounter_cost"] = state.get("encounter_cost", 0.0) + self._action_cost(
+            action, query
+        )
+
     def _briefs(self, sample: SampleSpec) -> dict[str, str]:
         """The hidden material each agent may see, and nothing else.
 
@@ -311,6 +348,7 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         if action.action == "submitdiagnosis":
             state["submitted"] = True
             state["last_action_content"] = action.query_text
+            self._charge(state, action.action, action.query_text)
             return None
         if not action.action:
             state["parse_errors"] = state.get("parse_errors", 0) + 1
@@ -326,6 +364,7 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
         # release uses `history[-1].action.content` when the budget runs out --
         # the action's text, not the JSON envelope it arrived in.
         state["last_action_content"] = action.query_text
+        self._charge(state, action.action, action.query_text)
         if self.simulator is not None:
             # The release's Patient and Examination agents, each answering from
             # its own half of the case.
@@ -428,7 +467,19 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
             output_contract=output_contract,
             details={"gold": str(sample.reference["gold"])[:300]},
         )
-        return self._forced_diagnosis(sample, scored)
+        scored = self._forced_diagnosis(sample, scored)
+        # Med-Inquire's other two axes. The paper reports all three side by
+        # side (S3.6, Table 1: mean grade, mean turns, mean cost), because a
+        # diagnosis reached in four turns for 12 cost units is not the same
+        # result as the same diagnosis reached in eighteen for 300.
+        state = sample.metadata.get("_episode_state") or {}
+        cost = state.get("encounter_cost")
+        if cost is not None:
+            scored.metrics["encounter_cost"] = float(cost)
+        turns = sample.metadata.get("turns_used")
+        if turns:
+            scored.metrics["turns_used"] = float(turns)
+        return scored
 
     @staticmethod
     def _forced_diagnosis(sample: SampleSpec, scored: SampleScore) -> SampleScore:
@@ -550,6 +601,41 @@ class MedInquireAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "A simulator that cannot be reached ends the episode as an ERROR rather "
                 "than a wrong answer, so an outage lowers the sample count rather than the "
                 "score.",
+                "THE PAPER AND THE CODE DISAGREE ABOUT THE FORCED DIAGNOSIS, AND THE CODE "
+                "WINS. The paper (S5.2) says that on reaching T_max 'we force SubmitDiagnosis "
+                "using the agent's current best guess'; the code sets "
+                "`final_diagnosis = history[-1].action.content` -- whatever the agent last "
+                "did, which is usually an ordered test rather than a guess. The reported "
+                "numbers came from running the code, so the code's behaviour is what is "
+                "reproduced here, and the discrepancy is recorded rather than resolved.",
+                "THE PAPER'S EXAMINATION AGENT SERVES THE PHYSICAL EXAM; THE CODE'S CANNOT. "
+                "Paper S3.2: the Examination agent 'returns results for physical examination "
+                "findings and diagnostic tests ... when those are represented in the case "
+                "file'. But `casefile_from_derm_json` files the whole work-up under a single "
+                "key, 'diagnostic tests', and puts `physical_exam` outside `case.tests` "
+                "entirely, so upstream an OrderTest can only ever return the whole test blob "
+                "and never the examination. This adapter follows the PAPER: examination and "
+                "tests are both orderable, per finding. It is the more faithful reading of "
+                "the described protocol and a deliberate departure from the shipped code.",
+                "COST IS REPORTED, ON THE RELEASE'S OWN SCHEDULE. The benchmark's three axes "
+                "are diagnostic grade, interaction length and resource cost (paper S3.6); "
+                "`encounter_cost` and `turns_used` are emitted beside `diagnosis_judged` "
+                "using `default_cost_model()` -- base 1.0 per turn, +0.5 per question, +10.0 "
+                "per unlisted test, and the release's per-test table. Costs are in the "
+                "release's normalized units and comparable only within this benchmark.",
+                "THE JUDGE IS BINARY HERE, NOT THE PAPER'S 0-100 RUBRIC. Med-Inquire's Judge "
+                "agent grades clinical agreement on a five-band scale in [0, 100]; this suite "
+                "grades every answer judge as 1 or 0. `diagnosis_judged` is therefore an "
+                "acceptance RATE, not a mean grade, and is not comparable to the paper's S.",
+                "THE PATIENT DOES NOT INVENT, AND DOES NOT SEE THE DIAGNOSIS. Paper S3.2 and "
+                "the code both have the Patient agent generate 'a medically reasonable "
+                "patient-style answer that is consistent with the ground-truth diagnosis' "
+                "when the case file lacks a detail, with the FINAL DIAGNOSIS in its prompt. "
+                "This suite's patient is given neither the diagnosis nor permission to "
+                "invent, so a detail the case does not record comes back as not reported "
+                "rather than as a plausible confabulation toward the answer. That makes the "
+                "interview strictly less informative than upstream's and the scores lower, "
+                "and it is a deliberate choice: a patient that knows the answer can leak it.",
                 "SAME UNDERLYING ITEMS AS diagnosisarena: this test file is the DiagnosisArena "
                 "release re-used by EvoClinician, so the two datasets share their cases. They "
                 "are NOT independent evidence, and a suite-level average over both counts those "

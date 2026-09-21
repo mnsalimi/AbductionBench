@@ -517,3 +517,53 @@ def test_vivabench_returns_negatives_not_a_shrug():
     # History and physical are negatives; investigations are not-available.
     assert "not available" not in VivaBenchAdapter._NOTHING_RECORDED["history"].lower()
     assert "not available" in VivaBenchAdapter._NOTHING_RECORDED["investigation"].lower()
+
+
+def test_med_inquire_reports_all_three_of_the_benchmarks_axes():
+    """The paper, S3.6: "Med-Inquire evaluates an agent along three axes:
+    diagnostic grade, interaction length, and resource cost." Table 1 reports
+    all three per backbone. We reported only the grade.
+
+    The cost schedule is the release's own ``default_cost_model()``: a base
+    turn cost of 1.0, +0.5 for a question, +10.0 for an unlisted test, and a
+    per-test table (cbc 5, cmp 6, bmp 4, ct head 120, mri brain 250,
+    chest xray 25).
+    """
+    from abductionbench.core.types import ModelResponse, ResponseStatus
+
+    adapter, samples = _adapter("med_inquire", MED_INQUIRE)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    for action, query in (
+        ("AskQuestion", "what brings you in"),   # 1.0 + 0.5
+        ("OrderTest", "cbc"),                    # 1.0 + 5.0
+        ("OrderTest", "mri brain"),              # 1.0 + 250.0
+        ("SubmitDiagnosis", "sarcoidosis"),      # 1.0 + 0.0
+    ):
+        _step(adapter, sample, state,
+              json.dumps({"action_type": action, "action_text": query}))
+
+    assert state["encounter_cost"] == 259.5
+
+    sample.metadata["_episode_state"] = state
+    sample.metadata["turns_used"] = 4
+    response = ModelResponse(
+        sample_id=sample.sample_id, model_id="m", status=ResponseStatus.OK,
+        content="sarcoidosis",
+    )
+    metrics = adapter.score_request(sample, response, output_contract=None).metrics
+    assert metrics["encounter_cost"] == 259.5
+    assert metrics["turns_used"] == 4.0
+    assert "diagnosis_judged" in metrics
+
+
+def test_med_inquire_an_unlisted_test_costs_the_default():
+    """``self.test_costs.get(name.strip().lower(), default_test_cost)`` --
+    an unlisted test costs 10.0, not a guess."""
+    from abductionbench.adapters.med_inquire import MedInquireAdapter
+
+    assert MedInquireAdapter._action_cost("ordertest", "CBC") == 6.0      # table, case-insensitive
+    assert MedInquireAdapter._action_cost("ordertest", "skin biopsy") == 11.0   # default
+    assert MedInquireAdapter._action_cost("askquestion", "anything") == 1.5
+    assert MedInquireAdapter._action_cost("submitdiagnosis", "x") == 1.0
