@@ -311,11 +311,31 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         initial = self._decode(str(item.get("INITIAL_EVIDENCE") or ""))
         # The patient's answer sheet for the interactive consultation: the
         # release's own question text mapped to what this patient answered.
-        answers = {
-            line.split(" -> ", 1)[0]: line.split(" -> ", 1)[1]
-            for line in decoded
-            if " -> " in line
-        }
+        #
+        # A MULTI-CHOICE EVIDENCE IS SEVERAL TOKENS SHARING ONE CODE. The
+        # record encodes "Characterize your pain" answered sharp+burning+
+        # tugging as four separate `E_54_@_V_*` entries, and the paper caps the
+        # selection at five ("we limit to 5 the maximum number of choices
+        # associated with multi-choice evidences such as pain location", §3.2).
+        #
+        # Built as a plain dict comprehension, each token overwrote the last
+        # and the patient kept only ONE of its selected values. Measured over
+        # 2,000 test patients: 79% had at least one multi-value evidence and
+        # 4.5 answers per patient were dropped -- so a model asking about pain
+        # character was told "burning" by a patient whose record said sharp,
+        # burning, tugging and heavy. The static questionnaire form was
+        # unaffected; it lists `decoded` in full.
+        answers: dict[str, str] = {}
+        for line in decoded:
+            if " -> " not in line:
+                continue
+            question, value = line.split(" -> ", 1)
+            if question in answers:
+                # One question, several selected values: report them together,
+                # in the order the record lists them.
+                answers[question] = f"{answers[question]}, {value}"
+            else:
+                answers[question] = value
         age, sex = item.get("AGE"), item.get("SEX")
         antecedents = [line for line in decoded if "have you" in line.lower() or "did you" in line.lower()]
         observation = "\n".join(

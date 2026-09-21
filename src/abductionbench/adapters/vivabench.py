@@ -344,6 +344,36 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: own default, so the mapper and the matcher are held to the same budget.
     _MAPPER_KEY_LIMIT = 6
 
+    #: What the examiner says when the case records nothing for a request.
+    #:
+    #: The paper is explicit that this is not one answer but three (Section
+    #: 3.2, "Information Retrieval and Parsing"):
+    #:
+    #:   "For history and physical examination findings, negative results
+    #:    (absent symptoms or normal examination findings) are explicitly
+    #:    returned when queried. Standardized laboratory values not
+    #:    specifically mentioned in the case are returned as default normal
+    #:    values with appropriate reference ranges, while investigations not
+    #:    available in the case are explicitly noted as 'not available' to
+    #:    prevent information leakage."
+    #:
+    #: A flat "no finding recorded" for all four collapses a real distinction.
+    #: Asked about chest pain in a case that does not mention it, a candidate
+    #: should learn the patient DOES NOT have chest pain -- that is evidence,
+    #: and it is how a viva works. Told only that nothing is recorded, they
+    #: cannot tell a negative from a gap in the paperwork.
+    _NOTHING_RECORDED = {
+        "history": "The patient does not report that.",
+        "examination": "That examination is normal.",
+        "investigation": "Not available.",
+        "imaging": "Not available.",
+    }
+
+    def _nothing_recorded(self, category: str) -> str:
+        return self._NOTHING_RECORDED.get(
+            category, f"No {category} finding recorded for that request in this case."
+        )
+
     def _evidence(self, item: dict[str, Any]) -> EvidenceStore:
         payload = self._case_json(item)
         store = EvidenceStore()
@@ -562,10 +592,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # chose to give.
             return None
         if not revealed:
-            # The case does not record this finding. Saying so is the honest
-            # answer; inventing a normal result would hand the model evidence
-            # the case never had.
-            body = f"No {category} finding recorded for that request in this case."
+            body = self._nothing_recorded(category)
         else:
             body = revealed
         if limit is not None and used >= limit:
@@ -873,6 +900,17 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "confirmatory investigation that names the condition -- ordering one is how a "
                 "viva candidate confirms an answer, and the lexical environment discloses the "
                 "same finding to the same request.",
+                "TWO GAPS AGAINST THE PAPER, BOTH DOCUMENTED RATHER THAN GUESSED. (1) The "
+                "paper returns unmentioned LABORATORY values as 'default normal values with "
+                "appropriate reference ranges' (S3.2); this adapter answers 'Not available' "
+                "for them, because the reference-range table that would make a normal value "
+                "meaningful is not in the release and inventing one would be fabricating "
+                "evidence. A model therefore cannot distinguish 'not tested' from 'normal' "
+                "for a lab, which it could upstream. (2) The paper evaluates the PROVISIONAL "
+                "diagnosis as well as the final one (Table 2 reports Top-k P. and Top-k F. "
+                "separately); this adapter records the provisional in the episode state but "
+                "scores only the final, so the mid-episode reasoning the paper measures is "
+                "not reported here.",
                 "The release also scores diagnoses by ICD-10 mapping and sentence-embedding "
                 "similarity at a 0.8 threshold (configs/evaluate.yaml, metrics:). Those "
                 "resources are not in the snapshot either, so the judge stands in, and scores "

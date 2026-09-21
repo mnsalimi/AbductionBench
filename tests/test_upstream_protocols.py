@@ -12,6 +12,7 @@ ships code.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from abductionbench.core.adapter import AdapterContext
@@ -438,3 +439,81 @@ def test_ddxplus_numeric_scales_are_rendered_with_their_scale():
     assert entry["question_en"] in rendered
     assert "7" in rendered
     assert "scale of 0-10" in rendered, f"a bare, uninterpretable number: {rendered!r}"
+
+
+def test_ddxplus_a_multi_choice_answer_reports_every_selected_value():
+    """A multi-choice evidence is SEVERAL tokens sharing one code.
+
+    The paper (§3.2): "we limit to 5 the maximum number of choices associated
+    with multi-choice evidences such as pain location" -- so "Characterize your
+    pain" can be answered sharp+burning+tugging, encoded as three
+    ``E_54_@_V_*`` entries.
+
+    The interactive answer sheet was a dict keyed by question text, so each
+    token overwrote the last and the patient kept ONE value. Over 2,000 test
+    patients, 79% had a multi-value evidence and 4.5 answers each were lost.
+    """
+    adapter, samples = _adapter(
+        "ddxplus", "ddxplus:DDXPlusAdapter", sample_size=20,
+    )
+    multi = [
+        (sample, question, value)
+        for sample in samples
+        for question, value in (sample.metadata.get("_answers") or {}).items()
+        if ", " in value
+    ]
+    assert multi, "no multi-value evidence in 20 patients -- expected ~79%"
+
+    sample, question, value = multi[0]
+    values = [part.strip() for part in value.split(",")]
+    assert len(values) >= 2
+    assert len(values) <= 5, "the paper caps a multi-choice selection at 5"
+    assert len(set(values)) == len(values), "a value is repeated"
+
+    # And the interview actually reports them all, not just the last.
+    _messages, state = adapter.interactive_start(sample)
+    asked = question.replace('"', "")
+    reply = _step(adapter, sample, state, json.dumps({"action": "ask", "query": asked}))
+    for part in values:
+        assert part in reply, f"the patient withheld {part!r} from {values}"
+
+
+def test_vivabench_returns_negatives_not_a_shrug():
+    """The paper, §3.2 "Information Retrieval and Parsing":
+
+        "For history and physical examination findings, negative results
+         (absent symptoms or normal examination findings) are explicitly
+         returned when queried. ... investigations not available in the case
+         are explicitly noted as 'not available' to prevent information
+         leakage."
+
+    Three different answers, not one. A flat "no finding recorded" collapses
+    the distinction: asked about chest pain in a case that does not mention it,
+    a candidate should learn the patient DOES NOT have chest pain -- that is
+    evidence. Told only that nothing is recorded, they cannot tell a negative
+    from a gap in the paperwork.
+    """
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+
+    adapter, samples = _adapter("vivabench", VIVABENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    # A physical examination the case does not record comes back normal ...
+    reply = _step(adapter, sample, state,
+                  json.dumps({"action": "examination", "query": "cranial nerves ii to xii"}))
+    assert "normal" in reply.lower()
+    assert "no examination finding recorded" not in reply.lower()
+
+    # ... and an investigation it does not hold is "not available", which is
+    # the release's own wording and is deliberately NOT a normal value.
+    reply = _step(adapter, sample, state,
+                  json.dumps({"action": "imaging", "query": "PET-CT whole body"}))
+    assert "not available" in reply.lower()
+
+    assert set(VivaBenchAdapter._NOTHING_RECORDED) == {
+        "history", "examination", "investigation", "imaging",
+    }
+    # History and physical are negatives; investigations are not-available.
+    assert "not available" not in VivaBenchAdapter._NOTHING_RECORDED["history"].lower()
+    assert "not available" in VivaBenchAdapter._NOTHING_RECORDED["investigation"].lower()
