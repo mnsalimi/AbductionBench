@@ -143,22 +143,21 @@ engine:
     group_size: 8
     max_parallel_calls: 8
     cache: true
-    # One prompt per metric family. The grouping is the measurement's, not an
-    # optimisation: the four step counts have to come from one segmentation of
-    # one chain, so they are one prompt returning four numbers.
-    templates:
-      observation_inventory: reasoning_observation_inventory_v1
-      # Metrics 1 and 4 share a prompt, for the same reason metric 2's four
-      # counts do: they are counts over one set of observations, and two calls
-      # read that set twice -- the used count and the redundant/necessary split
-      # could disagree and nothing would notice. One call, and they must add up.
-      evidence: reasoning_evidence_v1
-      steps: reasoning_steps_v1
-      branchiness_diversity: reasoning_branchiness_diversity_v1
-      directionality: reasoning_directionality_v1
-      differential_elimination: reasoning_differential_elimination_v1
-      uncertainty: reasoning_uncertainty_v1
-      prior_knowledge: reasoning_prior_knowledge_v1
+    # NO `templates:` MAPPING HERE, DELIBERATELY. One prompt per metric family,
+    # and the map lives in `_reasoning_judge_templates()` in core/config.py --
+    # in one place, beside the code that validates it.
+    #
+    # It used to be duplicated here, and the copy went stale: the per-step
+    # rework renamed six families and bumped most template versions, the code
+    # was updated, this file was not. A YAML mapping REPLACES the default
+    # wholesale rather than merging into it, so every run extending pilot.yaml
+    # silently got the old eight families pointing at template ids that no
+    # longer existed. The run then died at startup with "reasoning_judge.
+    # templates is missing: anchoring_point, ..." -- which, in a run whose
+    # judge was deferred, looked like a pass that simply finished early.
+    #
+    # Override it here only to point a family at a different prompt, and then
+    # give the WHOLE map, because a partial one is not merged.
 
   # Incremental off-box backup of the run directory. Runs in a background
   # thread that shells out to rclone, so it cannot slow inference down: all the

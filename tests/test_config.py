@@ -377,3 +377,48 @@ def test_an_unusable_timezone_falls_back_to_utc_rather_than_failing(caplog):
         _run_id_tz = EvaluationEngine._run_id_tz
 
     assert _Stub()._run_id_tz() is timezone.utc
+
+
+def test_every_shipped_run_config_can_actually_start_its_reasoning_judge():
+    """The template map is in code; a YAML copy of it goes stale silently.
+
+    configs/engine/default.yaml duplicated the map and was not updated when the
+    per-step rework renamed six families. A YAML mapping REPLACES the default
+    rather than merging, so every run extending pilot.yaml got eight families
+    pointing at template ids that no longer shipped, and died at startup with
+    "reasoning_judge.templates is missing: anchoring_point, ...". In a run whose
+    answer judge was deferred that looked like a pass that finished early.
+    """
+    import os
+    from pathlib import Path
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.prompts import PromptRegistry
+
+    previous = {k: os.environ.get(k) for k in ("ABENCH_API_KEY", "OPENROUTER_API_KEY")}
+    os.environ.setdefault("ABENCH_API_KEY", "test")
+    os.environ.setdefault("OPENROUTER_API_KEY", "test")
+    try:
+        registry = PromptRegistry([Path("configs/prompts")])
+        shipped = set(registry.ids())
+        for name in ("pilot.yaml", "full.yaml", "reasoning.yaml"):
+            config = load_run_config(Path("configs/runs") / name)
+            templates = config.engine.reasoning_judge.templates
+            missing = sorted(t for t in templates.values() if t not in shipped)
+            assert not missing, f"{name}: reasoning judge points at absent template(s) {missing}"
+            # And the families themselves must be the full set the code expects:
+            # a partial map is what the replace-not-merge trap produces.
+            from abductionbench.core.config import _reasoning_judge_templates
+
+            assert set(templates) == set(_reasoning_judge_templates()), (
+                f"{name}: family set differs from the code's -- a partial YAML "
+                f"override replaces the whole map"
+            )
+            # Same for the answer judge.
+            assert config.engine.judge.template in shipped, name
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
