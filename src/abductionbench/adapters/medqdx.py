@@ -137,7 +137,11 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     ACTIONS = ("ask", "diagnosis")
     max_turns = 12
-    category_limits = {"ask": 8}
+    #: THREE questions. ``MedQDx_Benchmark_Creation.ipynb`` drives the
+    #: interview with ``for round_num in range(1, 4)`` and the evaluation
+    #: notebook reports ``Similarity_1``, ``Similarity_2``, ``Similarity_3`` --
+    #: one per round. Eight was this adapter's own number.
+    category_limits = {"ask": 3}
 
     #: This suite's wording for MedQDx's protocol. The benchmark is the
     #: *interview*: one question per turn, each new one different from the last,
@@ -194,31 +198,53 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: name, and a patient who knew it could hand it over on the first turn --
     #: which is the whole task.  There is a test that renders this brief for a
     #: real sample and fails if the label appears in it.
+    #: The release's patient reads the FULL case and is told to answer "No," or
+    #: "I have not noticed that" for anything the case does not contain -- not
+    #: "I'm not sure". (The doctor-side prompt does mention "I'm not sure",
+    #: which is an inconsistency upstream; the patient-side wording is what
+    #: actually produced the recorded answers.) It is also told, in as many
+    #: words, "Do not add, remove, or invent any details", which is the rule
+    #: this suite's simulator already follows.
     _PATIENT_BRIEF = (
-        "You are a patient being interviewed by a doctor. Answer from your own "
-        "experience, in the first person, in one or two sentences of plain lay "
-        "language.\n\n"
-        "What you are experiencing:\n{symptoms}\n\n"
-        "Rules you must follow:\n"
-        "- Answer only about what is listed above. If the doctor asks about "
-        "something on the list, confirm it and describe it the way a patient "
-        "would.\n"
-        "- If the doctor asks about a symptom that is not on the list, say you "
-        "are not experiencing it.\n"
-        "- If the doctor asks about something the list cannot settle -- a date, "
-        "a family history, a test result -- reply exactly: I'm not sure.\n"
-        "- Never name or guess a diagnosis, a condition or a disease, even if "
-        "asked directly. You do not know what you have; that is what the "
-        "doctor is for.\n"
-        "- Do not use clinical terminology, and do not volunteer a symptom the "
-        "doctor has not asked about.\n"
+        "You are a patient who has provided a detailed case history. Answer "
+        "only the doctor's question, using information from the case "
+        "description below. Do not add, remove, or invent any details. Answer "
+        "in the first person, as a realistic patient would.\n\n"
+        "FULL PATIENT CASE:\n{case}\n\n"
+        "PATIENT INSTRUCTIONS:\n"
+        "- Read the full patient case carefully.\n"
+        "- Respond as the patient, in the first person (\"I have been "
+        "feeling...\", \"Yes, I have noticed...\").\n"
+        "- Use only information that appears in the case description.\n"
+        "- If the doctor's question refers to a symptom or detail that is NOT "
+        "in the case, reply honestly: \"No,\" or \"I have not noticed that.\"\n"
+        "- Keep your answer concise -- just those facts from the case that "
+        "directly address the question.\n"
+        "- Do not volunteer any additional background, diagnosis, or "
+        "speculation.\n"
         "- Reply with the patient's words only. No preamble, no labels."
     )
 
     def _patient_brief(self, sample: SampleSpec) -> str:
-        symptoms = sample.metadata.get("_symptoms") or []
-        listed = "\n".join(f"- {symptom.replace('_', ' ')}" for symptom in symptoms)
-        return self._PATIENT_BRIEF.format(symptoms=listed or "- (nothing recorded)")
+        """The release's own patient prompt, over the release's own input.
+
+        ``build_patient_answer_prompt(Full_case, doctor_question)`` hands the
+        patient the FULL case -- not the partial vignette the doctor was shown,
+        and not a symptom list. That is what makes the interview worth
+        conducting: the answers carry information the doctor's 50%- or
+        80%-complete vignette left out.
+
+        This adapter used to brief the patient with the recorded symptom list
+        alone, which is a strictly smaller thing than the case: it can confirm
+        or deny a symptom and can say nothing about onset, duration, or
+        context, so questions about those came back empty when the case
+        answered them.
+        """
+        case = sample.metadata.get("_full_case") or ""
+        if not case:
+            # No fuller case recorded than the one the doctor already has.
+            case = sample.fields.get("observation", "")
+        return self._PATIENT_BRIEF.format(case=case)
 
     def _history_text(self, state: dict[str, Any]) -> str:
         turns = state.get("history") or []
@@ -278,7 +304,11 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
         state["history"].append((question, answer))
 
-        if self.over_limit(state, "ask"):
+        # `>=`, not `over_limit`'s `>`: the release asks exactly three
+        # questions -- `for round_num in range(1, 4)` -- and then asks for the
+        # diagnosis. `over_limit` fires one turn later, so a budget of three
+        # bought four questions.
+        if state["counts"].get("ask", 0) >= self.category_limits["ask"]:
             state["phase"] = "diagnose"
             return self._turn_message(
                 answer,
@@ -310,7 +340,9 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             )
         store: EvidenceStore = state["evidence"]
         found = store.reveal("ask", question, limit=3)
-        return found if found else "I'm not sure."
+        # The release's patient answers "No," or "I have not noticed that" for
+        # anything the case does not contain -- not "I'm not sure".
+        return found if found else "No, I have not noticed that."
 
     def _turn_message(
         self,
@@ -379,8 +411,13 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "case_index": item["case_index"],
                 "mode": self._mode,
                 "gold": gold,
-                # The patient, for the interactive form: the case's own symptom
-                # list, which is what its vignettes were written from.
+                # The patient, for the interactive form. The release hands the
+                # patient `Full_case`, so the 100% vignette is what it reads --
+                # not the partial one the doctor was given, whose whole point
+                # is that it is missing things the interview can recover.
+                "_full_case": C.normalize_whitespace(row.get("100% Case")),
+                # Still kept: the lexical fallback matches questions against
+                # this list when no simulator is configured.
                 "_symptoms": [
                     part.strip()
                     for part in str(row.get("symptoms") or "").split(",")

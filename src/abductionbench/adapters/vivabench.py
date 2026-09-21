@@ -538,12 +538,21 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         self.bump(state, category)
         used = state["counts"].get(category, 0)
         limit = self.category_limits.get(category)
-        if limit is not None and used > limit:
-            # Past the category's budget: the release stops answering that kind
-            # of request and says so.
-            return self._LIMIT_MSGS[category].lstrip("\n") + (
-                self._OUT_OF_TIME_MSG if out_of_time else ""
-            )
+        # NO HARD REFUSAL. `Examiner.process_history` and its three siblings
+        # always map, parse and return the findings, and only *append* the
+        # limit notice once the count reaches the limit:
+        #
+        #     self.hx_count += 1
+        #     if self.hx_count >= self.hx_limit:
+        #         _prompt += "\nLimit on history-taking reached. ..."
+        #     return _prompt
+        #
+        # Nothing upstream stops answering. The per-category limits are
+        # advice; the only hard cap is `action_limit`, which bounds the
+        # episode as a whole. This adapter used to refuse every request past
+        # the limit -- and said in a comment that the release did too, which
+        # it does not -- so an agent that spent eleven turns on history got
+        # ten answers and then a wall, instead of eleven answers and a nudge.
 
         store: EvidenceStore = state["evidence"]
         revealed = await self._reveal(state, store, category, action.query_text)

@@ -357,8 +357,19 @@ def test_vivabench_limits_come_from_the_releases_own_config():
     assert "evaluate.yaml" in adapter.limits_source
 
 
-def test_vivabench_stops_answering_a_category_past_its_limit():
-    """Examiner.process_* appends the release's limit notice, then refuses."""
+def test_vivabench_appends_the_limit_notice_and_keeps_answering():
+    """``Examiner.process_imaging`` appends the notice; it never refuses.
+
+        self.img_count += 1
+        if self.img_count >= self.img_limit:
+            _prompt += "\nLimit on ordering imaging reached. ..."
+        return _prompt
+
+    The findings are returned either way. This test used to assert the
+    opposite -- that a request past the limit is "refused outright" -- which
+    is what this adapter did and what upstream does not do. Only
+    ``action_limit`` is a hard cap, and it bounds the episode, not a category.
+    """
     import json
 
     adapter = _viva_adapter()
@@ -371,12 +382,16 @@ def test_vivabench_stops_answering_a_category_past_its_limit():
             state,
             json.dumps({"reasoning": "r", "action": "imaging", "query": f"scan {n}"}),
         )
-        for n in range(adapter.category_limits["imaging"] + 1)
+        for n in range(adapter.category_limits["imaging"] + 2)
     ]
-    # The last answered request carries the notice ...
+    # The notice appears once the count reaches the limit ...
     assert "Limit on ordering imaging reached" in replies[adapter.category_limits["imaging"] - 1]
-    # ... and the one past the limit is refused outright.
-    assert replies[-1].startswith("Limit on ordering imaging reached")
+    # ... and every request past it is still answered, notice appended.
+    for reply in replies[adapter.category_limits["imaging"]:]:
+        assert "Limit on ordering imaging reached" in reply
+        assert not reply.lstrip().startswith("Limit on ordering imaging reached"), (
+            "the request was refused instead of answered"
+        )
 
 
 def test_vivabench_scores_only_a_committed_diagnosis():

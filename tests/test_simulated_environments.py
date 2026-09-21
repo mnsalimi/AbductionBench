@@ -163,8 +163,11 @@ def test_the_medqdx_patient_is_never_told_the_diagnosis():
         assert gold.lower() not in brief.lower(), (
             f"the gold answer {gold!r} reached the patient's brief"
         )
-        # And the patient is told, in as many words, not to name one.
-        assert "never name or guess a diagnosis" in brief.lower()
+        # And the patient is told not to offer one -- in the release's own
+        # words now, which are "Do not volunteer any additional background,
+        # diagnosis, or speculation."
+        assert "diagnosis, or speculation" in brief.lower()
+        assert "do not add, remove, or invent any details" in brief.lower()
         checked += 1
     assert checked, "no sample had a gold label to check against"
 

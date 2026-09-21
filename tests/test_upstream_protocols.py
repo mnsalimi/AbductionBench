@@ -20,14 +20,14 @@ from abductionbench.core.registry import resolve_adapter
 from abductionbench.core.types import ModelResponse, ResponseStatus
 
 
-def _adapter(dataset_id: str, impl: str, **options):
+def _adapter(dataset_id: str, impl: str, sample_size: int = 3, **options):
     cls = resolve_adapter(f"abductionbench.adapters.{impl}")
     adapter = cls(
         AdapterContext(
             dataset_id=dataset_id,
             data_dir=Path("data") / dataset_id,
             modes=TaskModes(prompt_mode="io", data_delivery_mode="interactive"),
-            sample_size=3,
+            sample_size=sample_size,
             offline=True,
             options=options,
         )
@@ -143,3 +143,162 @@ def test_med_inquire_does_not_cap_actions_by_kind():
         )
         assert reply is not None
         assert "No further actions of that kind" not in reply
+
+
+# --------------------------------------------------------------------------- #
+# vivabench
+# --------------------------------------------------------------------------- #
+
+VIVABENCH = "vivabench:VivaBenchAdapter"
+
+
+def test_vivabench_limits_are_the_releases_own_config():
+    """configs/evaluate.yaml: hx 10, phys 5, ix 5, img 5, action_limit 20."""
+    from abductionbench.adapters.vivabench import VivaBenchAdapter
+
+    assert VivaBenchAdapter.category_limits == {
+        "history": 10, "examination": 5, "investigation": 5, "imaging": 5,
+    }
+    assert VivaBenchAdapter.max_turns == 20
+    assert VivaBenchAdapter._RETRY_LIMIT == 2  # RETRY_LIMIT in examiner.py
+
+
+def test_vivabench_category_limits_are_advice_not_a_wall():
+    """``Examiner.process_history`` and its siblings always answer.
+
+        self.hx_count += 1
+        if self.hx_count >= self.hx_limit:
+            _prompt += "\\nLimit on history-taking reached. ..."
+        return _prompt
+
+    The findings are returned either way; the notice is appended. Nothing
+    upstream refuses a request. Only ``action_limit`` is a hard cap, and it
+    bounds the episode rather than a category. This adapter used to answer ten
+    history requests and then refuse the eleventh.
+    """
+    adapter, samples = _adapter("vivabench", VIVABENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+
+    replies = []
+    for _ in range(13):  # past the history limit of 10
+        replies.append(_step(
+            adapter, sample, state,
+            '{"action": "history", "query": "tell me about the pain"}',
+        ))
+
+    assert all(r is not None for r in replies), "the episode ended early"
+    # The notice appears from the tenth onward ...
+    assert "Limit on history-taking reached" in replies[9]
+    assert "Limit on history-taking reached" in replies[12]
+    # ... but the eleventh and beyond are still answered, not walled off.
+    for index in (10, 11, 12):
+        body = replies[index].split("Limit on history-taking reached")[0].strip()
+        assert body, f"request {index + 1} was refused rather than answered"
+
+
+def test_vivabench_an_uncommitted_episode_is_not_judged_on_its_prose():
+    """``conduct_examination`` returns only on ``diagnosis_final``; running out
+    raises TimeoutError. There is no diagnosis, so none is judged.
+
+    We score it 0 with committed=0 rather than raising -- excluding the
+    failures would inflate the mean -- but the judge is never shown the last
+    turn's text, because reasoning aloud about the right condition without
+    committing is not a diagnosis.
+    """
+    from abductionbench.core.types import ModelResponse, ResponseStatus
+
+    adapter, samples = _adapter("vivabench", VIVABENCH)
+    sample = samples[0]
+    response = ModelResponse(
+        sample_id=sample.sample_id, model_id="m", status=ResponseStatus.OK,
+        content='{"action": "history", "query": "I think this is probably sarcoidosis"}',
+    )
+    score = adapter.score_request(sample, response, output_contract=None)
+    assert score.metrics["committed"] == 0.0
+    assert score.metrics["diagnosis_judged"] == 0.0
+    assert score.prediction is None, "an uncommitted episode reached the judge"
+
+
+# --------------------------------------------------------------------------- #
+# medqdx
+# --------------------------------------------------------------------------- #
+
+MEDQDX = "medqdx:MedQDxAdapter"
+
+
+def test_medqdx_asks_the_releases_three_questions():
+    """``for round_num in range(1, 4)`` -- MedQDx_Benchmark_Creation.ipynb.
+
+    And the evaluation notebook reports Similarity_1, Similarity_2,
+    Similarity_3, one per round. Eight was this adapter's own number.
+    """
+    from abductionbench.adapters.medqdx import MedQDxAdapter
+
+    assert MedQDxAdapter.category_limits == {"ask": 3}
+
+
+def test_medqdx_stops_after_three_and_then_asks_for_the_diagnosis():
+    adapter, samples = _adapter("medqdx", MEDQDX)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    replies = [
+        _step(adapter, sample, state, f"Have you noticed symptom {i}?")
+        for i in range(1, 4)
+    ]
+    assert all(r is not None for r in replies)
+    # The third answer is followed by the request for a diagnosis, not a fourth
+    # question.
+    assert "Name the condition" in replies[-1]
+    assert _step(adapter, sample, state, "Pneumonia") is None
+
+
+def test_medqdx_patient_reads_the_full_case_not_a_symptom_list():
+    """``build_patient_answer_prompt(Full_case, doctor_question)``.
+
+    The patient gets the FULL case, not the partial vignette the doctor was
+    shown. That asymmetry is the point of the interview: at the 50% level the
+    doctor is missing things the patient can answer. Briefing the patient with
+    the symptom list alone -- as this adapter did -- is strictly less: it can
+    confirm or deny a symptom and can say nothing about onset or context.
+    """
+    adapter, samples = _adapter("medqdx", MEDQDX, sample_size=30)
+    by_level = {}
+    for sample in samples:
+        by_level.setdefault(sample.metadata.get("condition"), sample)
+
+    assert "50pct" in by_level, "no 50% sample to compare against"
+    sample = by_level["50pct"]
+    brief = adapter._patient_brief(sample)
+    doctor_sees = sample.fields["observation"]
+
+    assert len(sample.metadata["_full_case"]) > len(doctor_sees), (
+        "the patient knows no more than the doctor, so the interview is empty"
+    )
+    assert sample.metadata["_full_case"][:60] in brief
+    # The release's own wording, and its own no-invention rule.
+    assert "Do not add, remove, or invent any details" in brief
+    assert 'reply honestly: "No," or "I have not noticed that."' in brief
+    # And still never the answer.
+    assert str(sample.reference["gold"]).lower() not in brief.lower()
+
+
+def test_medqdx_unrecorded_details_get_the_releases_answer():
+    """The patient says "No," / "I have not noticed that", not "I'm not sure".
+
+    The doctor-side prompt does mention "I'm not sure", which is an
+    inconsistency upstream; the patient-side wording is what produced the
+    recorded answers, so it is what the environment says.
+    """
+    adapter, samples = _adapter("medqdx", MEDQDX)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    reply = _step(adapter, sample, state, "Have you ever been to Antarctica?")
+    patient_line = reply.splitlines()[0]
+    assert "I have not noticed that" in patient_line
+    assert "I'm not sure" not in patient_line
+    # The DOCTOR's rules do still mention it, because the release's
+    # doctor-side prompt does: "If the patient responded \"I'm not sure,\"
+    # ask a broader or differently phrased question". Only the patient's own
+    # wording changed.
+    assert "I'm not sure" in reply
