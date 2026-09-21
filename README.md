@@ -509,13 +509,17 @@ default:
 |---|---|---|
 | MedQDx | the patient, answering from the case's symptom list | `openai/gpt-4o-mini` |
 | Med-Inquire | the Patient and the Examination agent, separately | `openai/gpt-4o-mini` |
-| VivaBench | the examiner's mapper, resolving a request to the case's keys | `openai/gpt-4.1` |
+| VivaBench | the examiner's mapper, resolving a request to the case's keys | `openai/gpt-5.6-luna` |
 
 **This changes what those three scores mean, and you have to know it to compare
 two runs.** A number from a simulated interview depends on a second model's
 comprehension. Temperature is 0 and a seed is sent where the vendor takes one,
 which narrows run-to-run variation; it does not remove it, because a hosted
-model is not bit-stable. Every run therefore records which model played each
+model is not bit-stable. Note that `gpt-5.6-luna` does not accept
+`temperature`, so VivaBench's mapper is pinned by its seed alone. Reasoning and
+web search are both disabled for every simulator: the brief contains everything
+needed, a chain would share the reply's token budget, and a simulator that
+looked something up would be answering from the internet rather than the case. Every run therefore records which model played each
 environment, on what settings, and how often it had to be retried — in the
 workbook's **`Simulators`** sheet, in `RunResult.simulators`, and per episode in
 the record's `usage.simulated_by`.
@@ -562,7 +566,9 @@ the release's own `ASSISTANT_BASE_PROMPT`, the examiner's replies are the
 release's strings, the workflow gate (`reviewed_patient`) closes history and
 examination once the work-up starts, and the limits are read from the release's
 own `configs/evaluate.yaml`, and the request-to-finding mapping is the
-release's gpt-4.1 when the simulator is on (see *Who plays the patient*).
+a model when the simulator is on -- the release's own mapper is gpt-4.1 and
+this suite's is configured separately, so that axis is not matched (see *Who
+plays the patient*).
 
 ## Making a run faster without touching quality
 

@@ -23,8 +23,9 @@ provisional acknowledgement and the out-of-time warning -- are kept verbatim:
 they carry no reasoning request, and the wording is what tells the agent a door
 has closed.  **The mapper is configurable.**  VivaBench resolves a free-text
 request to a finding with an LLM (``LLMMapper``/``LLMParser``, gpt-4.1 by
-default).  With ``engine.simulator`` enabled this adapter does the same, and
-keeps the release's split: the model chooses *which* recorded keys the request
+default).  With ``engine.simulator`` enabled this adapter does the same -- with
+whichever model the run names, which need not be gpt-4.1 -- and keeps the
+release's split: the model chooses *which* recorded keys the request
 resolves to, and the finding itself is still rendered from the case, so it can
 decide what is disclosed and never what it says.  With the simulator off, a
 lexical matcher stands in -- deterministic and reproducible, and visible in the
@@ -316,7 +317,8 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     )
 
     #: The release resolves a free-text request to the case's own keys with a
-    #: model (``LLMMapper``/``LLMParser``, gpt-4.1 by default) and then has the
+    #: model (``LLMMapper``/``LLMParser``, gpt-4.1 by default; this suite names
+    #: its own in ``engine.simulator``) and then has the
     #: Examiner read the recorded finding back.  This reproduces that split:
     #: the mapper chooses *which* keys are disclosed, and the finding itself is
     #: still rendered from the case by :meth:`EvidenceStore.reveal_keys`.  So a
@@ -486,11 +488,12 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         """One examiner turn, following ``Examiner.process_response``.
 
         The routing, the order of the checks and the examiner's replies are the
-        release's, and so is the mapping from a free-text request to a finding
-        when ``engine.simulator`` is configured (the release's own default for
-        it is gpt-4.1). Without one, the request is matched lexically instead
-        -- reproducible, and the one place the adapter then departs from the
-        release's behaviour.
+        release's, and so is the *shape* of the mapping from a free-text
+        request to a finding when ``engine.simulator`` is configured -- though
+        not the model doing it, which is configured per run and need not be
+        the release's gpt-4.1. Without a simulator the request is matched
+        lexically instead: reproducible, and the one place the adapter then
+        departs from the release's behaviour altogether.
         """
         action = parse_action(assistant_text, actions=self.ACTIONS)
         if not action.parsed and not action.action:
@@ -843,10 +846,13 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             caveats=[
                 "THE EXAMINER IS A SECOND MODEL WHEN ONE IS CONFIGURED, AND THE SCORE IS "
                 "THEN NOT BIT-REPRODUCIBLE. The release resolves a free-text request with "
-                "its own LLMMapper/LLMParser (gpt-4.1 by default); with engine.simulator "
-                "enabled this adapter does the same, keeping the release's split -- the "
-                "model picks which recorded keys the request resolves to, and the finding is "
-                "still rendered from the case, so it cannot invent a result. Two runs of the "
+                "its own LLMMapper/LLMParser, gpt-4.1 by default; with engine.simulator "
+                "enabled this adapter reproduces that DESIGN but not necessarily that "
+                "MODEL -- the mapper is named per run in engine.simulator.by_dataset, and "
+                "results are not comparable to published numbers on that axis. The split is "
+                "the release's either way: the model picks which recorded keys the request "
+                "resolves to, and the finding is still rendered from the case, so it cannot "
+                "invent a result. Two runs of the "
                 "same system can now disagree because the mapper did; temperature 0 and a "
                 "seed narrow that and do not remove it. Which model mapped, and how often it "
                 "had to be retried, is in the run's Simulators sheet and in each task's "

@@ -625,8 +625,44 @@ def test_the_settings_that_shape_a_reply_are_all_recorded():
                              model="openai/gpt-4.1", api_key="sk-secret-9Q7X")
     record = config.as_record()
     assert set(record) == {"model", "base_url", "temperature", "seed",
-                           "max_tokens", "max_retries"}
+                           "max_tokens", "max_retries", "extra"}
     assert "sk-secret-9Q7X" not in json.dumps(record)
+
+
+def test_vendor_fields_reach_the_request():
+    """`extra` is how a reasoning model is told not to reason."""
+    simulator, client = _simulator(["ok"], extra={"reasoning": {"enabled": False}})
+    asyncio.run(simulator.ask(hidden_brief="b", conversation=[]))
+    payload = client.sampling[0].to_payload()
+    assert payload["reasoning"] == {"enabled": False}
+
+
+def test_no_simulator_may_reason_or_search(monkeypatch):
+    """A simulator reads a record back; there is nothing there to think about.
+
+    A chain would share `max_tokens` with the reply -- and an empty reply is
+    retried and then fails the episode -- as well as being slower and landing
+    in the audit log as material nobody asked for. Search is worse than
+    useless: a simulator that looked something up would be answering from the
+    internet instead of from the case, which is not the environment the paper
+    describes.
+    """
+    from abductionbench.core.config import load_run_config
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("ABENCH_API_KEY", "k")
+    config = load_run_config(Path("configs/runs/pilot.yaml")).engine.simulator
+    for dataset_id in ("medqdx", "med_inquire", "vivabench"):
+        resolved = config.for_dataset(dataset_id)
+        assert resolved.extra.get("reasoning") == {"enabled": False}, dataset_id
+        assert resolved.extra.get("plugins") == [], dataset_id
+        # OpenRouter turns search on with an `:online` model suffix too.
+        assert not resolved.model.endswith(":online"), dataset_id
+        # And it is recorded, because whether the model reasoned or searched
+        # shapes the reply and cannot be reconstructed from the result later.
+        record = resolved.as_record()["extra"]
+        assert record["reasoning"] == {"enabled": False}
+        assert record["plugins"] == []
 
 
 def test_the_pinned_sampling_is_actually_sent():
@@ -659,7 +695,12 @@ def test_the_run_config_wires_the_two_requested_models():
     assert config.enabled is True
     assert config.for_dataset("medqdx").model == "openai/gpt-4o-mini"
     assert config.for_dataset("med_inquire").model == "openai/gpt-4o-mini"
-    assert config.for_dataset("vivabench").model == "openai/gpt-4.1"
+    viva = config.for_dataset("vivabench")
+    assert viva.model == "openai/gpt-5.6-luna"
+    # A reasoning model shares max_tokens between its chain and its reply; at
+    # the 512 default a long chain returns empty content, which is retried and
+    # then fails the episode.
+    assert viva.max_tokens >= 2048
     assert config.temperature == 0.0
 
 

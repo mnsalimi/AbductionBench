@@ -76,6 +76,11 @@ engine:
     # subject is not what the benchmark measures, and one small model plays
     # both so the two are comparable.
     model: openai/gpt-4o-mini
+    # Honoured where the model takes it. gpt-5.6-luna does NOT list
+    # `temperature` among its supported parameters, so OpenRouter drops it and
+    # VivaBench's mapper is pinned by its seed alone. Left set because it does
+    # apply to the two patient simulators, and because a model that starts
+    # accepting it should get 0.
     temperature: 0.0
     seed: 20260903
     # A patient's turn is a sentence or two. A long reply is a malfunction,
@@ -83,12 +88,43 @@ engine:
     max_tokens: 512
     max_retries: 3
     max_parallel_calls: 8
+    # NO REASONING AND NO SEARCH, ANYWHERE. A simulator reads a record back to
+    # the model under test -- what the patient's notes say, which recorded
+    # findings a request names. Both are answerable from the brief alone.
+    #
+    # `reasoning.enabled: false`: a chain costs three ways. It shares
+    # max_tokens with the reply (a long one returns empty content, which the
+    # simulator retries and then fails the episode on), it is slower --
+    # measured 3.2 s against 1.2 s for the same mapper call -- and it lands in
+    # the audit log as material nobody asked for. Ignored by models that do
+    # not reason.
+    #
+    # `plugins: []`: OpenRouter's web search is opt-in, through the `web`
+    # plugin or an `:online` model suffix, and this run uses neither -- so
+    # search is off already and this states it rather than relying on it. A
+    # simulator that looked anything up would be answering from the internet
+    # instead of from the case, which is not the environment the paper
+    # describes. Verified: asked to "search the web" mid-request, both models
+    # answered from the brief and returned no citations.
+    extra:
+      reasoning:
+        enabled: false
+      plugins: []
     by_dataset:
       vivabench:
-        # The release's own default for its LLMMapper/LLMParser, and a harder
-        # job than the other two: it resolves a free-text request against a
-        # whole structured case file rather than answering from a history.
-        model: openai/gpt-4.1
+        # A harder job than the other two: resolving a free-text request
+        # against a whole structured case file, rather than answering from a
+        # history. The release's own default here is gpt-4.1; this is
+        # deliberately not that, so VivaBench's mapper is NOT the model the
+        # paper used and its numbers are not directly comparable on that axis.
+        model: openai/gpt-5.6-luna
+        # The mapper only ever emits a short JSON array, so this is headroom
+        # rather than a budget: `extra.reasoning.enabled: false` above already
+        # stops the chain that would otherwise share it. Kept generous in case
+        # a provider ignores that flag -- an empty reply is retried three times
+        # and then fails the episode, which is a bad way to learn it was
+        # ignored.
+        max_tokens: 2048
 
 prompts:
   # Only where the judge templates are found. There are no dataset bindings any

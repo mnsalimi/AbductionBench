@@ -151,6 +151,9 @@ class EnvironmentSimulator:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             seed=self.config.seed,
+            # Vendor fields, passed through as written -- `reasoning` among
+            # them. Sorted so the sampling signature is stable.
+            extra=tuple(sorted(self.config.extra.items())),
         )
 
         last_error: str | None = None

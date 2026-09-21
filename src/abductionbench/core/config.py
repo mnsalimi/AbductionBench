@@ -709,6 +709,12 @@ class SimulatorConfig(_Base):
     max_retries: int = 3
     #: How many simulator calls may be in flight across the whole run.
     max_parallel_calls: int = 8
+    #: Vendor-specific request fields, merged into the body as written. This
+    #: is where a reasoning model is told not to reason: OpenRouter takes
+    #: ``reasoning: {enabled: false}``, and without it the chain shares
+    #: ``max_tokens`` with the reply and is returned in the audit log. The
+    #: simulator's job is to read a record back, not to think about it.
+    extra: dict[str, Any] = Field(default_factory=dict)
     #: ``dataset_id -> {model, temperature, seed, ...}``, overriding the above.
     #: MedQDx and Med-Inquire simulate a patient, VivaBench an examiner holding
     #: a full case file, so they do not have to be the same model.
@@ -765,6 +771,9 @@ class SimulatorConfig(_Base):
             "seed": self.seed,
             "max_tokens": self.max_tokens,
             "max_retries": self.max_retries,
+            # Part of the record because it shapes the reply: whether the
+            # model reasoned is not a detail a reader can reconstruct later.
+            "extra": dict(self.extra),
         }
 
 
