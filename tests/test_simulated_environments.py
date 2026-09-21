@@ -572,14 +572,41 @@ def test_an_enabled_simulator_with_nowhere_to_call_is_refused():
     """Silently falling back would produce a run that looks like it followed
     the papers and did not."""
     with pytest.raises(ValueError, match="base_url"):
-        SimulatorConfig(enabled=True, model="openai/gpt-4o-mini")
+        SimulatorConfig(enabled=True, model="openai/gpt-4o-mini", api_key="k")
     with pytest.raises(ValueError, match="model"):
-        SimulatorConfig(enabled=True, base_url="https://x/api")
+        SimulatorConfig(enabled=True, base_url="https://x/api", api_key="k")
+
+
+def test_a_remote_simulator_without_a_key_is_refused_but_a_local_one_is_not():
+    """A forgotten environment variable must not become a dataset of 401s.
+
+    Every episode would be recorded as an error, which is honest but useless.
+    Catching it at load costs nothing. A simulator served on this box may
+    legitimately need no key, so the rule is about reaching off the machine.
+    """
+    with pytest.raises(ValueError, match="api_key"):
+        SimulatorConfig(enabled=True, model="m", base_url="https://openrouter.ai/api")
+    local = SimulatorConfig(enabled=True, model="m", base_url="http://127.0.0.1:18000")
+    assert local.api_key is None
+    # And a disabled simulator never needs one, so a box with no key can still
+    # load every config in the repository.
+    assert SimulatorConfig().enabled is False
+
+
+def test_the_shipped_config_loads_without_the_key_when_the_simulator_is_off(monkeypatch):
+    """pilot.yaml is loaded by every run, including on boxes with no key."""
+    from abductionbench.core.config import load_run_config
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("ABENCH_API_KEY", "x")
+    monkeypatch.setenv("ABENCH_SIMULATOR", "false")
+    config = load_run_config(Path("configs/runs/pilot.yaml"))
+    assert config.engine.simulator.enabled is False
 
 
 def test_each_dataset_can_name_its_own_model():
     config = SimulatorConfig(
-        enabled=True, base_url="https://x/api", model="openai/gpt-4o-mini",
+        enabled=True, base_url="https://x/api", model="openai/gpt-4o-mini", api_key="k",
         by_dataset={"vivabench": {"model": "openai/gpt-4.1", "max_tokens": 256}},
     )
     assert config.for_dataset("medqdx").model == "openai/gpt-4o-mini"
@@ -639,7 +666,7 @@ def test_the_run_config_wires_the_two_requested_models():
 def test_a_pool_shares_one_client_per_endpoint_and_model():
     async def _check():
         pool = SimulatorPool(
-            SimulatorConfig(enabled=True, base_url="https://x/api", model="m",
+            SimulatorConfig(enabled=True, base_url="https://x/api", model="m", api_key="k",
                             by_dataset={"vivabench": {"model": "other"}}),
             TimeoutConfig(),
         )

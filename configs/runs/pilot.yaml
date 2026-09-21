@@ -67,7 +67,11 @@ engine:
     # Never written here. `abench` is run from a login shell, which sources
     # ${WORKSPACE}/.env; put the key there (chmod 600) and it stays out of
     # the repository and out of every log and result.
-    api_key: ${env:OPENROUTER_API_KEY}
+    # Empty default on purpose: this file is loaded by every run, including
+    # ones with the simulator off and on boxes that have no key. A missing key
+    # is caught by SimulatorConfig when the simulator is actually enabled, not
+    # by refusing to parse the config.
+    api_key: ${env:OPENROUTER_API_KEY|}
     # The patient for MedQDx and Med-Inquire: they are interviews whose
     # subject is not what the benchmark measures, and one small model plays
     # both so the two are comparable.

@@ -25,6 +25,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -728,6 +729,14 @@ class SimulatorConfig(_Base):
             name for name, value in (("model", self.model), ("base_url", self.base_url))
             if not str(value).strip()
         ]
+        # A key is required for anything that is not on this box. Demanding one
+        # unconditionally would break a locally served simulator that needs
+        # none; not demanding one at all turns a forgotten environment variable
+        # into a whole dataset of 401s recorded as errored episodes.
+        if not missing and not (self.api_key or "").strip():
+            host = urlsplit(self.base_url).hostname or ""
+            if host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+                missing.append("api_key")
         if missing:
             raise ValueError(
                 "engine.simulator is enabled but "
