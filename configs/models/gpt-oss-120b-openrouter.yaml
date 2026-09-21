@@ -1,0 +1,86 @@
+# openai/gpt-oss-120b as a judge, bought from OpenRouter instead of served here.
+#
+# THIS MODEL IS THE JUDGE, not a model under evaluation: `judge_only: true`
+# keeps the engine from planning tasks for it (ModelConfig.judge_only /
+# RunConfig.evaluated_models).
+#
+# Why off-box at all: the 120b's 60.8 GiB of MXFP4 weights take two thirds of
+# this card on their own, so serving it here means nothing else can be served
+# at the same time -- which is exactly the constraint that forced judge passes
+# to be deferred to a second run. Renting it leaves the whole GPU to the models
+# under test and lets the judge run *inside* the same pass.
+#
+# NO BATCH ROUTE, DELIBERATELY. Two things were checked against the live API
+# rather than assumed:
+#
+#   * `openai/gpt-oss-120b:batch` does not exist. OpenRouter does publish
+#     `:batch` variants for some models, but for this one the id 404s:
+#       {"error":{"message":"No endpoints found for openai/gpt-oss-120b:batch"}}
+#     The plain id serves normally (provider AkashML / Mancer at the time of
+#     writing), so that is what this file names.
+#   * `POST /v1/chat/completions/batch` 404s on OpenRouter. That route is a
+#     vLLM extension -- it takes `messages: [[...],[...]]`, which is not an
+#     OpenAI request shape -- so no OpenAI-compatible gateway serves it.
+#
+# `batch.enabled: false` therefore says the truth, and the judge stage reads it:
+# with no batch route it sets chunk_size to 1 and dispatches every verdict as
+# its own request, all of them together under `asyncio.gather`, throttled only
+# by `engine.judge.max_parallel_calls`. Concurrency is bought there, not here --
+# see configs/runs/reasoning_openrouter.yaml, which raises it.
+model:
+  id: gpt-oss-120b-openrouter
+  model_name: openai/gpt-oss-120b
+  description: >-
+    117B-total / 5.1B-active MoE reasoning model, rented from OpenRouter to
+    grade answers and reasoning chains while the GPU serves the models under
+    test.
+  # Reasoning model: OpenRouter returns the chain in `reasoning` and the verdict
+  # in `content`, so `content` can be null if the chain eats the budget. The
+  # judges cap that with `reasoning_effort: low`.
+  reasoning_model: true
+  judge_only: true
+
+  endpoint:
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    # The same key the patient/environment simulators use (engine.simulator in
+    # pilot.yaml). It lives in /workspace/.env, outside the repo.
+    api_key: ${env:OPENROUTER_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: false
+    discovery:
+      # A public API never rotates its address.
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # A verdict is a short classification. The reasoning judge asks for more in
+    # its own config (4,096); this is the floor both judges start from.
+    max_tokens_default: 2048
+    max_tokens_cap: 32000
+    max_tokens_floor: 64
+    extra: {}
+
+  limits:
+    # With no batch route a "batch" is one request, so this is the per-model
+    # ceiling on judge requests in flight. It has to be at least as large as the
+    # judges' `max_parallel_calls` or it, not they, becomes the real limit.
+    max_parallel_batches: 64
+    # Left null: OpenRouter's limits vary with the account's credit balance and
+    # the serving provider, and 429 already has its own longer backoff in
+    # core/retry.py. A fixed number here would either throttle below what the
+    # account allows or fail to stop what it does not.
+    requests_per_minute: null
+    tokens_per_minute: null
+    context_window: 131072
+
+  notes:
+    served_by: OpenRouter (openai/gpt-oss-120b)
+    batch_route_note: >-
+      Neither the `:batch` model id nor the vLLM `/v1/chat/completions/batch`
+      route exists on OpenRouter -- both return 404. Judge concurrency comes
+      from engine.judge.max_parallel_calls instead.

@@ -1,0 +1,88 @@
+# The full suite on the three small models this box can serve at once, with
+# BOTH judges live in the same pass -- rented from OpenRouter rather than
+# served here.
+#
+# What it changes against reasoning.yaml, and why each change is needed:
+#
+#   * The judge moves off the card. gpt-oss-20b and gpt-oss-120b both had to
+#     share the GPU with whatever was being evaluated, and the 120b could not:
+#     its weights left ~269 MiB free and cuBLAS died allocating a GEMM
+#     workspace. Renting it frees the whole card for the models under test, so
+#     three of them fit AND the judges run inline instead of in a later pass.
+#   * Three models under test, not five. gemma-4-31b takes 0.93 of this card by
+#     itself, so it cannot be up beside anything; gpt-oss-20b-local was only
+#     ever here to judge. What is left is exactly what fits together.
+#   * Judge concurrency is bought with requests, not batch size. OpenRouter has
+#     no batch route (see configs/models/gpt-oss-120b-openrouter.yaml), so each
+#     verdict is its own HTTP call and `max_parallel_calls` is the only lever.
+#     At the inherited 8 the judge would be the bottleneck for a run whose
+#     models answer 64 sequences at a time apiece.
+#
+# Run it with the three vLLM services up and synpat off:
+#   ABENCH_JUDGE_MODEL=gpt-oss-120b-openrouter ABENCH_SYNPAT=false \
+#     abench run configs/runs/reasoning_openrouter.yaml
+extends:
+  - reasoning.yaml
+
+name: reasoning-openrouter
+description: >-
+  The whole suite on gemma-4-E2B, gemma-4-E4B and Qwen3.5-2B served side by
+  side on this box, with the answer judge and the reasoning-chain judge both
+  answered by openai/gpt-oss-120b on OpenRouter inside the same pass.
+
+engine:
+  concurrency:
+    # Three servers to keep fed instead of one, and a task spends part of its
+    # life waiting on a judge rather than on a model. 8 -> 16.
+    max_parallel_tasks: 16
+    # Has to cover what the per-model limits ask for, or it silently becomes
+    # the real limit: e4b 8 + qwen 4 + e2b 8 = 20. 24 leaves headroom without
+    # letting any one model exceed its own cap.
+    max_parallel_batches_global: 24
+
+  judge:
+    enabled: true
+    # Not deferred. The whole point of renting the judge is that it no longer
+    # competes with the models for GPU, so there is nothing left to defer.
+    defer: false
+    model: ${env:ABENCH_JUDGE_MODEL|gpt-oss-120b-openrouter}
+    # With no batch route the judge stage sets chunk_size to 1 regardless of
+    # this, so it is left alone rather than tuned to a number that no longer
+    # means anything. It still matters if the judge is pointed back at a local
+    # vLLM with ABENCH_JUDGE_MODEL, which is why it is not removed.
+    group_size: ${env:ABENCH_GROUP_SIZE|8}
+    # THE lever. 8 -> 48: one in-flight request per verdict, dispatched
+    # together under asyncio.gather and throttled only here. Sized to stay
+    # under the judge model's own max_parallel_batches (64) while leaving room
+    # for the reasoning judge to run beside it. 429s are not a reason to lower
+    # it blindly -- core/retry.py gives rate limits their own longer backoff.
+    max_parallel_calls: ${env:ABENCH_JUDGE_CALLS|48}
+
+  reasoning_judge:
+    enabled: true
+    model: ${env:ABENCH_JUDGE_MODEL|gpt-oss-120b-openrouter}
+    # Same reasoning as above, one step lower: this stage issues several calls
+    # per sample (steps, observation inventory, option count, then every metric
+    # family), so at equal settings it would crowd out the answer judge they
+    # both share an endpoint with.
+    max_parallel_calls: ${env:ABENCH_REASONING_JUDGE_CALLS|32}
+    # UNCHANGED AT 8, deliberately, and not because it is inert here. If this
+    # run is ever re-judged against a local vLLM, temperature-0 inference is
+    # not bit-stable across batch sizes, so changing the group size changes
+    # verdicts and breaks comparability with every earlier run.
+    group_size: 8
+
+models:
+  # The three that fit on this card together. The GPU split that makes that
+  # true lives in each service's .env under /workspace/vllm_serving --
+  # 0.42 / 0.26 / 0.25 of the card, against the 0.55 / 0.52 / 0.40 each was
+  # given when it only had to share with one other model.
+  - file: ../models/gemma-4-e4b-local.yaml
+  - file: ../models/qwen3-5-2b-local.yaml
+  - file: ../models/gemma-4-e2b-local.yaml
+
+  # The judge, off-box. `judge_only: true` in its own file, so it is graded by
+  # nothing and grades everything: a model scoring its own answers or its own
+  # reasoning is the confound both judges exist to avoid, and none of the three
+  # above is a gpt-oss.
+  - file: ../models/gpt-oss-120b-openrouter.yaml

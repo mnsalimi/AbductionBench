@@ -1,5 +1,11 @@
 dataset:
   id: synpat
+  # On by default; turned off for one run without touching the other 42 with
+  #   ABENCH_SYNPAT=false abench run <config>
+  # A run config cannot disable a single globbed dataset -- `datasets:` entries
+  # are appended, not merged by id -- so the switch has to live in the dataset's
+  # own file, which is also where the run configs say to put it.
+  enabled: ${env:ABENCH_SYNPAT|true}
   impl: abductionbench.adapters.synpat:SynPATAdapter
   options: {}
   # No options: the release's generated .dat files are deliberately not read.
