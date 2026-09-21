@@ -34,7 +34,7 @@ def test_shipped_templates_load(prompt_dir: Path):
     generic = {
         template
         for template in ids
-        if not template.startswith(("reasoning_", "proxy_"))
+        if not template.startswith(("reasoning_", "proxy_", "interaction_"))
     }
     assert generic == {"judge_binary_v1", "judge_binary_plausibility_v1"}
     assert {template for template in ids if template.startswith("proxy_")} == {
@@ -1184,11 +1184,22 @@ def test_no_shipped_selection_dataset_is_told_the_wrong_label_kind():
 # every answer judge is strictly binary
 # --------------------------------------------------------------------------- #
 
-#: The judges that grade an *answer*. The ``reasoning_*`` family measures the
-#: shape of a chain of thought -- step counts, coverage, branchiness -- and is
-#: deliberately not binary; it is excluded here and must stay excluded.
+#: The judges that grade an *answer*: one verdict, for the thing the model was
+#: asked to produce.
+#:
+#: Two families are excluded, and for the same reason -- neither returns an
+#: answer verdict, so "is the score 1 or 0" is not a question about them:
+#:
+#: * ``reasoning_*`` measures the shape of a chain of thought (step counts,
+#:   coverage, branchiness). Deliberately not binary.
+#: * ``interaction_*`` returns one binary verdict PER STEP of an episode, as a
+#:   list. Binary per element, but its contract is ``list_of_binary`` rather
+#:   than a single ``score_regex``, so the answer-judge shape does not fit it.
+_NOT_ANSWER_JUDGES = ("reasoning_", "interaction_")
+
+
 def _answer_judge_ids(registry) -> list[str]:
-    return [t for t in registry.ids() if not t.startswith("reasoning_")]
+    return [t for t in registry.ids() if not t.startswith(_NOT_ANSWER_JUDGES)]
 
 
 def test_every_answer_judge_asks_for_a_strictly_binary_score(prompt_dir: Path):
@@ -1244,6 +1255,9 @@ def test_the_reasoning_judges_were_left_alone(prompt_dir: Path):
     registry = _registry(prompt_dir)
     reasoning = [t for t in registry.ids() if t.startswith("reasoning_")]
     assert len(reasoning) >= 10, "the reasoning family went missing"
+    # The interaction judge is per-step and binary per element, but it is not
+    # an answer judge either; it must not drift into that guard.
+    assert any(t.startswith("interaction_") for t in registry.ids())
     non_binary = [
         t for t in reasoning
         if "[01]" not in str((registry.get(t).output_contract or {}).get("score_regex", ""))

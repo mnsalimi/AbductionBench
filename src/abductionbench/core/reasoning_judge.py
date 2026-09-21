@@ -94,6 +94,8 @@ _REQUIRED_TEMPLATES = {
     "prior_knowledge",
     "anchoring_point",
     "unresolved_contradiction",
+    # interaction, bought separately for interactive deliveries
+    "step_relevance",
 }
 
 #: Per-step outputs, stored whole as JSON arrays on the sample row.
@@ -123,6 +125,8 @@ REASONING_LIST_COLUMNS: tuple[str, ...] = (
     "reasoning_uncertainty_per_step",
     "reasoning_prior_knowledge_per_step",
     "reasoning_unresolved_per_step",
+    # One verdict per ACTION of an interactive episode, not per reasoning step.
+    "interaction_step_relevance_per_step",
 )
 
 REASONING_METRIC_COLUMNS: tuple[str, ...] = (
@@ -1076,6 +1080,125 @@ class ReasoningJudgeStage:
             if not target.reference:
                 target.inapplicable.append("anchoring_point:no_reference_answer_to_anchor_on")
         await asyncio.gather(*wave_two)
+
+    # -- interaction relevance: a sibling pass, not part of the above -------- #
+
+    async def apply_interaction(
+        self,
+        adapter: DatasetAdapter,
+        identity: TaskIdentity,
+        prompts: list[RenderedPrompt],
+        scored: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+    ) -> list[tuple[SampleSpec, ModelResponse, SampleScore]]:
+        """Was each action of an interactive episode relevant to the answer?
+
+        Deliberately separate from :meth:`apply`, and sharing nothing with it
+        but the cache, the audit log and the call budget:
+
+        * It runs on **interactive deliveries**, not on cot. Every interactive
+          dataset here is ``io_only``, so the reasoning pass never sees one --
+          and what this measures is the episode's *actions*, which exist
+          whether or not the model was asked to reason aloud.
+        * It reads the **transcript**, not a chain of thought. The steps are
+          what the model did and what the environment answered.
+
+        The pair with ``interaction_steps`` is the point. That counts what an
+        episode spent; this says how much of it did any work. A model that
+        reaches the answer in nineteen actions of which four mattered is not
+        the same as one that took four.
+        """
+        if identity.data_delivery_mode != "interactive" or not scored:
+            return scored
+
+        prompt_by_id = {prompt.sample_id: prompt for prompt in prompts}
+        updated = list(scored)
+        requests: dict[str, dict[str, Any]] = {}
+        steps_by_id: dict[str, int] = {}
+        for index, (sample, _response, _score) in enumerate(scored):
+            prompt = prompt_by_id.get(sample.sample_id)
+            if prompt is None:
+                continue
+            actions, final = self._episode_actions(sample)
+            if not actions or not final:
+                # One action and nothing before it is not an investigation;
+                # there is no step whose relevance could differ.
+                continue
+            request_id = f"{index}"
+            requests[request_id] = {
+                "question": self._opening(sample, prompt),
+                "steps": _numbered(actions),
+                "model_answer": final,
+                "reference_answer": str(sample.reference.get("gold") or "")[:400],
+            }
+            steps_by_id[request_id] = len(actions)
+
+        if not requests:
+            return updated
+
+        results = await self._judge_many("step_relevance", requests, identity=identity)
+        for request_id, blob in results.items():
+            index = int(request_id)
+            sample, response, score = updated[index]
+            verdicts = _binary_list((blob or {}).get("relevance_per_step"),
+                                    steps_by_id[request_id])
+            metrics = dict(score.metrics)
+            details = dict(score.details or {})
+            if verdicts is None:
+                details["interaction_step_relevance"] = (
+                    "unjudged: the judge returned no usable per-step list"
+                )
+            else:
+                metrics["interaction_relevant_steps"] = float(sum(verdicts))
+                metrics["interaction_irrelevant_steps"] = float(len(verdicts) - sum(verdicts))
+                # A RATE, so datasets with different budgets are comparable:
+                # four relevant actions out of four is not the same result as
+                # four out of nineteen.
+                metrics["interaction_step_relevance_rate"] = sum(verdicts) / len(verdicts)
+                details["interaction_step_relevance_per_step"] = verdicts
+            updated[index] = (
+                sample,
+                response,
+                SampleScore(
+                    metrics=metrics,
+                    prediction=score.prediction,
+                    parse_ok=score.parse_ok,
+                    details=details,
+                ),
+            )
+        return updated
+
+    @staticmethod
+    def _episode_actions(sample: SampleSpec) -> tuple[list[str], str]:
+        """``(actions with their results, the final answer)`` from the transcript.
+
+        The engine records the episode as alternating turns: the opening
+        messages, then the model's action and the environment's reply, over and
+        over. The LAST model turn is the answer; everything before it is an
+        action whose relevance is in question.
+        """
+        transcript = sample.metadata.get("_transcript") or []
+        turns = [row for row in transcript if isinstance(row, dict)]
+        assistant = [i for i, row in enumerate(turns) if row.get("role") == "assistant"]
+        if len(assistant) < 2:
+            return [], ""
+        final = str(turns[assistant[-1]].get("content") or "").strip()
+        actions: list[str] = []
+        for position in assistant[:-1]:
+            action = str(turns[position].get("content") or "").strip()
+            reply = ""
+            if position + 1 < len(turns) and turns[position + 1].get("role") == "user":
+                reply = str(turns[position + 1].get("content") or "").strip()
+            actions.append(f"ACTION: {action}\nRESULT: {reply}" if reply else f"ACTION: {action}")
+        return actions, final
+
+    @staticmethod
+    def _opening(sample: SampleSpec, prompt: RenderedPrompt) -> str:
+        """The situation the model started from, before it did anything."""
+        transcript = sample.metadata.get("_transcript") or []
+        for row in transcript:
+            if isinstance(row, dict) and row.get("role") == "user":
+                return str(row.get("content") or "")
+        return str(sample.fields.get("observation") or "")
 
     # -- one family's calls -------------------------------------------------- #
 

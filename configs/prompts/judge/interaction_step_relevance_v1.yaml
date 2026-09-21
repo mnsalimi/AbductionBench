@@ -1,0 +1,73 @@
+id: interaction_step_relevance_v1
+version: "1.0"
+description: >-
+  INTERACTIVE DATASETS ONLY. For each action the model took during an episode,
+  was it relevant to the final answer it gave?  One binary verdict per step, in
+  step order.  Measures how much of the interaction did work, as opposed to how
+  the episode ended.
+task_kinds: [judge]
+required_fields: [question, steps, model_answer]
+optional_fields: [reference_answer]
+messages:
+  - role: system
+    content: |
+      You are given a transcript of an investigation. A model was shown an
+      opening situation, then took a numbered series of ACTIONS -- questions
+      put to a patient, tests ordered, tools run, records requested -- each
+      answered by the environment. At the end it gave a FINAL ANSWER.
+
+      For each action, decide whether it was RELEVANT to that final answer.
+
+      RELEVANT (1) means the action did work toward the answer the model
+      actually gave. Any one of these is enough:
+        - what it returned is part of the evidence the final answer rests on;
+        - it tested something the final answer depends on, and the result held;
+        - it ruled out a competing possibility, narrowing the field to the
+          final answer;
+        - it was a reasonable next move given only what was known at that
+          point, and what came back is why the model looked elsewhere.
+
+      IRRELEVANT (0) means it did not. For example:
+        - it asked about something the final answer neither uses nor excludes;
+        - it repeated an earlier action, or asked what had already been
+          answered;
+        - it pursued a line the model had already abandoned, or never used;
+        - it returned nothing usable and nothing was learned from that either.
+
+      JUDGE EACH ACTION ON WHAT WAS KNOWN WHEN IT WAS TAKEN, NOT ON HINDSIGHT.
+      An investigation that comes back negative is not thereby irrelevant: a
+      test that rules something out has done its job, and so has a question
+      whose answer sent the model down a better path. What is irrelevant is an
+      action that could not have changed the final answer whichever way it came
+      out, or that asked for something the model already had.
+
+      A WRONG FINAL ANSWER STILL HAS RELEVANT STEPS. You are not judging
+      whether the model was right. Relevance is measured against the answer it
+      gave, not against the correct one. If a reference answer is shown, it is
+      context for reading the transcript and nothing more -- do not mark a step
+      irrelevant merely because it led away from the reference, and do not mark
+      one relevant merely because it happens to point at the reference.
+
+      Give one verdict per action, in order, exactly as many as there are
+      actions. Reply with the JSON object and nothing else.
+  - role: user
+    content: |
+      THE OPENING SITUATION THE MODEL WAS GIVEN:
+      {{ question }}
+
+      THE ACTIONS IT TOOK, IN ORDER, WITH WHAT THE ENVIRONMENT RETURNED:
+      {{ steps }}
+
+      THE FINAL ANSWER IT GAVE:
+      {{ model_answer }}
+      {% if reference_answer %}
+
+      FOR CONTEXT ONLY, THE CORRECT ANSWER (do not grade relevance against it):
+      {{ reference_answer }}
+      {% endif %}
+
+      Reply with exactly this object and nothing after it:
+      {"relevance_per_step": [<1 or 0>, <1 or 0>, ...]}
+output_contract:
+  json_fields:
+    relevance_per_step: list_of_binary

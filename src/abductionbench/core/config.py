@@ -581,6 +581,15 @@ def _reasoning_judge_templates() -> dict[str, str]:
         # SELECTION TASKS ONLY -- a generation task offers no options, and is
         # never sent here. The n that branchiness normalizes by.
         "option_count": "reasoning_option_count_v1",
+        # -- interaction, not reasoning ------------------------------------- #
+        #
+        # INTERACTIVE DELIVERY ONLY, and run for io as well as cot, because the
+        # interactive datasets are io_only: the thing it measures is the
+        # episode's actions, which exist whether or not the model was asked to
+        # reason. Bought by `ReasoningJudgeStage.apply_interaction`, which is a
+        # sibling of the reasoning pass and shares nothing with it but the
+        # cache, the audit log and the call budget.
+        "step_relevance": "interaction_step_relevance_v1",
         # -- wave two: everything the three above unlocked ------------------ #
         #
         # Places the inventory's observations in the chain; does not take its

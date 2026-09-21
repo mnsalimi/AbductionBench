@@ -1744,6 +1744,28 @@ class EvaluationEngine:
                         "produced; the task is marked failed", identity.slug,
                     )
 
+        # Interaction relevance: interactive deliveries only, io as well as cot.
+        # A sibling of the reasoning pass, not part of it -- every interactive
+        # dataset here is io_only, so the reasoning judge never sees one.
+        if (
+            self._reasoning_judge is not None
+            and identity.data_delivery_mode == "interactive"
+            and (scores or reused_triplets)
+            and not fatal
+        ):
+            try:
+                fresh_count = len(scores)
+                judged = await self._reasoning_judge.apply_interaction(
+                    adapter, identity, rendered, [*scores, *reused_triplets]
+                )
+                scores = judged[:fresh_count]
+                reused_triplets = judged[fresh_count:]
+            except Exception as exc:  # noqa: BLE001 - best-effort, like the rest
+                logger.exception(
+                    "task %s: interaction relevance stage failed: %s", identity.slug, exc
+                )
+                checkpoint.notes["interaction_judge_error"] = str(exc)
+
         reasoning_mode = identity.prompt_mode in (COT, SELF_CONSISTENCY)
         if self._reasoning_judge is not None and (scores or reused_triplets) and not fatal:
             try:
@@ -2461,7 +2483,8 @@ class EvaluationEngine:
                             prompt.sample, response, output_contract=prompt.output_contract
                         )
 
-                return await asyncio.to_thread(_scored)
+                scored = await asyncio.to_thread(_scored)
+                return self._with_interaction_steps(adapter, prompt, scored)
             except Exception as exc:  # noqa: BLE001 - a bad scorer must not kill the run
                 logger.exception(
                     "adapter %s: score() raised for sample %s", adapter.dataset_id, prompt.sample_id
@@ -2471,6 +2494,40 @@ class EvaluationEngine:
                     parse_ok=False,
                     details={"scorer_error": f"{type(exc).__name__}: {exc}"},
                 )
+
+    @staticmethod
+    def _with_interaction_steps(
+        adapter: DatasetAdapter, prompt: RenderedPrompt, score: SampleScore
+    ) -> SampleScore:
+        """How many turns the episode took, for every interactive dataset.
+
+        An interactive benchmark measures two things at once: whether the model
+        got there, and what it spent getting there. Two systems with the same
+        accuracy are not equivalent if one reached the answer in three actions
+        and the other in nineteen -- and on these datasets the second is often
+        the one that ran out of budget rather than the one that was thorough.
+
+        Emitted centrally rather than per adapter, so every interactive dataset
+        reports it under one name and a reader can compare across them.
+        Sequential and static deliveries have no episode and get nothing: a
+        column of 1.0s would invite exactly the cross-dataset comparison that
+        would be meaningless.
+
+        No judge: the engine counts the turns it drove.
+        """
+        if adapter.data_delivery_mode != "interactive":
+            return score
+        turns = prompt.sample.metadata.get("turns_used")
+        if not turns:
+            return score
+        metrics = dict(score.metrics)
+        metrics["interaction_steps"] = float(turns)
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details=score.details,
+        )
 
     @staticmethod
     def _repeat_metrics(
