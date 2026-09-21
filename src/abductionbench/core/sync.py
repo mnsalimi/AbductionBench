@@ -469,6 +469,34 @@ class ArtifactSync:
             return False
         return True
 
+    def _wait_out_backoff(self, reason: str) -> None:
+        """Sleep until a rate-limit backoff expires, for a closing pass only.
+
+        `final` overrides the backoff outright and `flush` did not, which is
+        the right rule everywhere except at the end of a run -- where `flush`
+        is what sends the reports, and there is no next tick to catch what it
+        skips. Observed on 20260921-012522_reasoning: the final pass verified
+        the remote, the reports were written 26 seconds later, and the flush
+        that should have sent them logged "standing down for another 753s" and
+        the process exited. 243 files stayed a revision behind, the workbook
+        among them.
+
+        Waiting rather than forcing, because the reason the destination
+        refused us is that we were going too fast, and one more request into a
+        live rate limit only lengthens it.
+        """
+        remaining = self._backoff_until - time.monotonic()
+        if remaining <= 0:
+            return
+        wait = min(remaining, self._CLOSING_LOCK_WAIT_S)
+        logger.info(
+            "artifact sync: the %s pass is waiting %.0fs for the destination's rate "
+            "limit to lift. This is the last upload of the run, so it waits rather "
+            "than skipping -- nothing follows it.",
+            reason, wait,
+        )
+        time.sleep(wait)
+
     def _clear_backoff(self) -> None:
         if self._rate_limited_in_a_row:
             logger.info("artifact sync: destination accepted us again; normal interval resumed")
@@ -548,6 +576,8 @@ class ArtifactSync:
         # and at DEBUG level, which is how a run could log "final upload" and
         # finish with 232 stale files on the remote.
         closing = reason in ("final", "flush")
+        if closing:
+            self._wait_out_backoff(reason)
         if not self._lock.acquire(blocking=closing,
                                   timeout=self._CLOSING_LOCK_WAIT_S if closing else -1):
             if closing:

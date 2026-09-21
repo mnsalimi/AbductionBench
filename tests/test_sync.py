@@ -749,3 +749,44 @@ def test_the_end_of_a_run_leaves_nothing_behind(tmp_path: Path):
         remote / "run-1" / "datasets/ds/model/tpl/run_documentation.md"
     ).read_text() == "written last"
     assert syncer._missing_files() == [], "the remote is not a copy of the run"  # noqa: SLF001
+
+
+def test_a_closing_flush_waits_out_a_rate_limit_instead_of_skipping(tmp_path: Path):
+    """The last upload of the run has nothing behind it to catch what it drops.
+
+    `final` overrode the destination's backoff and `flush` did not, which is
+    correct mid-run and wrong at the end: the reports are written after the
+    final pass, so `flush` is the only thing that sends them. It logged
+    "standing down for another 753s" and the process exited, leaving 243 files
+    a revision behind on the remote.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._CLOSING_LOCK_WAIT_S = 10.0  # noqa: SLF001
+
+    # The destination has just rate-limited us.
+    syncer._backoff_until = time.monotonic() + 0.5  # noqa: SLF001
+
+    started = time.monotonic()
+    syncer.flush()
+    waited = time.monotonic() - started
+
+    assert syncer.stats.ticks == 1, "the closing flush skipped the upload"
+    assert waited >= 0.4, "it did not wait for the rate limit to lift"
+    assert (remote / "run-1" / "engine.log").exists()
+
+
+def test_an_interval_pass_still_stands_down_under_a_rate_limit(tmp_path: Path):
+    """The waiting is for closing passes only.
+
+    An interval tick that pushed through a live rate limit would only lengthen
+    it, and another tick is coming anyway.
+    """
+    run, remote = _run_dir(tmp_path), tmp_path / "remote"
+    syncer = ArtifactSync(_config(remote), run, "run-1")
+    syncer._backoff_until = time.monotonic() + 30  # noqa: SLF001
+    started = time.monotonic()
+    syncer._tick(reason="interval")  # noqa: SLF001
+    assert time.monotonic() - started < 1.0, "an interval tick must not wait"
+    assert syncer.stats.ticks == 0
+    assert not (remote / "run-1").exists()
