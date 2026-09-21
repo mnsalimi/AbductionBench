@@ -129,7 +129,20 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     #: output, so fault_object_match stays a mechanical check beside the verdict.
     objective_metrics = False
     selection_cardinality = None
-    primary_metric = "root_cause_judged"
+    #: JOINT RCA ACCURACY, which is the paper's primary metric (S4.1.1):
+    #: "Our primary metric is Joint RCA Accuracy (JRA), the fraction of
+    #: episodes for which R_j = R*_j, equivalently C_j = C*_j and F_j = F*_j."
+    #: The outcome ground truth is a PAIR -- the faulty component and the fault
+    #: type -- and naming one without the other is not a diagnosis. This used
+    #: to headline `root_cause_judged`, which is the paper's Fault-Type
+    #: Accuracy (FA) alone, so a run that located every component and named
+    #: every mechanism wrongly scored the same as one that did the reverse.
+    #:
+    #: The mapping to the paper's names:
+    #:   fault_object_match  ~ CA  (Component Accuracy)
+    #:   root_cause_judged   ~ FA  (Fault-Type Accuracy)
+    #:   joint_rca_accuracy  ~ JRA (both correct; the primary)
+    primary_metric = "joint_rca_accuracy"
 
     # ------------------------------------------------------------------ #
     # the investigation -- replayed from the release's own tool cache
@@ -219,10 +232,23 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # The recording holds only the calls the reference agent made. Saying
             # so is honest: inventing a plausible kubectl output would be
             # fabricating cluster state, and the model would reason from it.
+            # The release's own wording, and its own semantics. Paper S3.2:
+            # "A supported query targeting a non-existent object returns the
+            # captured failure response, such as `Not Found`. A valid request
+            # outside the enumerated replay coverage returns `UnsupportedQuery`
+            # and is not interpreted as evidence about the system state."
+            #
+            # Those are two different answers and the distinction matters: a
+            # `Not Found` IS evidence -- the object genuinely is not there --
+            # and is in the recorded cache, so it arrives as a hit. A miss
+            # means the snapshot never recorded this call, which says nothing
+            # about the cluster. Saying "no recorded output ... try a different
+            # call" invited the model to read a coverage gap as an absence.
             return self._with_budget(
                 state,
-                f"{action}: no recorded output for those arguments in this case. "
-                "Try a different call.",
+                f"UnsupportedQuery: {action} with those arguments is outside this "
+                "case's recorded coverage. This is not evidence about the system "
+                "state; it tells you nothing about the cluster.",
             )
         body = C.clip_words(str(output), int(self.context.option("words_per_tool", 400)))
         return self._with_budget(state, body)
@@ -393,6 +419,9 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             # Seeded at 0 and filled by the judge, along with the difficulty
             # stratum, which is the same verdict seen through a filter.
             "root_cause_judged": 0.0,
+            # Set in apply_judge, once the fault type has a verdict to pair
+            # with the component match.
+            "joint_rca_accuracy": 0.0,
             # These two stay mechanical on purpose: the object is named in the
             # evidence the model was shown and the taxonomy is a small closed
             # vocabulary, so a string test asks a question with a right answer.
@@ -430,20 +459,22 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
     def apply_judge(
         self, sample: SampleSpec, response: ModelResponse, score: SampleScore, verdict: Any
     ) -> SampleScore:
-        return apply_judged_metric(score, verdict, "root_cause_judged")
+        judged = apply_judged_metric(score, verdict, "root_cause_judged")
+        # JRA: both halves of the pair, or neither counts.
+        judged.metrics["joint_rca_accuracy"] = float(
+            bool(judged.metrics.get("root_cause_judged"))
+            and bool(judged.metrics.get("fault_object_match"))
+        )
+        return judged
 
     def aggregate(self, scores: Sequence[SampleScore]) -> dict[str, float]:
         metrics = aggregate_mean_metrics([score.metrics for score in scores])
-        # A full diagnosis names both the cause and the object it applies to.
-        pairs = [
-            1.0
-            if score.metrics.get("root_cause_judged") and score.metrics.get("fault_object_match")
-            else 0.0
-            for score in scores
-            if "root_cause_judged" in score.metrics
-        ]
-        if pairs:
-            metrics["full_diagnosis_rate"] = sum(pairs) / len(pairs)
+        # `joint_rca_accuracy` is now a per-sample metric set in apply_judge,
+        # so the mean comes from aggregate_mean_metrics like everything else.
+        # `full_diagnosis_rate` is kept as its former name so a run made before
+        # this change is still comparable to one made after.
+        if "joint_rca_accuracy" in metrics:
+            metrics["full_diagnosis_rate"] = metrics["joint_rca_accuracy"]
         return metrics
 
     def documentation(self) -> AdapterDocumentation:

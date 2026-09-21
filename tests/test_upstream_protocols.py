@@ -567,3 +567,68 @@ def test_med_inquire_an_unlisted_test_costs_the_default():
     assert MedInquireAdapter._action_cost("ordertest", "skin biopsy") == 11.0   # default
     assert MedInquireAdapter._action_cost("askquestion", "anything") == 1.5
     assert MedInquireAdapter._action_cost("submitdiagnosis", "x") == 1.0
+
+
+def test_cloud_opsbench_primary_metric_is_joint_rca_accuracy():
+    """The paper, S4.1.1: "Our primary metric is Joint RCA Accuracy (JRA), the
+    fraction of episodes for which R_j = R*_j, equivalently C_j = C*_j and
+    F_j = F*_j."
+
+    The outcome ground truth is a PAIR -- faulty component and fault type --
+    and naming one without the other is not a diagnosis. We headlined
+    `root_cause_judged`, which is the paper's Fault-Type Accuracy alone, so a
+    run that located every component and named every mechanism wrongly scored
+    the same as one that did the reverse.
+    """
+    from abductionbench.adapters.cloud_opsbench import CloudOpsBenchAdapter
+    from abductionbench.core.types import SampleScore
+
+    assert CloudOpsBenchAdapter.primary_metric == "joint_rca_accuracy"
+
+    adapter = object.__new__(CloudOpsBenchAdapter)
+
+    class _Verdict:
+        score, positive, label, details = 1.0, True, "1", {}
+
+    # Component right, fault type right -> JRA 1.
+    both = adapter.apply_judge(
+        None, None,
+        SampleScore(metrics={"root_cause_judged": 0.0, "fault_object_match": 1.0,
+                             "joint_rca_accuracy": 0.0}),
+        _Verdict(),
+    )
+    assert both.metrics["joint_rca_accuracy"] == 1.0
+
+    # Fault type right, component wrong -> JRA 0, even though FA is 1.
+    half = adapter.apply_judge(
+        None, None,
+        SampleScore(metrics={"root_cause_judged": 0.0, "fault_object_match": 0.0,
+                             "joint_rca_accuracy": 0.0}),
+        _Verdict(),
+    )
+    assert half.metrics["root_cause_judged"] == 1.0
+    assert half.metrics["joint_rca_accuracy"] == 0.0
+
+
+def test_cloud_opsbench_a_cache_miss_is_unsupported_not_an_absence():
+    """The paper, S3.2: "A supported query targeting a non-existent object
+    returns the captured failure response, such as `Not Found`. A valid request
+    outside the enumerated replay coverage returns `UnsupportedQuery` and is not
+    interpreted as evidence about the system state."
+
+    Two different answers. A `Not Found` is evidence -- the object genuinely is
+    not there -- and lives in the recorded cache, so it arrives as a hit. A
+    miss means the snapshot never recorded the call, which says nothing about
+    the cluster. "No recorded output ... try a different call" invited the
+    model to read a coverage gap as an absence.
+    """
+    adapter, samples = _adapter("cloud_opsbench", CLOUD_OPSBENCH)
+    sample = samples[0]
+    _messages, state = adapter.interactive_start(sample)
+    reply = _step(
+        adapter, sample, state,
+        'Action: GetSourceCode\nAction Input: {"app_name": "nope", "file_path": "/nowhere"}',
+    )
+    assert "UnsupportedQuery" in reply
+    assert "not evidence" in reply.lower()
+    assert "no recorded output" not in reply.lower()
