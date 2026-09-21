@@ -331,16 +331,28 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
             "here, so judge this one on its own merits rather than against them.\n"
             f"Decide whether this hypothesis {asks}.\n"
             "Answer with only YES or NO.\n"
-            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} YES")
+            # Both options, not one of them: the example line is read as much
+            # as the instruction above it, and "Answer: YES" on every single
+            # BOV prompt is a standing nudge toward yes. Naming both is safe
+            # precisely because it is symmetric -- neither is favoured, and
+            # between them they cover every admissible answer.
+            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <YES or NO>")
         ), contract
 
     if modes.selection_mode == MCS:
         contract.update({"style": "multi_label", "labels_from_field": "option_labels"})
-        example = ", ".join(labels[:2]) if len(labels) > 1 else (labels[0] if labels else "1")
+        # A placeholder, not the first labels. A selection dataset reuses the
+        # same small pool -- A/B/C, 1/2/3 -- on every sample, so an example
+        # built from real labels shows the model "Answer: A, B" on all 150 of
+        # them. That is a constant, and a constant next to the answer line is
+        # a prior. Even an "e.g." would carry it, because the letters would be
+        # the same letters every time.
         return (
             "Select every hypothesis that applies -- there may be one or several.\n"
             f"Answer with only their {_label_noun(labels)}, separated by commas.\n"
-            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} {example}")
+            + _where_the_answer_goes(
+                modes, f"{ANSWER_PREFIX} <the applicable labels, separated by commas>"
+            )
         ), contract
 
     if modes.selection_mode == SCS:
@@ -353,12 +365,13 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
             if modes.prompt_mode in (COT, SELF_CONSISTENCY)
             else f"Answer with only one of: {_label_list(labels)}."
         )
+        # Same reasoning as MCS: `labels[0]` is the *same* label on every
+        # sample of the dataset, so it showed "Answer: A" -- or "Answer: 1" --
+        # beside every question the model was ever asked.
         return (
             "Select exactly one hypothesis.\n"
             f"{lead}\n"
-            + _where_the_answer_goes(
-                modes, f"{ANSWER_PREFIX} {labels[0] if labels else '1'}"
-            )
+            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <the chosen label>")
         ), contract
 
     contract.update({"style": "free_form"})

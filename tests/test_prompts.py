@@ -431,20 +431,89 @@ def test_selection_scaffolding_survives_when_there_are_options():
     assert contract["style"] == "single_label"
 
 
-def test_the_example_answer_is_always_one_of_the_offered_labels():
-    """A numeric example under lettered labels would teach the wrong format."""
+def test_the_example_answer_names_no_concrete_label():
+    """The example line is a placeholder, never a real answer.
+
+    It used to show one: SCS rendered ``Answer: A``, MCS ``Answer: A, B``, BOV
+    ``Answer: YES``. A selection dataset draws every sample from the same small
+    label pool, so that was not an illustrative value -- it was the *same*
+    value on all 150 prompts, sitting on the answer line. A constant beside the
+    answer line is a prior, and the model can pick it up.
+
+    Checked over both label pools, because the earlier fix here was about
+    letters-versus-numbers and this one is about showing a label at all.
+    """
     from abductionbench.adapters._prompting import PromptParts, build_messages
     from abductionbench.core.modes import TaskModes
 
-    parts = PromptParts(
-        system="Choose.",
-        observation="Something happened.",
-        options=["alpha", "beta", "gamma"],
-        option_labels=["A", "B", "C"],
-    )
-    text = build_messages(parts, TaskModes(prompt_mode="io", selection_mode="SCS"))[0][-1].content
-    assert "Answer: A" in text
-    assert "Answer: 1" not in text
+    for pool in (["A", "B", "C"], ["1", "2", "3"]):
+        parts = PromptParts(
+            system="Choose.",
+            observation="Something happened.",
+            options=["alpha", "beta", "gamma"],
+            option_labels=list(pool),
+        )
+        for selection, expected in (
+            ("SCS", "Answer: <the chosen label>"),
+            ("MCS", "Answer: <the applicable labels, separated by commas>"),
+            ("BOV", "Answer: <YES or NO>"),
+        ):
+            for prompt_mode in ("io", "cot"):
+                text = build_messages(
+                    parts, TaskModes(prompt_mode=prompt_mode, selection_mode=selection)
+                )[0][-1].content
+                assert expected in text, (pool, selection, prompt_mode)
+                for label in pool:
+                    assert f"Answer: {label}" not in text, (pool, selection, label)
+                assert "Answer: YES\n" not in text and not text.endswith("Answer: YES")
+
+
+def test_no_shipped_selection_dataset_shows_a_concrete_example_answer():
+    """Suite-wide, over rendered prompts: the fix is in `_closing` alone.
+
+    The point of fixing it there is that no adapter has to know about it. This
+    is what proves that -- if someone re-adds a concrete example for one
+    dataset, or a new selection dataset arrives with its own closing, it fails
+    here rather than quietly biasing that dataset's numbers.
+    """
+    import re
+
+    from abductionbench.adapters._prompting import ANSWER_PREFIX, PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+    from abductionbench.core.registry import resolve_adapter
+
+    #: Every selection dataset in the suite, with the pool it labels with.
+    for impl in (
+        "abductionbench.adapters.b_copa:BalancedCOPAAdapter",
+        "abductionbench.adapters.xcopa:XCopaAdapter",
+        "abductionbench.adapters.aer:AERAdapter",
+        "abductionbench.adapters.ecare:ECareAdapter",
+        "abductionbench.adapters.art:ARTAdapter",
+    ):
+        cls = resolve_adapter(impl)
+        parts = PromptParts(
+            system=cls.system_prompt,
+            observation="an observation",
+            options=["alpha", "beta", "gamma"],
+            option_labels=["A", "B", "C"],
+        )
+        for selection in ("SCS", "MCS", "BOV"):
+            for prompt_mode in ("io", "cot"):
+                text = build_messages(
+                    parts, TaskModes(prompt_mode=prompt_mode, selection_mode=selection)
+                )[0][-1].content
+                for line in text.splitlines():
+                    if not line.startswith(ANSWER_PREFIX):
+                        continue
+                    value = line[len(ANSWER_PREFIX):].strip()
+                    assert value.startswith("<") and value.endswith(">"), (
+                        f"{impl} {selection}/{prompt_mode}: the example answer is a "
+                        f"concrete value, not a placeholder: {line!r}"
+                    )
+                    assert not re.fullmatch(r"<[A-Z0-9](,\s*[A-Z0-9])*>", value), (
+                        f"{impl} {selection}/{prompt_mode}: placeholder wraps real "
+                        f"labels: {line!r}"
+                    )
 
 
 def test_no_shipped_dataset_is_told_to_select_from_nothing():

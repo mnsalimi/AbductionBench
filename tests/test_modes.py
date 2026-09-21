@@ -285,7 +285,8 @@ def test_bov_asks_one_question_per_hypothesis():
     for text, hypothesis in zip(texts, ["it rained", "the sprinkler ran", "a pipe burst"],
                                 strict=True):
         assert hypothesis in text
-        assert "Answer: YES" in text
+        # A placeholder naming both options, not a standing "YES".
+        assert "Answer: <YES or NO>" in text
         others = {"it rained", "the sprinkler ran", "a pipe burst"} - {hypothesis}
         assert not any(other in text for other in others)
 
