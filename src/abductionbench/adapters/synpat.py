@@ -286,13 +286,22 @@ class SynPATAdapter(PooledDatasetAdapter):
             )
         gold = sample.reference["gold"]
         candidate = _clean_expression(answer)
-        verdict = _equal_as_zero_set(candidate, gold, sample.reference["symbols"])
+        # Seconds one comparison may take before it counts as undecidable.
+        # SymPy does not always terminate on a model's rearrangement of a
+        # six-variable law, and one that did not took a whole run down with it
+        # (see adapters/_symbolic.py). `None` means the module default.
+        budget = self.context.option("symbolic_timeout_s")
+        verdict = _equal_as_zero_set(
+            candidate, gold, sample.reference["symbols"], timeout_s=budget
+        )
         equivalent = 0.0 if verdict is None else float(verdict)
         # Reported beside the verdict, not folded into it: a reference such as
         # `4*c*dx1dt + d2x1dt2*d1` carries a coefficient that nothing in the
         # theory fixes, so an answer with the right terms and the wrong number
         # is wrong -- and this is how often that is what went wrong.
-        structure = _shared_same_monomials(candidate, gold, sample.reference["symbols"])
+        structure = _shared_same_monomials(
+            candidate, gold, sample.reference["symbols"], timeout_s=budget
+        )
         metrics = {
             "equation_equivalent": equivalent,
             "structure_match": 0.0 if structure is None else float(structure),
@@ -460,15 +469,19 @@ def _clean_expression(text: str) -> str:
     return body
 
 
-def _equal_up_to_scale(candidate: str, gold: str, symbols: Sequence[str]) -> bool | None:
+def _equal_up_to_scale(
+    candidate: str, gold: str, symbols: Sequence[str], timeout_s: float | None = None
+) -> bool | None:
     """Equality up to a non-zero *scalar* factor, tolerant of LaTeX/unicode input.
 
     Kept as the narrow test; :func:`_equal_as_zero_set` is what scoring uses.
     """
-    return _shared_equal_up_to_scale(candidate, gold, symbols)
+    return _shared_equal_up_to_scale(candidate, gold, symbols, timeout_s=timeout_s)
 
 
-def _equal_as_zero_set(candidate: str, gold: str, symbols: Sequence[str]) -> bool | None:
+def _equal_as_zero_set(
+    candidate: str, gold: str, symbols: Sequence[str], timeout_s: float | None = None
+) -> bool | None:
     """Do the two expressions vanish in the same place?
 
     The right question for this dataset. A scalar-factor test misses a correct
@@ -476,4 +489,4 @@ def _equal_as_zero_set(candidate: str, gold: str, symbols: Sequence[str]) -> boo
     of ``c*Fg - dxdt*Fc``, but the two equations say the same thing once both
     are set to zero.
     """
-    return _shared_equal_as_zero_set(candidate, gold, symbols)
+    return _shared_equal_as_zero_set(candidate, gold, symbols, timeout_s=timeout_s)

@@ -1026,6 +1026,22 @@ test**, which is better than either a match or a judge:
   vanish. A sign flip, a scalar multiple and a rearrangement by a non-constant
   factor all count as correct. The LLM judge grades only the residue SymPy
   cannot parse; asked to confirm a proof, it could only weaken it.
+
+  **Each comparison is given 20 seconds, out of process.** `simplify` and
+  `factor_list` are exponential in the worst case, and a model asked to
+  rearrange a six-variable law writes the worst case often enough to matter: on
+  2026-09-21 one comparison ran for **seven hours** and, because SymPy is pure
+  Python and held the GIL, took the whole run down with it — batches stopped,
+  and the engine reported two servers that were answering in a millisecond as
+  unreachable. A thread cannot be interrupted, so the comparison now runs in a
+  worker subprocess that is simply killed when the clock runs out. Running out
+  of time returns *undecidable*, exactly as an unparseable answer does, so it
+  lands in `symbolic_undecidable` and goes to the judge — **never scored as a
+  wrong answer**. Measured on real records the bound costs nothing (83 ms per
+  comparison against 89 ms in process) and changes no verdict the old code
+  reached: it only supplies answers it never reached at all. Tune it with
+  `datasets[].options.symbolic_timeout_s` or `ABENCH_SYMBOLIC_TIMEOUT_S`; `0`
+  restores the old unbounded behaviour, including its ability to hang.
 * `abd` is *solver-checkable by construction*, and is scored by *the release's
   own Z3 evaluator*, imported from the same clone the data comes from. It asks
   the benchmark's question — does this formula repair every prompt world, and

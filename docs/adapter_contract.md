@@ -181,6 +181,14 @@ def score(self, sample, response, *, output_contract=None) -> SampleScore:
     )
 ```
 
+* **Never run forever.** `score()` runs on a worker thread and a thread cannot
+  be interrupted, so a scorer that does not return does not fail the run — it
+  silently freezes it, GIL and all. If yours calls something without a
+  guaranteed bound (SymPy, a solver, a regex over untrusted text), bound it
+  yourself; `adapters/_symbolic.py` shows the pattern, a killable subprocess
+  with the timeout mapped onto whatever your metric already means by
+  "undecidable". The engine's watchdog will name a scorer that has stopped
+  returning after five minutes, but naming it is all it can do.
 * **Never raise.** A malformed response returns `parse_ok=False` with zeroed
   metrics; the engine tracks `parse_failure_rate` separately so a formatting
   problem is distinguishable from a wrong answer. (A scorer that raises anyway

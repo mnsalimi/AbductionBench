@@ -21,6 +21,8 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
+from . import _symbolic
+
 __all__ = [
     "normalize_math",
     "parse_math",
@@ -177,7 +179,7 @@ def parse_math(text: str, symbols: Sequence[str]) -> Any | None:
         return None
 
 
-def equal_expressions(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+def _equal_expressions(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
     """``True``/``False``, or ``None`` when the comparison cannot be decided."""
     left = parse_math(candidate, symbols)
     right = parse_math(reference, symbols)
@@ -191,7 +193,7 @@ def equal_expressions(candidate: str, reference: str, symbols: Sequence[str]) ->
         return None
 
 
-def equal_up_to_scale(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+def _equal_up_to_scale(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
     """Equality up to a non-zero scalar factor (for expressions equal to zero)."""
     left = parse_math(candidate, symbols)
     right = parse_math(reference, symbols)
@@ -241,7 +243,7 @@ def _zero_set_key(expression: Any, sympy: Any) -> frozenset[str] | None:
     return frozenset(keys)
 
 
-def equal_as_zero_set(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+def _equal_as_zero_set(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
     """Do the two expressions vanish in the same place?
 
     Stronger than :func:`equal_up_to_scale`, which only accepts a *constant*
@@ -269,7 +271,7 @@ def equal_as_zero_set(candidate: str, reference: str, symbols: Sequence[str]) ->
         return None
 
 
-def same_monomials(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
+def _same_monomials(candidate: str, reference: str, symbols: Sequence[str]) -> bool | None:
     """Do the two expressions use the same terms, ignoring numeric coefficients?
 
     A diagnostic, not a correctness test. Where a reference equation carries a
@@ -297,3 +299,56 @@ def same_monomials(candidate: str, reference: str, symbols: Sequence[str]) -> bo
         return left_terms == right_terms
     except Exception:  # noqa: BLE001
         return None
+
+
+# --------------------------------------------------------------------------- #
+# the public comparisons: the same answers, under a clock
+# --------------------------------------------------------------------------- #
+#
+# The four ``_`` functions above are the comparison; these are the comparison
+# with a deadline.  SymPy can fail to terminate on a model's answer -- one did,
+# for seven hours, and took a whole run down with it (see :mod:`_symbolic`) --
+# and a thread cannot be interrupted, so the work happens in a subprocess that
+# can be killed.  Running out of time returns ``None``, which is what these
+# functions already return for "cannot be decided".
+#
+# Set ``timeout_s=0`` (or ``ABENCH_SYMBOLIC_TIMEOUT_S=0``) to run in process
+# and unbounded, which is what every score before 2026-09-21 was computed with.
+# The bound changes no verdict that the old code reached: it only replaces
+# answers it never reached at all.
+
+
+def equal_expressions(
+    candidate: str, reference: str, symbols: Sequence[str], *, timeout_s: float | None = None
+) -> bool | None:
+    """``True``/``False``, or ``None`` when the comparison cannot be decided."""
+    return _symbolic.decide(
+        "equal_expressions", candidate, reference, symbols, timeout_s=timeout_s
+    )
+
+
+def equal_up_to_scale(
+    candidate: str, reference: str, symbols: Sequence[str], *, timeout_s: float | None = None
+) -> bool | None:
+    """Equality up to a non-zero scalar factor (for expressions equal to zero)."""
+    return _symbolic.decide(
+        "equal_up_to_scale", candidate, reference, symbols, timeout_s=timeout_s
+    )
+
+
+def equal_as_zero_set(
+    candidate: str, reference: str, symbols: Sequence[str], *, timeout_s: float | None = None
+) -> bool | None:
+    """Do the two expressions vanish in the same place?"""
+    return _symbolic.decide(
+        "equal_as_zero_set", candidate, reference, symbols, timeout_s=timeout_s
+    )
+
+
+def same_monomials(
+    candidate: str, reference: str, symbols: Sequence[str], *, timeout_s: float | None = None
+) -> bool | None:
+    """Do the two expressions use the same terms, ignoring numeric coefficients?"""
+    return _symbolic.decide(
+        "same_monomials", candidate, reference, symbols, timeout_s=timeout_s
+    )

@@ -74,7 +74,7 @@ from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
 from .simulator import SimulatorPool
 from .sync import ArtifactSync
-from .telemetry import EventLog, clip, setup_logging
+from .telemetry import EventLog, ScorerWatchdog, clip, setup_logging
 from .tokenizer import build_token_counter
 from .types import (
     AdapterDocumentation,
@@ -305,6 +305,7 @@ class EvaluationEngine:
         #: Serialises interim report writes (see _report_interim).
         self._report_lock = asyncio.Lock()
         self._scoring_sem = asyncio.Semaphore(self.engine_cfg.concurrency.scoring_workers)
+        self._scorer_watchdog = ScorerWatchdog()
         self._batch_disabled: set[str] = set()
         #: Mode combinations a dataset declined, reported rather than dropped.
         self._skipped_modes: list[dict[str, str]] = []
@@ -420,6 +421,8 @@ class EvaluationEngine:
             # The environment simulator for the interview datasets. Built even
             # when disabled: `for_dataset` then returns None for every dataset
             # and the adapters keep their deterministic environments.
+            self._scorer_watchdog.start()
+
             self._simulators = SimulatorPool(
                 self.engine_cfg.simulator, self.engine_cfg.timeouts, self.run_dir
             )
@@ -558,6 +561,7 @@ class EvaluationEngine:
 
             await asyncio.gather(*(_guarded(*task) for task in tasks))
         finally:
+            self._scorer_watchdog.stop()
             for client in self._clients.values():
                 await client.aclose()
             if self._simulators is not None:
@@ -2447,12 +2451,17 @@ class EvaluationEngine:
             return SampleScore(metrics={}, parse_ok=False, details={"unscored": response.status.value})
         async with self._scoring_sem:
             try:
-                return await asyncio.to_thread(
-                    adapter.score_request,
-                    prompt.sample,
-                    response,
-                    output_contract=prompt.output_contract,
-                )
+                # Watched, not bounded: a thread cannot be interrupted, so the
+                # most the engine can do generically is say which scorer has
+                # stopped returning. Bounding the work is the adapter's job --
+                # see adapters/_symbolic.py for the symbolic comparisons.
+                def _scored() -> SampleScore:
+                    with self._scorer_watchdog.watch(adapter.dataset_id, prompt.sample_id):
+                        return adapter.score_request(
+                            prompt.sample, response, output_contract=prompt.output_contract
+                        )
+
+                return await asyncio.to_thread(_scored)
             except Exception as exc:  # noqa: BLE001 - a bad scorer must not kill the run
                 logger.exception(
                     "adapter %s: score() raised for sample %s", adapter.dataset_id, prompt.sample_id
