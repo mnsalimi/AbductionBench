@@ -42,11 +42,35 @@ engine:
     # the budget and returns *empty content*, losing the call outright: 793 of
     # one run's 802 unparseable replies were exactly that.
     reasoning_effort: low
-    # 24,000 -> 4,096. The big budget was an attempt to fix those empty replies
-    # by giving the chain more room; the cause was how much it wanted to think,
-    # not how much room it had, so the budget only made it worse -- it left the
-    # input just 41,536 tokens of a 65,536 window and two calls were rejected
-    # outright for length. At low effort a verdict costs a few hundred tokens.
-    max_tokens: 4096
+    # 24,000 -> 4,096 -> 16,000. Both earlier numbers were right for the judge
+    # they were measured on, and 4,096 stopped being right when the judge moved
+    # to gpt-oss-120b on OpenRouter with a 131,072-token window.
+    #
+    # Measured on that run rather than argued: of 4,690 reasoning-judge calls,
+    # 239 came back unparseable, and the raw replies say exactly why -- valid
+    # JSON cut off mid-token, the longest at 17,517 characters, which at this
+    # suite's LaTeX-dense 4.28 chars/token is 4,093. The cap, to three digits.
+    # 142 of those were `steps` and 86 `observation_inventory`: the two prompts
+    # that echo content back, so their output grows with the chain they are
+    # reading, and abd's chains are long formal derivations.
+    #
+    # `steps` is why this is worth more than 5%. Every per-step family is judged
+    # against ITS segmentation, so a truncated `steps` does not lose one metric,
+    # it loses the whole per-step set for that sample.
+    #
+    # 16,000 is ~4x what was being hit and still only 12% of the window, which
+    # leaves the prompt (capped at 60,000 chars, ~22,000 tokens) room it never
+    # comes close to needing. The old 65,536-window arithmetic that made 24,000
+    # reckless does not apply to a window twice that size.
+    #
+    # THE TRADE IS REAL AND IT IS SMALL. A bigger budget gives the hidden chain
+    # more room to run to the end and return empty content -- the failure the
+    # 4,096 cap was chosen to stop. That failure has not gone away: 44 of the
+    # 239 were empty rather than truncated. But it is 0.9% against the 4.2%
+    # being fixed, `reasoning_effort: low` above is what actually bounds the
+    # chain, and `_judge_many` already recovers a verdict from the reasoning
+    # trace when content comes back null. Watch the ratio rather than assume
+    # it: `grep -c 'unparseable reply'` against the judge-call line count.
+    max_tokens: 16000
     temperature: 0.0
     cache: true
