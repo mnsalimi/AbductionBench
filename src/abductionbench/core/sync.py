@@ -26,8 +26,11 @@ Design constraints, in order of importance:
    locally first (cheap) and uploads that.
 6. **It must respect the destination's rate limits.** A full run writes ~1,200
    files, 1,096 of them per-batch debug payloads; sending those exhausts Google
-   Drive's per-minute request quota for rclone's shared OAuth client, so
-   ``raw/`` is excluded by default and API calls are throttled.
+   Drive's per-minute request quota for rclone's shared OAuth client, so API
+   calls are throttled (``--tpslimit``, ``--drive-pacer-min-sleep``) and
+   ``checkpoint.max_raw_payloads`` caps the payloads where they are written.
+   ``exclude`` is empty by default and filters the final pass as well as the
+   interval ones, so anything put there never reaches the backup at all.
 
 Any rclone remote works -- Google Drive, S3, another host over SFTP -- and a
 plain local path works too, which is how this module is tested without
