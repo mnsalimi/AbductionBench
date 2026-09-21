@@ -137,11 +137,24 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
 
     ACTIONS = ("ask", "diagnosis")
     max_turns = 12
-    #: THREE questions. ``MedQDx_Benchmark_Creation.ipynb`` drives the
-    #: interview with ``for round_num in range(1, 4)`` and the evaluation
-    #: notebook reports ``Similarity_1``, ``Similarity_2``, ``Similarity_3`` --
-    #: one per round. Eight was this adapter's own number.
-    category_limits = {"ask": 3}
+    #: FIVE questions, which is the paper's BENCHMARKING cap, not the three
+    #: rounds its dataset was built with. The distinction is easy to miss and
+    #: this adapter got it wrong in both directions:
+    #:
+    #: * ``MedQDx_Benchmark_Creation.ipynb`` runs ``for round_num in range(1,
+    #:   4)`` -- three rounds. That is how the REFERENCE transcripts were
+    #:   generated (``Question_1..3`` / ``Answer_1..3``), and it is what the
+    #:   static "rounds" condition here replays.
+    #: * The paper's evaluation of a model UNDER TEST is a different setting:
+    #:   "Interrogation is capped at five questions to standardize evaluation
+    #:   across models; if the correct diagnosis is not produced within this
+    #:   limit, the case is marked as a failure and assigned the maximum
+    #:   question count" (Mean Questions to Correct Diagnosis, S3.B).
+    #:
+    #: The interactive task here benchmarks a model, so five is the right cap.
+    #: It was 8 (invented), then briefly 3 (the construction loop, read as if
+    #: it were the protocol).
+    category_limits = {"ask": 5}
 
     #: This suite's wording for MedQDx's protocol. The benchmark is the
     #: *interview*: one question per turn, each new one different from the last,
@@ -304,10 +317,8 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             return None
         state["history"].append((question, answer))
 
-        # `>=`, not `over_limit`'s `>`: the release asks exactly three
-        # questions -- `for round_num in range(1, 4)` -- and then asks for the
-        # diagnosis. `over_limit` fires one turn later, so a budget of three
-        # bought four questions.
+        # `>=`, not `over_limit`'s `>`: the cap is a cap. `over_limit` fires
+        # one turn later, so a budget of five would buy six questions.
         if state["counts"].get("ask", 0) >= self.category_limits["ask"]:
             state["phase"] = "diagnose"
             return self._turn_message(
@@ -556,6 +567,23 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
                 "A simulator that cannot be reached ends the episode as an ERROR rather "
                 "than a wrong answer, so an outage lowers the sample count rather than the "
                 "score.",
+                "TWO OF THE PAPER'S THREE METRICS ARE NOT REPRODUCED. Q4Dx scores models "
+                "on ZDA (zero-shot accuracy at the 100% disclosure level, exact match "
+                "against a predefined diagnosis list), MQD (mean questions asked before "
+                "the FIRST correct diagnosis, capped at five, failures assigned the cap) "
+                "and ISE (BERTScore similarity between the model's question sequence and "
+                "the reference sequence, under sequence alignment). Only accuracy is "
+                "reported here. MQD needs a diagnosis attempted after EVERY answer -- "
+                "'after each answer, the clinician-agent attempts a diagnosis' -- whereas "
+                "this adapter asks for one diagnosis at the end, so the number of "
+                "questions to first-correct cannot be observed. ISE needs BERTScore "
+                "against the recorded Question_1..3 sequence, which ships in the dataset "
+                "but is not computed here. Accuracy is comparable; questioning EFFICIENCY, "
+                "which is what the benchmark is named for, is not measured.",
+                "The doctor and patient agents in the released dataset are GPT-4.1 and "
+                "GPT-4o-mini respectively (paper S3.A.5); this suite's simulated patient "
+                "is gpt-4o-mini, matching, while the doctor is whatever model is under "
+                "test, which is the point.",
                 "The vignettes are LLM-generated from a symptom-disease table, not real clinical "
                 "notes; scores reflect textbook symptom-to-disease mapping.",
                 "Only 100 distinct cases exist, so the 300 samples are 3 views of 100 cases -- "

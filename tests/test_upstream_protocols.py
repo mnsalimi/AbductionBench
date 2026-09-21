@@ -228,28 +228,38 @@ def test_vivabench_an_uncommitted_episode_is_not_judged_on_its_prose():
 MEDQDX = "medqdx:MedQDxAdapter"
 
 
-def test_medqdx_asks_the_releases_three_questions():
-    """``for round_num in range(1, 4)`` -- MedQDx_Benchmark_Creation.ipynb.
+def test_medqdx_uses_the_papers_benchmarking_cap_not_the_construction_loop():
+    """Five, not three -- and the difference is the whole point.
 
-    And the evaluation notebook reports Similarity_1, Similarity_2,
-    Similarity_3, one per round. Eight was this adapter's own number.
+    The construction notebook runs ``for round_num in range(1, 4)``: three
+    rounds, which produced the reference transcripts (Question_1..3) that the
+    static "rounds" condition replays.
+
+    Benchmarking a model under test is a different setting: "Interrogation is
+    capped at five questions to standardize evaluation across models; if the
+    correct diagnosis is not produced within this limit, the case is marked as
+    a failure and assigned the maximum question count" (paper S3.B, MQD).
+
+    The interactive task benchmarks a model, so the cap is five.
     """
     from abductionbench.adapters.medqdx import MedQDxAdapter
 
-    assert MedQDxAdapter.category_limits == {"ask": 3}
+    assert MedQDxAdapter.category_limits == {"ask": 5}
 
 
-def test_medqdx_stops_after_three_and_then_asks_for_the_diagnosis():
+def test_medqdx_stops_at_the_cap_and_then_asks_for_the_diagnosis():
     adapter, samples = _adapter("medqdx", MEDQDX)
+    cap = adapter.category_limits["ask"]
     sample = samples[0]
     _messages, state = adapter.interactive_start(sample)
     replies = [
         _step(adapter, sample, state, f"Have you noticed symptom {i}?")
-        for i in range(1, 4)
+        for i in range(1, cap + 1)
     ]
     assert all(r is not None for r in replies)
-    # The third answer is followed by the request for a diagnosis, not a fourth
-    # question.
+    # Exactly `cap` questions are answered; the last reply asks for the
+    # diagnosis rather than inviting one more.
+    assert "Ask your next question" in replies[cap - 2]
     assert "Name the condition" in replies[-1]
     assert _step(adapter, sample, state, "Pneumonia") is None
 
