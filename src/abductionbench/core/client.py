@@ -120,7 +120,15 @@ class ModelClient:
             ),
             verify=self.endpoint.verify_tls,
             follow_redirects=True,
-            limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+            # Sized from the model's own config, because the right number is
+            # not a property of HTTP: it is how many requests this run can aim
+            # at this endpoint at once. A pool smaller than that does not slow
+            # the surplus down, it kills it at `pool_s` -- see
+            # ModelLimitsConfig.max_connections.
+            limits=httpx.Limits(
+                max_connections=model.limits.max_connections,
+                max_keepalive_connections=max(16, model.limits.max_connections // 4),
+            ),
         )
         self._base_url = self.endpoint.base_url
         self._batch_base_url = self.endpoint.resolved_batch_base_url()

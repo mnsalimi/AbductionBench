@@ -1029,6 +1029,23 @@ class ModelLimitsConfig(_Base):
     #: Model context window; used together with the requested output budget to
     #: reject prompts that cannot possibly fit.
     context_window: int | None = None
+    #: Size of this model's HTTP connection pool.
+    #:
+    #: It has to be at least as large as the number of requests the run can
+    #: aim at this model at once, or the surplus queues for a socket and dies
+    #: at ``engine.timeouts.pool_s`` -- which is not a server problem and does
+    #: not look like one: httpx raises ``PoolTimeout`` with an empty message,
+    #: so the log reads "timeout talking to <url>:" with nothing after it and
+    #: the run blames the endpoint. Each casualty then retries, which asks for
+    #: yet another socket from the same exhausted pool.
+    #:
+    #: 64 is the historical default and is ample for a model under test, where
+    #: in-flight requests are bounded by ``max_parallel_batches``. It is NOT
+    #: ample for a judge: both judge stages share one client and size
+    #: themselves with their own ``max_parallel_calls``, which together can
+    #: exceed this by a wide margin. ``_check_judge_connection_pool`` refuses a
+    #: run where they do.
+    max_connections: int = Field(64, ge=1)
 
 
 class ModelConfig(_Base):
@@ -1253,6 +1270,51 @@ class RunConfig(_Base):
     #: Provenance: which files this config was assembled from.
     source_files: list[str] = Field(default_factory=list)
 
+    def _check_judge_connection_pool(self) -> None:
+        """A judge may not ask for more sockets than its pool holds.
+
+        The two judge stages size themselves with their own
+        ``max_parallel_calls`` and share ONE client per model, so a judge
+        serving both can be asked for ``judge + reasoning_judge`` requests at
+        once. Past the pool the surplus does not queue politely: it waits for a
+        socket and is killed at ``engine.timeouts.pool_s``, then retried, which
+        asks the same exhausted pool for another one.
+
+        Measured on the run that prompted this check: 48 + 32 = 80 calls
+        against the default pool of 64 produced 744 ``PoolTimeout`` failures in
+        twenty minutes, every one of them logged as "timeout talking to
+        https://openrouter.ai/..." with an empty reason -- so it read as a
+        flaky endpoint. Meanwhile the tasks holding those verdicts kept their
+        slots, and two of the three GPUs being paid for sat at zero requests.
+
+        Raising ``limits.max_connections`` on the judge's model is the fix; the
+        error says so, with the number.
+        """
+        stages = [
+            ("engine.judge", self.engine.judge),
+            ("engine.reasoning_judge", self.engine.reasoning_judge),
+        ]
+        wanted: dict[str, int] = {}
+        names: dict[str, list[str]] = {}
+        for label, stage in stages:
+            if not getattr(stage, "enabled", False) or not stage.model:
+                continue
+            wanted[stage.model] = wanted.get(stage.model, 0) + stage.max_parallel_calls
+            names.setdefault(stage.model, []).append(
+                f"{label}.max_parallel_calls={stage.max_parallel_calls}"
+            )
+        for model in self.models:
+            asked = wanted.get(model.id)
+            if asked and asked > model.limits.max_connections:
+                raise ConfigError(
+                    f"judge model {model.id!r} can be asked for {asked} concurrent "
+                    f"requests ({' + '.join(names[model.id])}) but its connection pool "
+                    f"holds {model.limits.max_connections}. The surplus would wait for a "
+                    f"socket and be killed at engine.timeouts.pool_s, then retry into the "
+                    f"same exhausted pool. Set limits.max_connections to at least {asked} "
+                    f"in the model's config, or lower max_parallel_calls."
+                )
+
     @model_validator(mode="after")
     def _validate(self) -> RunConfig:
         if not self.models:
@@ -1269,6 +1331,7 @@ class RunConfig(_Base):
             raise ConfigError(
                 "engine.reasoning_judge.enabled requires engine.reasoning_judge.model"
             )
+        self._check_judge_connection_pool()
         if (
             self.engine.sync.enabled
             and self.engine.checkpoint.store_raw_payloads

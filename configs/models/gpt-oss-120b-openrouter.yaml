@@ -70,6 +70,17 @@ model:
     # ceiling on judge requests in flight. It has to be at least as large as the
     # judges' `max_parallel_calls` or it, not they, becomes the real limit.
     max_parallel_batches: 64
+    # The pool BOTH judge stages draw from, and the number that has to cover
+    # what they ask for together: engine.judge.max_parallel_calls (48) plus
+    # engine.reasoning_judge.max_parallel_calls (32) = 80. At the old default
+    # of 64 the other 16 waited for a socket and were killed at
+    # engine.timeouts.pool_s -- 744 of them in twenty minutes, each logged as
+    # "timeout talking to https://openrouter.ai/..." with an empty reason,
+    # because httpx.PoolTimeout has no message. It read as a flaky endpoint and
+    # was a pool one socket too small. 160 leaves room to raise either stage.
+    # RunConfig._check_judge_connection_pool now refuses a run where it does
+    # not cover them.
+    max_connections: 160
     # Left null: OpenRouter's limits vary with the account's credit balance and
     # the serving provider, and 429 already has its own longer backoff in
     # core/retry.py. A fixed number here would either throttle below what the

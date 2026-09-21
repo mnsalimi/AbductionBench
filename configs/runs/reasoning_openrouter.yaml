@@ -33,8 +33,27 @@ description: >-
 engine:
   concurrency:
     # Three servers to keep fed instead of one, and a task spends part of its
-    # life waiting on a judge rather than on a model. 8 -> 16.
-    max_parallel_tasks: 16
+    # life waiting on a judge rather than on a model. 8 -> 16 -> 32.
+    #
+    # 16 was too few, and the reason is worth stating because it is not about
+    # GPU at all: A TASK HOLDS ITS SLOT THROUGH ITS JUDGE STAGE. Judging is
+    # off-box now, so a task in that stage is using no GPU whatsoever -- it is
+    # waiting on OpenRouter -- but it still occupies one of the slots that
+    # decides whether any *other* task may start.
+    #
+    # Measured on the run that prompted this: 20 tasks started, 4 finished, so
+    # all 16 slots were held; the reasoning judge was working through 1,900-odd
+    # calls per cot task; and of the three servers being paid for, gemma-4-E2B
+    # and E4B were sitting at "Running: 0 reqs" while qwen alone carried the
+    # card. 32 lets generation and judging overlap instead of queueing behind
+    # each other.
+    #
+    # This does not raise how hard any server is driven: in-flight sequences
+    # per model are still bounded by each model's own max_parallel_batches x
+    # group_size (8x8, 4x16, 8x8 = 64 each, their --max-num-seqs). It only
+    # decides how many tasks compete to reach that ceiling, which they were
+    # nowhere near.
+    max_parallel_tasks: 32
     # Has to cover what the per-model limits ask for, or it silently becomes
     # the real limit: e4b 8 + qwen 4 + e2b 8 = 20. 24 leaves headroom without
     # letting any one model exceed its own cap.
