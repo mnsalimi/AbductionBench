@@ -1,38 +1,43 @@
 id: proxy_closest_hypothesis_v1
-version: "1.0"
+version: "2.0"
 description: >-
-  PROJECT-SPECIFIC PROXY, not HypoBench's own evaluation. Scores a generated
-  hypothesis 0-5 against the closest of the item's known hypotheses, on the
-  feature it names and the direction of the relationship it claims.
+  PROJECT-SPECIFIC PROXY, not HypoBench's own evaluation.  Binary: is the
+  generated hypothesis the same as the closest known one, feature AND
+  direction?  1 for similar to that gold hypothesis, 0 for not.
 task_kinds: [judge]
 required_fields: [candidate, references]
-optional_fields: [observation, context, full_prompt, full_response]
+optional_fields: [observation, context, criteria, full_prompt, full_response]
 messages:
   - role: system
     content: |
-      You rate how well a candidate hypothesis matches the best available known
-      hypothesis for the same dataset.
+      You decide whether a candidate hypothesis matches the best available
+      known hypothesis for the same dataset.
 
       You are given SEVERAL known hypotheses. They are alternatives, not a set
       the candidate has to cover. Find the ONE the candidate comes closest to,
       judge against that one alone, and say which you used.
 
-      A hypothesis here has two parts, and BOTH matter:
+      A hypothesis here has two parts, and BOTH must match:
         - the FEATURE or pattern it points at, and
         - the DIRECTION of the relationship it claims -- which way the feature
           pushes the outcome.
 
       A candidate that names the right feature but reverses the direction has
-      not found that hypothesis; it has found its opposite. Score it low.
+      not found that hypothesis; it has found its opposite.
 
-      Score 0-5:
-      5 -- same feature, same direction.
-      4 -- same feature and direction, stated more loosely or narrowly.
-      3 -- same feature, direction unclear or unstated.
-      2 -- same feature, WRONG direction, or a related feature in the right
-           direction.
-      1 -- on topic, but neither the feature nor the direction matches.
-      0 -- irrelevant, contradictory, or no hypothesis offered.
+      YOUR SCORE IS STRICTLY BINARY. It is either 1 or 0, never anything in
+      between and never a range:
+
+        1 -- same feature AND same direction. Stating it more loosely or more
+             narrowly than the known hypothesis does not cost the point.
+
+        0 -- everything else, including: the same feature with the direction
+             REVERSED; the same feature with the direction unclear or
+             unstated; a related feature in the right direction; an on-topic
+             answer matching neither; a contradiction; an empty answer.
+
+      There is no partial credit and no middle. A reversed direction is 0, not
+      a fraction. An unstated direction is 0.
   - role: user
     content: |
       {% if full_prompt %}
@@ -61,11 +66,12 @@ messages:
       Reply with exactly these three lines and nothing else:
       Closest: <the number of the known hypothesis you judged against>
       Direction: <matches|reversed|unclear>
-      Score: <integer 0-5>
+      Score: <1 or 0>
 output_contract:
-  score_regex: "score\\s*:?\\s*(?P<score>[0-5])"
+  score_regex: "score\\s*:?\\s*(?P<score>[01])"
   expect_numeric_score: true
-  score_scale: 5
+  score_scale: 1
+  labels: ["1", "0"]
   detail_regexes:
     closest_reference: "closest\\s*:?\\s*(?P<closest_reference>\\d+)"
     direction: "direction\\s*:?\\s*(?P<direction>matches|reversed|unclear)"

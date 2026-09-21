@@ -438,19 +438,21 @@ def apply_proxy_score(
     *,
     detail_key: str = "proxy_judgement",
 ) -> SampleScore:
-    """Fold a graded judge verdict into a proxy metric, or record why it is absent.
+    """Fold a judge verdict into a proxy metric, or record why it is absent.
 
-    Two things make this different from :func:`apply_judged_metric`.
+    The verdict is **binary**: the proxy templates return 1 or 0 and nothing
+    between, so the metric is a rate -- the fraction of records the judge
+    accepted -- rather than an average quality. (It was a 0-5 rubric until
+    2026-09-21; the clamp below is what remains of that, and it now only
+    guards against a malformed verdict.)
 
-    It is **graded**, not binary: the verdict's 0-1 score is the metric, rather
-    than a yes/no folded to 1.0 or 0.0.
-
-    And a judgement that did not come back leaves the metric **absent**. A
-    binary metric can defensibly seed 0.0 -- "the judge did not affirm" -- but a
-    0-1 quality score of 0.0 means "the judge looked and found this worthless",
-    which is a finding, and recording it for a call that failed would put
-    fabricated zeros into an average. The sample is marked instead, so a blank
-    is legible as unjudged and the coverage of these metrics can be counted.
+    What still makes this different from :func:`apply_judged_metric` is what
+    happens when there is **no** verdict: the metric is left **absent** rather
+    than seeded 0.0. A 0 here is a judgement the judge actually made -- it
+    read the answer and rejected it -- and recording one for a call that never
+    came back would put fabricated rejections into the rate. The sample is
+    marked instead, so a blank is legible as unjudged and the coverage of
+    these metrics can be counted.
 
     The judge's own reply is kept on the record either way: a proxy score that
     cannot be traced back to what the judge said is not auditable, and these are

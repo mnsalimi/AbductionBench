@@ -1,27 +1,27 @@
 id: proxy_hypothesis_quality_v1
-version: "1.0"
+version: "2.0"
 description: >-
-  PROJECT-SPECIFIC PROXY, not HypoArena's own evaluation. Scores a generated
-  hypothesis or hypothesis set 0-5 on three dimensions -- grounding, insight and
-  testability -- without treating any source-derived hypothesis as the one right
-  answer.
+  PROJECT-SPECIFIC PROXY, not HypoArena's own evaluation.  Binary: is the
+  generated hypothesis acceptable -- grounded, insightful and testable?
+  1 for acceptable, 0 for not.
 task_kinds: [judge]
 required_fields: [candidate]
-optional_fields: [observation, context, references, full_prompt, full_response]
+optional_fields: [references, observation, context, criteria, full_prompt, full_response]
 messages:
   - role: system
     content: |
-      You rate the quality of a hypothesis, or a set of hypotheses, proposed to
-      explain a case.
+      You decide whether a hypothesis, or a set of hypotheses, proposed to
+      explain a case is acceptable.
 
       THERE IS NO SINGLE RIGHT ANSWER HERE. If you are shown hypotheses drawn
       from the source material, treat them as a yardstick for the standard a
       good answer reaches -- not as the answer. A candidate that proposes
-      something different from all of them can still score 5, provided it stands
+      something different from all of them can still score 1, provided it stands
       up on its own. Do not reward a candidate for resembling them, and do not
       penalise it for departing from them.
 
-      Judge on three things, all of them about the candidate itself:
+      Judge on three things, all of them about the candidate itself, and each
+      of them a yes or a no:
 
       GROUNDED -- does it follow from what the case actually says? A hypothesis
       that ignores the evidence, contradicts it, or would fit any case at all is
@@ -37,13 +37,14 @@ messages:
       matters most, but a set padded with weak or repeated entries is worse than
       a short sharp one.
 
-      Score 0-5:
-      5 -- grounded, genuinely insightful, and clearly testable.
-      4 -- strong on all three, with one of them thin.
-      3 -- grounded and plausible, but obvious or hard to test.
-      2 -- loosely connected to the case, or too vague to act on.
-      1 -- barely related to the case.
-      0 -- irrelevant, contradictory, or no hypothesis offered.
+      YOUR SCORE IS STRICTLY BINARY. It is either 1 or 0, never anything in
+      between and never a range:
+
+        1 -- grounded AND insightful AND testable. All three, or it is not 1.
+        0 -- any of the three fails, or there is no hypothesis at all.
+
+      There is no partial credit and no middle. "Strong on two of three" is 0.
+      "Grounded and plausible but obvious" is 0. "Too vague to act on" is 0.
   - role: user
     content: |
       {% if full_prompt %}
@@ -74,15 +75,16 @@ messages:
       {{ candidate }}
 
       Reply with exactly these four lines and nothing else:
-      Grounded: <integer 0-5>
-      Insight: <integer 0-5>
-      Testable: <integer 0-5>
-      Score: <integer 0-5>
+      Grounded: <1 or 0>
+      Insight: <1 or 0>
+      Testable: <1 or 0>
+      Score: <1 or 0>
 output_contract:
-  score_regex: "(?<!\\w)score\\s*:?\\s*(?P<score>[0-5])"
+  score_regex: "(?<!\\w)score\\s*:?\\s*(?P<score>[01])"
   expect_numeric_score: true
-  score_scale: 5
+  score_scale: 1
+  labels: ["1", "0"]
   detail_regexes:
-    grounded: "grounded\\s*:?\\s*(?P<grounded>[0-5])"
-    insight: "insight\\s*:?\\s*(?P<insight>[0-5])"
-    testable: "testable\\s*:?\\s*(?P<testable>[0-5])"
+    grounded: "grounded\\s*:?\\s*(?P<grounded>[01])"
+    insight: "insight\\s*:?\\s*(?P<insight>[01])"
+    testable: "testable\\s*:?\\s*(?P<testable>[01])"

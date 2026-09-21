@@ -30,13 +30,13 @@ def test_shipped_templates_load(prompt_dir: Path):
     # Three kinds: the shared answer judges, the reasoning-structure family, and
     # the project-specific proxies, which are named so they cannot be mistaken
     # for a paper's own protocol.
-    assert {"judge_binary_v1", "judge_graded_v1"} <= ids
+    assert {"judge_binary_v1", "judge_binary_plausibility_v1"} <= ids
     generic = {
         template
         for template in ids
         if not template.startswith(("reasoning_", "proxy_"))
     }
-    assert generic == {"judge_binary_v1", "judge_graded_v1"}
+    assert generic == {"judge_binary_v1", "judge_binary_plausibility_v1"}
     assert {template for template in ids if template.startswith("proxy_")} == {
         "proxy_closest_explanation_v1",
         "proxy_closest_hypothesis_v1",
@@ -44,7 +44,7 @@ def test_shipped_templates_load(prompt_dir: Path):
     }
     template = registry.get("judge_binary_v1")
     assert set(template.required_fields) == {"candidate", "gold"}
-    assert template.output_contract["labels"] == ["yes", "no"]
+    assert template.output_contract["labels"] == ["1", "0", "yes", "no"]
 
 
 def test_no_dataset_prompt_templates_remain(prompt_dir: Path):
@@ -72,7 +72,7 @@ def test_render_a_judge_prompt(prompt_dir: Path):
     body = messages[1].content
     assert "the sprinkler ran" in body and "someone left the sprinkler on" in body
     assert "The lawn is wet." in body          # the optional field rendered
-    assert contract["labels"] == ["yes", "no"]
+    assert contract["labels"] == ["1", "0", "yes", "no"]
 
 
 def test_missing_required_field_is_an_error(prompt_dir: Path):
@@ -1109,3 +1109,96 @@ def test_no_shipped_selection_dataset_is_told_the_wrong_label_kind():
             if lettered and "their numbers" in text:
                 offenders.append((dataset_id, selection))
     assert not offenders, f"lettered options told to answer with numbers: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# every answer judge is strictly binary
+# --------------------------------------------------------------------------- #
+
+#: The judges that grade an *answer*. The ``reasoning_*`` family measures the
+#: shape of a chain of thought -- step counts, coverage, branchiness -- and is
+#: deliberately not binary; it is excluded here and must stay excluded.
+def _answer_judge_ids(registry) -> list[str]:
+    return [t for t in registry.ids() if not t.startswith("reasoning_")]
+
+
+def test_every_answer_judge_asks_for_a_strictly_binary_score(prompt_dir: Path):
+    """1 when the answer is acceptable by that dataset's criteria, 0 otherwise.
+
+    A judge free to answer 3/5 turns a rate into an average, and the two are
+    read differently: "the judge accepted 42% of answers" is not "the answers
+    averaged 0.42 quality". These prompts were a 0-5 rubric until 2026-09-21.
+    The guard is on the *contract*, because that is what the parser obeys --
+    a prompt that asked for 0-5 while declaring ``[01]`` would silently score
+    every 2, 3, 4 and 5 as unparseable.
+    """
+    registry = _registry(prompt_dir)
+    for template_id in _answer_judge_ids(registry):
+        contract = registry.get(template_id).output_contract or {}
+        assert "score_regex" in contract, f"{template_id}: no score_regex"
+        assert "[01]" in contract["score_regex"], (
+            f"{template_id}: score_regex accepts values outside 1/0 -- "
+            f"{contract['score_regex']!r}"
+        )
+        # A scale would divide the score: 1/5 is not what "1" means here.
+        assert float(contract.get("score_scale", 1.0) or 1.0) == 1.0, (
+            f"{template_id}: score_scale must be 1 for a binary verdict"
+        )
+        assert contract.get("expect_numeric_score") is True, template_id
+
+
+def test_every_answer_judge_says_binary_in_the_prompt_itself(prompt_dir: Path):
+    """The contract is what the parser reads; this is what the judge reads.
+
+    A regex that only accepts 1 and 0 does not stop a model answering 4 -- it
+    just makes that answer unparseable, and an unparseable verdict is a lost
+    sample rather than a wrong one. The instruction has to be in the prompt.
+    """
+    registry = _registry(prompt_dir)
+    for template_id in _answer_judge_ids(registry):
+        text = "\n".join(m["content"] for m in registry.get(template_id).messages).lower()
+        assert "strictly binary" in text, f"{template_id}: never says the score is binary"
+        assert "score: 1" in text or "<1 or 0>" in text, (
+            f"{template_id}: never shows the 1/0 output shape"
+        )
+        # No rubric may survive that offers anything between the two.
+        for banned in ("0-5", "0 to 5", "integer 0-5", "partial credit for"):
+            assert banned not in text, f"{template_id}: still offers a scale ({banned!r})"
+
+
+def test_the_reasoning_judges_were_left_alone(prompt_dir: Path):
+    """The binary rule is for answer judges only.
+
+    A step count or a coverage fraction is not a yes/no, and forcing one onto
+    them would destroy the metric. This fails if the sweep above ever widens.
+    """
+    registry = _registry(prompt_dir)
+    reasoning = [t for t in registry.ids() if t.startswith("reasoning_")]
+    assert len(reasoning) >= 10, "the reasoning family went missing"
+    non_binary = [
+        t for t in reasoning
+        if "[01]" not in str((registry.get(t).output_contract or {}).get("score_regex", ""))
+    ]
+    assert non_binary, "every reasoning judge became binary -- they must not be"
+
+
+def test_a_disobedient_judge_is_still_read(prompt_dir: Path):
+    """"yes" scores 1, not 0.
+
+    The prompts demand 1 or 0, and a strict contract is right -- but a judge
+    that answers "yes" anyway should be understood, not silently counted as a
+    rejection. An unparseable verdict costs a sample; a misparsed one costs a
+    wrong number, and this is the cheap way to avoid both.
+    """
+    from abductionbench.core.judge import JudgeStage
+
+    registry = _registry(prompt_dir)
+    for template_id in ("judge_binary_v1", "judge_binary_plausibility_v1"):
+        stage = object.__new__(JudgeStage)
+        stage.template = registry.get(template_id)
+        assert JudgeStage._parse(stage, "Score: 1").positive is True
+        assert JudgeStage._parse(stage, "Score: 0").positive is False
+        assert JudgeStage._parse(stage, "YES").positive is True, template_id
+        assert JudgeStage._parse(stage, "no").positive is False, template_id
+        # Still nothing between the two: there is no verdict that means 0.5.
+        assert JudgeStage._parse(stage, "Score: 3").score in (None, 3.0)

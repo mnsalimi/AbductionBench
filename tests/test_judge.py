@@ -9,8 +9,8 @@ from abductionbench.core.engine import EvaluationEngine
 
 
 def test_judge_stage_updates_scores(fake_server, write_run_config, tmp_path, monkeypatch):
-    # The judge model always answers "Verdict: yes".
-    fake_server.state.responder = lambda conv, max_tokens: "Verdict: yes"
+    # The judge model always accepts: the answer judges are binary now.
+    fake_server.state.responder = lambda conv, max_tokens: "Score: 1"
 
     adapter_module = tmp_path / "judged_adapter.py"
     adapter_module.write_text(
@@ -108,19 +108,21 @@ def test_judge_verdict_parsing():
 
     registry = PromptRegistry([__import__("pathlib").Path("configs/prompts")])
     binary = registry.get("judge_binary_v1")
-    graded = registry.get("judge_graded_v1")
+    plausibility = registry.get("judge_binary_plausibility_v1")
 
     parse = JudgeStage._parse
     stage = object.__new__(JudgeStage)
     stage.template = binary
-    verdict = parse(stage, "some reasoning\nVerdict: no")
-    assert verdict.label == "no" and verdict.parsed and not verdict.positive
-    verdict = parse(stage, "Verdict: yes")
-    assert verdict.positive
+    verdict = parse(stage, "some reasoning\nScore: 0")
+    assert verdict.score == 0.0 and verdict.parsed and not verdict.positive
+    verdict = parse(stage, "Score: 1")
+    assert verdict.score == 1.0 and verdict.positive
 
-    stage.template = graded
-    verdict = parse(stage, "Score: 4")
-    assert verdict.score == 4 / 5 and verdict.positive
+    stage.template = plausibility
+    verdict = parse(stage, "Score: 1")
+    assert verdict.score == 1.0 and verdict.positive
+    verdict = parse(stage, "Score: 0")
+    assert verdict.score == 0.0 and not verdict.positive
     verdict = parse(stage, "unparseable")
     assert verdict.score is None
 

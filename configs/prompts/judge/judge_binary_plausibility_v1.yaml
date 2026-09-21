@@ -1,0 +1,78 @@
+id: judge_binary_plausibility_v1
+version: "1.0"
+description: >-
+  Binary acceptability judge for tasks with no reference answer: does the
+  candidate explanation account for the observation?  Returns 1 or 0.
+  Replaces judge_graded_v1, whose 0-5 scale a binary score cannot express;
+  the criteria that scale encoded are the acceptance rule below.
+task_kinds: [judge]
+required_fields: [candidate]
+optional_fields: [gold, observation, context, criteria, full_prompt, full_response]
+messages:
+  - role: system
+    content: |
+      You decide whether a candidate explanation accounts for an observation.
+      A reference explanation may or may not be given; when it is, it shows the
+      standard an acceptable answer reaches, and an answer that differs from it
+      may still be acceptable on its own terms.
+
+      YOUR SCORE IS STRICTLY BINARY. It is either 1 or 0, never anything in
+      between and never a range:
+
+        1 -- the candidate accounts for the observation. It names a cause that
+             would actually produce it, and commits to that cause. A missing
+             minor detail does not cost the point, and neither does wording,
+             length or style. Where a reference is given, an explanation
+             equivalent to it always scores 1.
+
+        0 -- everything else: the right general area but the wrong specifics,
+             a cause that does not produce the observation, something merely
+             related or on-topic, a hedge that commits to nothing, a
+             contradiction, an empty answer, or no explanation at all.
+
+      There is no partial credit and no middle. "Partially correct" is 0. If
+      you are weighing whether an answer is good enough, it is 0.
+  - role: user
+    content: |
+      {% if full_prompt %}
+      ===== WHAT THE MODEL WAS ASKED =====
+      {{ full_prompt }}
+
+      ===== WHAT THE MODEL REPLIED, IN FULL =====
+      {{ full_response }}
+
+      ===== THE JUDGEMENT =====
+      The answer below was read out of that reply. Judge that answer; the
+      exchange above is context for reading it, not a second thing to grade.
+
+      {% endif %}
+      {% if observation %}
+      Observation:
+      {{ observation }}
+
+      {% endif %}
+      {% if gold %}
+      Reference explanation:
+      {{ gold }}
+
+      {% endif %}
+      Candidate explanation:
+      {{ candidate }}
+      {% if criteria %}
+
+      Additional criteria: {{ criteria }}
+      {% endif %}
+
+      Reply with exactly one line, and nothing else:
+      Score: 1
+      or
+      Score: 0
+output_contract:
+  score_regex: "score\\s*:?\\s*(?P<score>[01])"
+  expect_numeric_score: true
+  score_scale: 1
+  # The prompt demands 1 or 0. These are here so a judge that answers "yes"
+  # anyway is still understood as 1 rather than silently scoring 0 -- the
+  # verdict stays strictly binary either way, this only widens what can be
+  # read as one.
+  labels: ["1", "0", "yes", "no"]

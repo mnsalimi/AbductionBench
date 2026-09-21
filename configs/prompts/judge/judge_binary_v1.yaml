@@ -1,8 +1,9 @@
 id: judge_binary_v1
-version: "1.0"
+version: "2.0"
 description: >-
   Binary equivalence judge: does a generated explanation express the same
-  hypothesis as the reference? Used only when engine.judge.enabled is true.
+  hypothesis as the reference?  Returns 1 or 0 and nothing between them.
+  Used only when engine.judge.enabled is true.
 task_kinds: [judge]
 required_fields: [candidate, gold]
 optional_fields: [observation, context, criteria, full_prompt, full_response]
@@ -15,6 +16,17 @@ messages:
       identify the same underlying cause. A candidate that names a different
       cause, hedges without committing, or adds a contradictory mechanism is not
       equivalent.
+
+      YOUR SCORE IS STRICTLY BINARY. It is either 1 or 0, never anything in
+      between and never a range:
+
+        1 -- the candidate identifies the same explanation as the reference.
+        0 -- it does not.
+
+      There is no partial credit. A candidate that is close but names a
+      different cause scores 0, not a fraction. If the two are equivalent under
+      the rule above, score 1; in every other case, including an empty or
+      unreadable answer, score 0.
   - role: user
     content: |
       {% if full_prompt %}
@@ -45,10 +57,18 @@ messages:
       {% endif %}
 
       Does the candidate identify the same explanation as the reference?
-      Reply with exactly one line:
-      Verdict: yes
+      Reply with exactly one line, and nothing else:
+      Score: 1
       or
-      Verdict: no
+      Score: 0
 output_contract:
-  verdict_regex: "verdict\\s*:?\\s*(?P<label>yes|no)"
-  labels: ["yes", "no"]
+  score_regex: "score\\s*:?\\s*(?P<score>[01])"
+  expect_numeric_score: true
+  # 1 already means 1.0; declared so nothing divides the score by a scale it
+  # no longer has.
+  score_scale: 1
+  # The prompt demands 1 or 0. These are here so a judge that answers "yes"
+  # anyway is still understood as 1 rather than silently scoring 0 -- the
+  # verdict stays strictly binary either way, this only widens what can be
+  # read as one.
+  labels: ["1", "0", "yes", "no"]

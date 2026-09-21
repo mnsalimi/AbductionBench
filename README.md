@@ -679,6 +679,26 @@ reference. Two models are served on the one GPU:
 reasoning. The judge is a different model from the one under test, and they are
 separate servers.
 
+**Every answer judge returns 1 or 0.** Each prompt states in as many words that
+the score is *strictly binary* — 1 when the answer is correct or acceptable by
+that dataset's own criteria, 0 in every other case, with no partial credit and
+nothing in between. The parser enforces it too: the contracts accept `[01]` and
+nothing else. So a judged metric is a **rate** — the fraction of answers the
+judge accepted — and not an average quality, which is a different number read a
+different way.
+
+This replaced a 0–5 rubric on 2026-09-21, on the five answer judges
+(`judge_binary_v1`, `judge_binary_plausibility_v1` and the three `proxy_*`).
+Each dataset's *criteria* are unchanged — UNcommonsense still scores against
+the closest of several human explanations, HypoBench still requires the
+direction of the relationship to match, HypoArena still asks whether a
+hypothesis is grounded, insightful and testable — only the scale is. Scores
+from before that date are on the old scale and are **not comparable**.
+
+**The `reasoning_*` judges are deliberately not binary** and were not touched: a
+step count, an observation-coverage fraction or a branchiness score is not a
+yes/no, and forcing one onto them would destroy the metric.
+
 **Why the 20b and not the 120b.** This used to be `gpt-oss-120b` on :18004, and
 that is what `configs/models/gpt-oss-120b-local.yaml` still describes. It worked,
 but its 60.8 GiB of MXFP4 weights left the card with ~269 MiB free and cuBLAS

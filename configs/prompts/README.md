@@ -28,7 +28,7 @@ Change which prompt a judge stage uses in the run config:
 
 ```yaml
 engine:
-  judge:            { template: judge_graded_v1 }      # the answer judge
+  judge:            { template: judge_binary_v1 }      # the answer judge
   reasoning_judge:  { templates: { steps: reasoning_steps_v2 } }   # one family
 ```
 

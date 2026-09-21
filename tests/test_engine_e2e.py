@@ -1400,7 +1400,10 @@ class LateJudgedAdapter(FakeAdapter):
 
     # Pass two: the judge is back. Every answer is already on disk, so this
     # buys verdicts and nothing else.
-    fake_server.state.responder = lambda conv, mt: "YES"
+    # The shape the binary judge prompt asks for. ("YES" is also understood --
+    # see test_a_disobedient_judge_is_still_read -- but the instructed form is
+    # what a fixture should send.)
+    fake_server.state.responder = lambda conv, mt: "Score: 1"
     calls_before = len(fake_server.state.batch_calls)
 
     judged_cfg = write_run_config(

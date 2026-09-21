@@ -1,16 +1,16 @@
 id: proxy_closest_explanation_v1
-version: "1.0"
+version: "2.0"
 description: >-
-  PROJECT-SPECIFIC PROXY, not UNcommonsense's own evaluation. Scores a generated
-  explanation 0-5 against the closest of the item's human-written explanations,
-  and records which one it scored against.
+  PROJECT-SPECIFIC PROXY, not UNcommonsense's own evaluation.  Binary: is the
+  generated explanation the same as the closest human-written one?  1 for
+  similar to that gold explanation, 0 for not.
 task_kinds: [judge]
 required_fields: [candidate, references]
-optional_fields: [observation, context, full_prompt, full_response]
+optional_fields: [observation, context, criteria, full_prompt, full_response]
 messages:
   - role: system
     content: |
-      You rate how well a candidate explanation matches the best available
+      You decide whether a candidate explanation matches the best available
       human-written explanation for the same situation.
 
       You are given SEVERAL human explanations. They are alternatives, not a
@@ -19,15 +19,21 @@ messages:
       the candidate comes closest to, judge the candidate against that one
       alone, and tell us which you used.
 
-      Score 0-5:
-      5 -- says the same thing as that explanation; wording may differ freely.
-      4 -- the same explanation, missing a minor detail.
-      3 -- the same general mechanism, wrong or vague specifics.
-      2 -- related to it, but does not make the outcome plausible.
-      1 -- on topic, but not this explanation and not a plausible one.
-      0 -- irrelevant, contradictory, or no explanation offered.
+      YOUR SCORE IS STRICTLY BINARY. It is either 1 or 0, never anything in
+      between and never a range:
 
-      Judge the explanation, not its style or length.
+        1 -- the candidate says the same thing as that human explanation.
+             Wording may differ freely, and a missing minor detail does not
+             cost the point: what matters is that it gives the same reason the
+             outcome happened.
+
+        0 -- it does not. This includes the same general mechanism with wrong
+             or vague specifics, something related that does not make the
+             outcome plausible, an on-topic answer that is not this
+             explanation, a contradiction, and an empty answer.
+
+      There is no partial credit and no middle. "Close" is 0. "Partly the same"
+      is 0. Judge the explanation, not its style or length.
   - role: user
     content: |
       {% if full_prompt %}
@@ -55,10 +61,11 @@ messages:
 
       Reply with exactly these two lines and nothing else:
       Closest: <the number of the human explanation you judged against>
-      Score: <integer 0-5>
+      Score: <1 or 0>
 output_contract:
-  score_regex: "score\\s*:?\\s*(?P<score>[0-5])"
+  score_regex: "score\\s*:?\\s*(?P<score>[01])"
   expect_numeric_score: true
-  score_scale: 5
+  score_scale: 1
+  labels: ["1", "0"]
   detail_regexes:
     closest_reference: "closest\\s*:?\\s*(?P<closest_reference>\\d+)"

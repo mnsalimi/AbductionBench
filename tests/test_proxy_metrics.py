@@ -120,11 +120,11 @@ def test_a_genuine_zero_is_kept():
     assert out.details["proxy_judgement"]["status"] == "judged"
 
 
-def test_the_score_is_graded_and_clamped():
+def test_an_accepted_answer_scores_one_across_every_stratum():
     seeded = SampleScore(metrics={"proxy_x": 0.0, "proxy_x_domain": 0.0}, prediction="p")
-    out = apply_proxy_score(seeded, JudgeVerdict(score=0.6, parsed=True, raw="Score: 3"), "proxy_x")
-    assert out.metrics["proxy_x"] == 0.6
-    assert out.metrics["proxy_x_domain"] == 0.6, "strata follow the base metric"
+    out = apply_proxy_score(seeded, JudgeVerdict(score=1.0, parsed=True, raw="Score: 1"), "proxy_x")
+    assert out.metrics["proxy_x"] == 1.0
+    assert out.metrics["proxy_x_domain"] == 1.0, "strata follow the base metric"
     # Out-of-range never escapes into the sheet.
     high = apply_proxy_score(seeded, JudgeVerdict(score=1.4, parsed=True, raw=""), "proxy_x")
     assert high.metrics["proxy_x"] == 1.0
@@ -134,11 +134,11 @@ def test_the_judges_own_assessment_is_recorded():
     """Auditability: the score, the reply, and what the judge said about it."""
     seeded = SampleScore(metrics={"proxy_x": 0.0}, prediction="p")
     verdict = JudgeVerdict(
-        score=0.8, parsed=True, raw="Closest: 2\nScore: 4",
+        score=1.0, parsed=True, raw="Closest: 2\nScore: 1",
         details={"closest_reference": "2", "direction": "matches"},
     )
     judgement = apply_proxy_score(seeded, verdict, "proxy_x").details["proxy_judgement"]
-    assert judgement["score"] == 0.8
+    assert judgement["score"] == 1.0
     assert judgement["closest_reference"] == "2"
     assert judgement["direction"] == "matches"
     assert "Closest: 2" in judgement["judge_reply"]
@@ -158,14 +158,15 @@ def test_each_proxy_template_parses_its_own_reply(dataset_id):
         template = registry.get(template_id)
         _parse = JudgeStage._parse
 
+    # Binary verdicts: the scale was 0-5 until 2026-09-21.
     reply = {
-        "proxy_closest_explanation_v1": "Closest: 3\nScore: 4",
-        "proxy_closest_hypothesis_v1": "Closest: 2\nDirection: reversed\nScore: 2",
-        "proxy_hypothesis_quality_v1": "Grounded: 5\nInsight: 3\nTestable: 4\nScore: 4",
+        "proxy_closest_explanation_v1": "Closest: 3\nScore: 1",
+        "proxy_closest_hypothesis_v1": "Closest: 2\nDirection: reversed\nScore: 0",
+        "proxy_hypothesis_quality_v1": "Grounded: 1\nInsight: 0\nTestable: 1\nScore: 0",
     }[template_id]
     verdict = _Stage()._parse(reply)
     assert verdict.parsed
-    assert 0.0 <= verdict.score <= 1.0
+    assert verdict.score in (0.0, 1.0), "an answer judge returns 1 or 0, nothing between"
     assert verdict.details, "the template must record how the score was reached"
 
     # And a reply it cannot read stays unparsed rather than becoming a zero.
