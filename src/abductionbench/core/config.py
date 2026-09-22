@@ -401,13 +401,29 @@ class CheckpointConfig(_Base):
     store_raw_payloads: bool = True
     #: Keep at most this many raw payload files per task (0 = unlimited).
     #:
-    #: Bounded by default so the payloads can actually be *backed up*: each file
-    #: holds a whole batch, so three of them is ~48 prompt/response pairs per
-    #: task -- enough to read what the model was asked and what it said for
-    #: every dataset -- for ~0.3 MB instead of the ~1,100 files an uncapped run
-    #: writes, which is what exhausted Drive's request quota.  Set to 0 for the
-    #: complete audit trail, and exclude ``raw/`` from sync if you do.
-    max_raw_payloads: int = Field(3, ge=0)
+    #: 3 -> 0. The cap was right, and it was applied to the wrong thing.
+    #:
+    #: What made an uncapped run write ~1,100 files per task and exhaust
+    #: Drive's request quota was INTERACTIVE delivery, where a payload is
+    #: written per turn per episode: 50 episodes x 20 turns is a thousand files
+    #: on its own. A static task writes one payload per BATCH -- 19 of them for
+    #: 150 prompts at group size 8 -- so uncapped static was never the problem,
+    #: and capping it at 3 threw away the full record of what was sent to the
+    #: model for 35 of the suite's datasets to solve a problem none of them
+    #: had.
+    #:
+    #: So the base is now unlimited and the cap lives in
+    #: ``max_raw_payloads_by_delivery``, which carries it for exactly the
+    #: delivery modes that need it.
+    max_raw_payloads: int = Field(0, ge=0)
+    #: Per-delivery-mode override of that cap, by ``data_delivery_mode``.
+    #:
+    #: Interactive and sequential episodes write a payload per turn, so they
+    #: keep the bound; static keeps everything, which is what makes a static
+    #: task's raw/ a complete record of the requests it sent.
+    max_raw_payloads_by_delivery: dict[str, int] = Field(
+        default_factory=lambda: {"interactive": 3, "sequential": 3}
+    )
 
 
 class TokenizerConfig(_Base):
@@ -1332,21 +1348,32 @@ class RunConfig(_Base):
                 "engine.reasoning_judge.enabled requires engine.reasoning_judge.model"
             )
         self._check_judge_connection_pool()
+        per_delivery = self.engine.checkpoint.max_raw_payloads_by_delivery
+        uncapped_episodes = [
+            mode
+            for mode in ("interactive", "sequential")
+            if not (per_delivery.get(mode) or self.engine.checkpoint.max_raw_payloads)
+        ]
         if (
             self.engine.sync.enabled
             and self.engine.checkpoint.store_raw_payloads
-            and self.engine.checkpoint.max_raw_payloads == 0
+            and uncapped_episodes
             and not any("raw" in pattern for pattern in self.engine.sync.exclude)
         ):
-            # Not fatal -- it is a legitimate thing to want -- but it is the
-            # combination that exhausted Drive's request quota, and it is easy
-            # to reach by setting max_raw_payloads: 0 and forgetting the other
-            # half.
+            # Narrowed to the delivery modes that actually produce the flood.
+            # An episode writes a payload PER TURN, so 50 episodes x 20 turns is
+            # a thousand files from one task; a static task writes one per
+            # batch, which is 19. Warning about static as well is what made the
+            # blanket cap look reasonable, and that cap cost every static
+            # dataset its record of what was sent.
             logger.warning(
-                "engine.checkpoint.max_raw_payloads is 0 (unlimited) while engine.sync "
-                "is on and does not exclude raw/: a full run writes ~1,100 payload "
-                "files and uploading them all exhausts a Drive-style request quota. "
-                "Either cap max_raw_payloads or add 'raw/' to engine.sync.exclude."
+                "engine.checkpoint raw payloads are uncapped for %s delivery while "
+                "engine.sync is on and does not exclude raw/: an episode writes one "
+                "payload per turn, so a task can write ~1,100 files and uploading them "
+                "all exhausts a Drive-style request quota. Either set "
+                "max_raw_payloads_by_delivery for those modes or add 'raw/' to "
+                "engine.sync.exclude.",
+                "/".join(uncapped_episodes),
             )
         return self
 
@@ -1494,6 +1521,35 @@ def load_run_config(
     dataset_force = body.pop("dataset_force", {}) or {}
     if dataset_force:
         body["datasets"] = [deep_merge(d, dataset_force) for d in body["datasets"]]
+
+    # `disable_datasets: [id, ...]` turns specific datasets off for this run.
+    #
+    # It has to live here rather than in the run's `datasets:` list, because
+    # that list is APPENDED to the glob rather than merged by id: naming a
+    # globbed dataset there produces a duplicate, which the id-uniqueness check
+    # then rejects. The only other way to switch one off was to edit its own
+    # config file, which changes it for every run, or to name the other 42 on
+    # the command line.
+    #
+    # An id that matches nothing is an error, not a no-op: the whole point is
+    # to keep a dataset out of a run, and a typo that silently leaves it in is
+    # the failure this is meant to prevent.
+    disabled = body.pop("disable_datasets", []) or []
+    if isinstance(disabled, str):
+        disabled = [disabled]
+    if disabled:
+        known = {d.get("id") for d in body["datasets"]}
+        unknown = sorted(set(map(str, disabled)) - known)
+        if unknown:
+            raise ConfigError(
+                f"disable_datasets names dataset(s) this run does not have: {unknown} "
+                f"(known: {sorted(i for i in known if i)})"
+            )
+        wanted = set(map(str, disabled))
+        body["datasets"] = [
+            {**d, "enabled": False} if d.get("id") in wanted else d
+            for d in body["datasets"]
+        ]
 
     if model_filter:
         wanted = set(model_filter)

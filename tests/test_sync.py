@@ -668,9 +668,16 @@ def test_sample_prompts_and_responses_reach_the_backup(tmp_path: Path):
 def test_an_uncapped_run_with_sync_on_is_warned_about(tmp_path: Path, caplog):
     """The combination that exhausted the quota is easy to reach by halves.
 
-    Setting max_raw_payloads: 0 for a full audit trail is legitimate; forgetting
+    Uncapping episode payloads for a full audit trail is legitimate; forgetting
     to exclude raw/ from the backup at the same time is how a run ends up trying
     to upload ~1,100 files and starving the results behind them.
+
+    Narrowed to INTERACTIVE and SEQUENTIAL delivery, which is where the flood
+    comes from: an episode writes a payload per turn, so 50 episodes of 20
+    turns is a thousand files from one task. A static task writes one per
+    batch -- 19 for 150 prompts at group size 8 -- and was never the problem.
+    Warning about it too is what made a blanket cap look reasonable, and that
+    cap cost every static dataset its record of what was sent to the model.
     """
     import logging
 
@@ -684,22 +691,42 @@ def test_an_uncapped_run_with_sync_on_is_warned_about(tmp_path: Path, caplog):
             {"id": "m", "model_name": "m", "endpoint": {"base_url": "http://x"}}
         ],
         "engine": {
-            "checkpoint": {"max_raw_payloads": 0},
+            "checkpoint": {
+                "max_raw_payloads": 0,
+                "max_raw_payloads_by_delivery": {},
+            },
             "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
         },
     }
     with caplog.at_level(logging.WARNING):
         RunConfig.model_validate(payload)
-    assert any("max_raw_payloads" in record.message for record in caplog.records)
+    assert any("raw payloads are uncapped" in record.message for record in caplog.records)
 
-    # Capping it, or excluding raw/, is enough on its own.
+    # Capping the episode modes, or excluding raw/, is enough on its own.
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         RunConfig.model_validate({**payload, "engine": {
-            "checkpoint": {"max_raw_payloads": 3},
+            "checkpoint": {
+                "max_raw_payloads": 0,
+                "max_raw_payloads_by_delivery": {"interactive": 3, "sequential": 3},
+            },
             "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
         }})
-    assert not any("max_raw_payloads" in record.message for record in caplog.records)
+    assert not any("raw payloads are uncapped" in record.message for record in caplog.records)
+
+    # AND THE SHIPPED DEFAULT DOES NOT WARN: static is uncapped there on
+    # purpose, so a static task's raw/ holds every batch it sent.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        config = RunConfig.model_validate({**payload, "engine": {
+            "sync": {"enabled": True, "remote_path": str(tmp_path), "exclude": []},
+        }})
+    assert not any("raw payloads are uncapped" in record.message for record in caplog.records)
+    assert config.engine.checkpoint.max_raw_payloads == 0
+    assert config.engine.checkpoint.max_raw_payloads_by_delivery == {
+        "interactive": 3,
+        "sequential": 3,
+    }
 
 
 def test_verification_catches_a_file_the_remote_holds_a_different_copy_of(tmp_path: Path):

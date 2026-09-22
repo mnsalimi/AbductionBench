@@ -1315,7 +1315,13 @@ class EvaluationEngine:
             output_dir,
             fsync_every=self.engine_cfg.checkpoint.fsync_every,
             store_raw_payloads=self.engine_cfg.checkpoint.store_raw_payloads,
-            max_raw_payloads=self.engine_cfg.checkpoint.max_raw_payloads,
+            # Per delivery mode: an episode writes a payload per turn and needs
+            # the bound; a static task writes one per batch and keeps the lot,
+            # which is what makes its raw/ a complete record of the requests.
+            max_raw_payloads=self.engine_cfg.checkpoint.max_raw_payloads_by_delivery.get(
+                adapter.data_delivery_mode,
+                self.engine_cfg.checkpoint.max_raw_payloads,
+            ),
         )
         result = TaskResult(
             identity=identity,
