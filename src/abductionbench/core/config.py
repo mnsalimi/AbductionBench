@@ -1304,6 +1304,33 @@ class RunConfig(_Base):
     #: Provenance: which files this config was assembled from.
     source_files: list[str] = Field(default_factory=list)
 
+    def _check_model_connection_pools(self) -> None:
+        """A model may not be asked for more sockets than its pool holds.
+
+        The same defect as the judge one below, on the other side of the run.
+        In-flight HTTP requests for a model are ``max_parallel_batches`` -- one
+        request per batch, and for an endpoint with no batch route a "batch" IS
+        one request -- so a pool smaller than that does not queue the surplus
+        politely. It waits for a socket and dies at ``engine.timeouts.pool_s``,
+        and ``httpx.PoolTimeout`` stringifies to nothing, so the log reads
+        "timeout talking to <url>:" with no reason and the endpoint is blamed
+        for a limit set in this file.
+
+        Caught here rather than at the first request, because the symptom
+        appears hours into a run and looks like a flaky provider.
+        """
+        for model in self.models:
+            asked = model.limits.max_parallel_batches
+            if asked > model.limits.max_connections:
+                raise ConfigError(
+                    f"model {model.id!r} may have {asked} request(s) in flight "
+                    f"(limits.max_parallel_batches) but its connection pool holds "
+                    f"{model.limits.max_connections}. The surplus would wait for a "
+                    f"socket and be killed at engine.timeouts.pool_s, then retry into "
+                    f"the same exhausted pool. Set limits.max_connections to at least "
+                    f"{asked}, or lower max_parallel_batches."
+                )
+
     def _check_judge_connection_pool(self) -> None:
         """A judge may not ask for more sockets than its pool holds.
 
@@ -1365,6 +1392,7 @@ class RunConfig(_Base):
             raise ConfigError(
                 "engine.reasoning_judge.enabled requires engine.reasoning_judge.model"
             )
+        self._check_model_connection_pools()
         self._check_judge_connection_pool()
         per_delivery = self.engine.checkpoint.max_raw_payloads_by_delivery
         uncapped_episodes = [

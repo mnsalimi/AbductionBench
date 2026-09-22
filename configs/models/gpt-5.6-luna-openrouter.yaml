@@ -44,17 +44,33 @@ model:
     extra: {}
 
   limits:
-    # One request per "batch", so this is the number in flight. Kept well under
-    # the connection pool below, and modest because it is a paid endpoint being
-    # driven alongside a local GPU rather than the thing being saturated.
-    max_parallel_batches: 16
+    # One request per "batch", because there is no batch route -- so this is
+    # simply how many requests are in flight, and it is the ONLY throughput
+    # lever this model has. There is no group size to raise and no scheduler to
+    # fill: a remote model goes faster by being asked more things at once.
+    #
+    # 16 -> 64. 16 would have made this the bottleneck of a two-model run: the
+    # local gemma-4-31b runs 48 sequences at a time (6 batches x group 8, its
+    # --max-num-seqs), so a remote model held to 16 finishes its half of every
+    # dataset long after the GPU has finished its own and then holds the task
+    # open while the run waits on it.
+    #
+    # Nothing here changes an answer. Each request is independent and carries
+    # its own sampling; concurrency decides only how many are outstanding.
+    max_parallel_batches: ${env:ABENCH_LUNA_PARALLEL|64}
     # Left null: OpenRouter's limits move with the account's balance and the
     # serving provider, and 429 already has its own longer backoff in
     # core/retry.py. A fixed number here would either throttle below what the
     # account allows or fail to stop what it does not.
     requests_per_minute: null
     tokens_per_minute: null
-    max_connections: 32
+    # Has to exceed max_parallel_batches above, or the surplus waits for a
+    # socket and is killed at engine.timeouts.pool_s -- which raises
+    # httpx.PoolTimeout with an EMPTY message, so the log reads "timeout
+    # talking to <url>:" and the endpoint takes the blame for a limit set here.
+    # That cost this project 1,005 failed judge calls before it was found, and
+    # RunConfig._check_connection_pools now refuses the arithmetic outright.
+    max_connections: 128
     context_window: 131072
 
   notes:

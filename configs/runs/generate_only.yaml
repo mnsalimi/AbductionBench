@@ -27,12 +27,16 @@ description: >-
 
 engine:
   concurrency:
-    # Two models, one of them remote: the local card is driven by
-    # max_parallel_batches (6 x 8 = 48, its --max-num-seqs) and the remote one
-    # by its own 16, so 24 covers both with headroom and neither is capped here
-    # instead of by itself.
-    max_parallel_tasks: 24
-    max_parallel_batches_global: 24
+    # Enough tasks in flight to keep BOTH models busy at once. A task belongs to
+    # one model, so with too few of them the two take turns instead of running
+    # together -- and the remote model has no scheduler of its own to queue
+    # against, so a luna task that is not running is simply not being asked
+    # anything.
+    max_parallel_tasks: 32
+    # The ceiling on concurrent requests across the whole run, and it has to
+    # cover what the per-model limits ask for or it silently becomes the real
+    # limit instead of them: gemma-4-31b 6 + luna 64 = 70.
+    max_parallel_batches_global: 96
 
   judge:
     enabled: false
