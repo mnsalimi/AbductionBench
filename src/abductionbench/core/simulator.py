@@ -347,7 +347,21 @@ class SimulatorPool:
         return simulator
 
     def as_record(self) -> dict[str, Any]:
-        """What the run's results should say about the simulators used."""
+        """What the run's results should say about the simulators that played.
+
+        USED, not merely configured. A row here is a claim that this dataset's
+        environment was answered by a model rather than by the release's own
+        deterministic logic, and that claim has to be earned by a call: a
+        configured simulator that never ran did not shape a single answer, and
+        listing it invites a reader to discount results it had nothing to do
+        with.
+
+        The engine no longer builds one for a static adapter at all, so this is
+        the second half of the same fix rather than a substitute for it -- an
+        interactive dataset whose episodes all failed before the first
+        environment turn would still register a simulator, and a reader would
+        still see a model credited with an environment it never played.
+        """
         return {
             dataset_id: {
                 **simulator.config.as_record(),
@@ -356,6 +370,7 @@ class SimulatorPool:
                 "failures": simulator.stats["failures"],
             }
             for dataset_id, simulator in sorted(self._simulators.items())
+            if simulator.stats["calls"] or simulator.stats["failures"]
         }
 
     async def aclose(self) -> None:

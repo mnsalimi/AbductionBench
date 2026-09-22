@@ -720,7 +720,41 @@ def test_a_pool_shares_one_client_per_endpoint_and_model():
         assert first.client is second.client, "same model, same client"
         assert third.client is not first.client, "a different model needs its own client"
         assert first.calls is third.calls, "max_parallel_calls is run-wide"
-        assert set(pool.as_record()) == {"medqdx", "med_inquire", "vivabench"}
+        await pool.aclose()
+
+    asyncio.run(_check())
+
+
+def test_the_record_lists_the_simulators_that_played_not_the_ones_configured():
+    """A row in the Simulators sheet is a claim about how a run was produced.
+
+    It says this dataset's environment was answered by a model rather than by
+    the release's own deterministic logic, and a reader uses it to decide how
+    much of a result rests on a simulated patient. A simulator that never made
+    a call shaped nothing, and listing it invites that discount to be applied
+    to results it had nothing to do with.
+
+    Before this, `for_dataset` was called while building EVERY adapter, so all
+    42 datasets registered one, and the sheet credited a patient model against
+    abd, aer, art and climate_fever -- none of which has an environment at all.
+    """
+    async def _check():
+        pool = SimulatorPool(
+            SimulatorConfig(enabled=True, base_url="https://x/api", model="m", api_key="k"),
+            TimeoutConfig(),
+        )
+        played = pool.for_dataset("medqdx")
+        pool.for_dataset("med_inquire")          # registered, never called
+        assert set(pool.as_record()) == set(), "nothing has played yet"
+
+        played.stats["calls"] += 1
+        assert set(pool.as_record()) == {"medqdx"}
+
+        # A simulator that only ever failed still played: the episodes it
+        # broke are part of how the run came out, and hiding it would make an
+        # environment failure look like a deterministic one.
+        pool.for_dataset("med_inquire").stats["failures"] += 1
+        assert set(pool.as_record()) == {"medqdx", "med_inquire"}
         await pool.aclose()
 
     asyncio.run(_check())

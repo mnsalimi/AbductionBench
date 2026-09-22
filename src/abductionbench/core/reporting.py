@@ -107,6 +107,13 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
                 "value": _fmt(task.metrics.get(primary)),
                 "value_strict": _fmt(task.metrics.get(f"{primary}_strict")),
                 "coverage": _fmt(task.metrics.get("coverage")),
+                # Failures beside the value they are no longer folded into:
+                # `value` is how often it was right when it answered,
+                # `value_strict` counts a failure as 0, and these say how many
+                # there were to account for the gap between them.
+                "n_answered": _fmt(task.metrics.get("n_answered")),
+                "n_parse_failures": _fmt(task.metrics.get("n_parse_failures")),
+                "parse_failure_rate": _fmt(task.metrics.get("parse_failure_rate")),
                 "n_scored": task.n_scored,
                 "n_planned": task.n_planned,
                 "failure": task.failure or "",

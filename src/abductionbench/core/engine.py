@@ -1096,9 +1096,19 @@ class EvaluationEngine:
             offline=self.offline,
             cache_dir=Path(self.engine_cfg.data_root) / "_cache",
             logger=logging.getLogger(f"adapter.{dataset_cfg.id}"),
-            simulator=self._simulators.for_dataset(dataset_cfg.id)
-            if self._simulators is not None
-            else None,
+            # ONLY WHERE THERE IS AN ENVIRONMENT TO PLAY. `for_dataset`
+            # registers the simulator it hands back, so calling it for every
+            # adapter registered one for all 42 datasets -- and the Simulators
+            # sheet, which writes what is registered, then listed a patient
+            # model against abd, aer, art and climate_fever, none of which has
+            # an environment at all. `data_delivery_mode` is a class attribute,
+            # so the answer is known before the adapter is built.
+            simulator=(
+                self._simulators.for_dataset(dataset_cfg.id)
+                if self._simulators is not None
+                and getattr(adapter_cls, "data_delivery_mode", "static") != "static"
+                else None
+            ),
         )
         return adapter_cls(context)
 
@@ -2810,12 +2820,48 @@ class EvaluationEngine:
         metrics["n_scored"] = float(result.n_scored)
         metrics["n_error"] = float(result.n_error)
         metrics["n_skipped"] = float(result.n_skipped)
+        failures = [s for s in all_scores if not s.parse_ok]
+        answered = [s for s in all_scores if s.parse_ok]
         metrics["parse_failure_rate"] = (
-            sum(1 for s in all_scores if not s.parse_ok) / len(all_scores) if all_scores else 0.0
+            len(failures) / len(all_scores) if all_scores else 0.0
         )
+        metrics["n_parse_failures"] = float(len(failures))
+        metrics["n_answered"] = float(len(answered))
+
+        # A FAILURE TO ANSWER IS NOT A WRONG ANSWER, and the two headline
+        # columns now say so separately.
+        #
+        # `value` was the adapter's mean over every scored sample, and a sample
+        # the adapter could not parse scores 0 -- so an empty reply, a truncated
+        # one and a confidently incorrect one were the same number. They are not
+        # the same result: one says the model is wrong about the task, the other
+        # says it did not produce something the harness could read, which is as
+        # often a budget or format problem as a reasoning one.
+        #
+        # So `value` is now the mean over the samples that produced a readable
+        # answer -- how often it was right WHEN IT ANSWERED -- and `value_strict`
+        # is the mean over everything planned, with both failures and unscored
+        # samples counted as 0. The gap between them is exactly what was being
+        # hidden, and `parse_failure_rate` names its size.
+        #
+        # "I don't know" is not a failure: it parses, so it is an answer, and a
+        # wrong one. `parse_ok` is the adapter's own judgement about whether it
+        # could read the output, which is the right place for that line.
         primary = result.primary_metric
         if primary and primary in metrics:
-            metrics[f"{primary}_strict"] = metrics[primary] * coverage
+            per_sample = [
+                float(s.metrics[primary]) for s in answered if primary in s.metrics
+            ]
+            if per_sample:
+                # Only where the primary exists per sample. A primary the
+                # adapter derives in `aggregate` -- a joint accuracy, a
+                # difference between strata -- has no per-sample value to
+                # re-mean, and guessing one would report a different metric
+                # under the same name.
+                metrics[primary] = mean(per_sample)
+                metrics[f"{primary}_strict"] = sum(per_sample) / planned
+            else:
+                metrics[f"{primary}_strict"] = metrics[primary] * coverage
 
         latencies = [r.latency_s for _, r, _ in fresh if r.latency_s]
         if latencies:
