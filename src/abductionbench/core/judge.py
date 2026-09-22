@@ -246,7 +246,21 @@ class JudgeStage:
                 logger.debug("judge: skipping %s -- %s", sample.sample_id, too_big)
                 continue
             request = {**exchange, **request}
-            key = stable_hash({"template": self.template.ref, "fields": request})
+            # THE JUDGE'S IDENTITY IS PART OF THE VERDICT, so it is part of the
+            # key. Without it, resuming a run with a different
+            # `engine.judge.model` serves the previous judge's verdicts back
+            # from cache and calls nothing -- and then reports them under the
+            # new judge's name. The caches are per run directory, so this bites
+            # a resume rather than a fresh run; a resume with a changed judge
+            # is exactly what someone does when they decide the first judge was
+            # not good enough.
+            key = stable_hash(
+                {
+                    "template": self.template.ref,
+                    "judge": self.config.model,
+                    "fields": request,
+                }
+            )
             pending.append((index, request, key))
 
         if not pending:

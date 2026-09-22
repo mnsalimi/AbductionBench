@@ -285,6 +285,39 @@ def _directionality_list(value: Any, expected: int | None = None) -> list[float]
     return out
 
 
+#: The declared ``json_fields`` types, mapped to the validator that decides
+#: them. Two spellings each for the binary and directionality lists because
+#: both are in use across the shipped templates; they mean the same thing, and
+#: an unknown name is treated as unconstrained rather than as a failure, so a
+#: new template cannot be silently rejected by a name this map has not learnt.
+_CONTRACT_VALIDATORS: dict[str, Any] = {
+    "list_of_strings": lambda value: _string_list(value) is not None,
+    "list_of_nonnegative_integers": lambda value: _int_list(value) is not None,
+    "list_of_binary": lambda value: _binary_list(value) is not None,
+    "list_of_binary_values": lambda value: _binary_list(value) is not None,
+    "list_of_directionality_values": lambda value: _directionality_list(value) is not None,
+    "nonnegative_integer": lambda value: _nonnegative_int(value) is not None,
+    "nonnegative_integer_or_null": lambda value: value is None
+    or _nonnegative_int(value) is not None,
+    "binary": lambda value: _binary(value) is not None,
+    "directionality": lambda value: _nonnegative_number(value) in (0.0, 0.5, 1.0),
+}
+
+
+def _satisfies_contract(value: Any, declared: str) -> bool | None:
+    """``True``/``False`` against a known declared type, ``None`` if unknown.
+
+    ``None`` rather than ``False`` for a type this map has not learnt: an
+    unrecognised declaration is a gap in this map, not evidence about the
+    judge's reply, and failing closed would silently discard every verdict
+    from a newly added template.
+    """
+    validator = _CONTRACT_VALIDATORS.get(declared)
+    if validator is None:
+        return None
+    return bool(validator(value))
+
+
 def _numbered(items: list[str]) -> str:
     """``1. first\n2. second`` -- how a list reaches a judge.
 
@@ -1316,7 +1349,16 @@ class ReasoningJudgeStage:
         out: dict[str, dict[str, Any] | None] = {}
         audit: list[dict[str, Any]] = []
         for request_id, fields in requests.items():
-            key = stable_hash({"template": template.ref, "fields": fields}, length=32)
+            # Keyed by the judge as well as the prompt: see the same change in
+            # core/judge.py. A verdict is not a property of the question alone.
+            key = stable_hash(
+                {
+                    "template": template.ref,
+                    "judge": self.config.model,
+                    "fields": fields,
+                },
+                length=32,
+            )
             cached = self._cache.get(key)
             if cached is not None:
                 values = cached.get("values")
@@ -1707,7 +1749,27 @@ class ReasoningJudgeStage:
                 return None
             if not isinstance(parsed, dict):
                 return None
-            return None if any(name not in parsed for name in fields) else parsed
+            if any(name not in parsed for name in fields):
+                return None
+            # AND THE VALUES MUST BE WHAT THE CONTRACT SAYS THEY ARE.
+            #
+            # Checking only that the key names are present is what let
+            # `{"steps": 42}` -- declared `list_of_strings` -- count as a
+            # successful parse. The derivation downstream rejects it, correctly,
+            # so the metric is lost; but by then `_judge_many` has already
+            # written it to the cache as a verdict, and the cache is only
+            # written for values that parsed. So the bad reply is permanent:
+            # re-running the reasoning judge serves it straight back without
+            # calling the judge, and every dependent metric stays missing for
+            # the life of the run directory. That is a mechanism by which a
+            # rejudge pass cannot repair what it was run to repair.
+            #
+            # The validators already existed -- these are the same ones the
+            # derivation uses. They were simply applied one step too late.
+            for name, declared in fields.items():
+                if _satisfies_contract(parsed.get(name), str(declared)) is False:
+                    return None
+            return parsed
 
         answer = usable(raw)
         if answer is not None:

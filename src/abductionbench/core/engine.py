@@ -177,6 +177,12 @@ class TaskResult:
     n_error: int = 0
     n_skipped: int = 0
     n_reused: int = 0
+    #: Samples whose exchange was too large for the judge's context window.
+    #:
+    #: Counted separately because they are neither scored nor wrong: no verdict
+    #: was bought, so the judged metric on those samples is the 0.0 it was
+    #: seeded with. Reported rather than averaged in silently.
+    n_judge_skipped: int = 0
     primary_metric: str = ""
     documentation: AdapterDocumentation | None = None
     failure: str | None = None
@@ -1717,13 +1723,42 @@ class EvaluationEngine:
                         "task %s: %d sample record(s) updated with the judge's verdict",
                         identity.slug, rewritten,
                     )
-                if judge.unavailable:
+                if judge.skipped_oversize:
+                    # ASKED FOR, NOT ANSWERED, AND NOT BECAUSE THE MODEL WAS
+                    # WRONG. An exchange too large for the judge's window is
+                    # dropped before the call -- correctly, since a verdict on
+                    # a truncated exchange is not the same measurement -- but
+                    # the sample keeps the 0.0 its score was seeded with, and
+                    # nothing downstream read this counter. So "we could not
+                    # look at this one" was reported as "the model got this one
+                    # wrong", which is the same confusion an unreachable judge
+                    # used to produce and which `unavailable` below exists to
+                    # prevent.
+                    checkpoint.notes["judge_skipped_oversize"] = judge.skipped_oversize
+                    result.n_judge_skipped = judge.skipped_oversize
+                    logger.warning(
+                        "task %s: %d sample(s) too large for the judge's window; their "
+                        "judged metric is the seeded 0.0 and is NOT a verdict",
+                        identity.slug, judge.skipped_oversize,
+                    )
+                if judge.unavailable or (
+                    judge.skipped_oversize and not adapter.objective_metrics
+                ):
                     # Verdicts were asked for and never came back. `apply`
                     # applies whatever it did obtain, so partial results are
                     # kept -- but the task cannot be reported as scored.
+                    #
+                    # The oversize half of that condition is deliberate and
+                    # narrow: it applies only where the judge IS the score, so
+                    # an unjudged sample leaves nothing behind. A dataset with
+                    # objective metrics still has those, and the count above
+                    # says how many of its judged column are not verdicts.
+                    missing = judge.unavailable + (
+                        judge.skipped_oversize if not adapter.objective_metrics else 0
+                    )
                     raise EndpointError(
-                        f"{judge.unavailable} judge verdict(s) unavailable "
-                        f"({judge.last_error})"
+                        f"{missing} judge verdict(s) unavailable "
+                        f"({judge.last_error or 'exchange too large for the judge window'})"
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("task %s: judge stage failed: %s", identity.slug, exc)
@@ -1820,10 +1855,33 @@ class EvaluationEngine:
         # Modes that ask one item as several requests are folded back here, so
         # everything downstream -- metrics, coverage, the sample sheet -- counts
         # evaluation items rather than the requests they were split into.
-        if prompt_set.modes.needs_group_reduction and scores:
-            scores, reduced_records = self._reduce_groups(adapter, identity, scores)
+        #
+        # OVER THE REUSED RECORDS TOO, which is the whole point of doing it
+        # here rather than earlier. This used to fold only the requests this
+        # pass had just made, and a resume makes none of them: the reduced
+        # record is written under the PARENT's sample id with a
+        # `reduced::<group_id>` fingerprint, and the parent is not one of the
+        # rendered prompts, so resume never matches it -- it matches the
+        # members. The members then went into `all_scores` one by one.
+        #
+        # An item asked as k requests therefore counted as one evaluation item
+        # on the first pass and as k after a resume: coverage went from 1 to 3
+        # on a single self-consistency item, and a metric bounded at 1 reported
+        # 3. Judging is finished by this point, so folding the two together
+        # here changes what is counted and nothing about what was asked.
+        if prompt_set.modes.needs_group_reduction and (scores or reused_scores):
+            unskipped = [
+                triplet
+                for triplet in reused_triplets
+                if triplet[1].status is not ResponseStatus.SKIPPED
+            ]
+            scores, reduced_records = self._reduce_groups(
+                adapter, identity, [*scores, *unskipped]
+            )
             if reduced_records:
                 store.append_many(reduced_records)
+            # Folded in above; counting them again below would restore the bug.
+            reused_scores = []
 
         all_scores = [score for _, _, score in scores] + reused_scores
         result.n_scored = len(all_scores)
