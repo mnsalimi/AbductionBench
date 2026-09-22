@@ -1532,23 +1532,81 @@ def load_run_config(
         raise ConfigError(f"invalid run configuration ({anchor}): {exc}") from exc
 
 
+#: Field names whose value is a credential, matched exactly (lowercased).
+_SECRET_FIELDS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "access_token",
+        "bearer",
+        "credential",
+        "password",
+        "passwd",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
+
+#: ...and suffixes, so ``hf_token`` or ``judge_api_key`` are caught without
+#: listing them. Deliberately ``_token`` and not ``token``: ``max_tokens``,
+#: ``max_tokens_cap`` and ``tiktoken_encoding`` are settings, not secrets, and
+#: redacting them would destroy the provenance this file exists for.
+_SECRET_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_credential")
+
+
+def _looks_secret(name: str) -> bool:
+    lowered = str(name).lower()
+    return lowered in _SECRET_FIELDS or lowered.endswith(_SECRET_SUFFIXES)
+
+
+def _redact_in_place(node: Any) -> None:
+    """Redact every credential anywhere in a dumped config.
+
+    BY NAME, EVERYWHERE, rather than by path. The previous version walked the
+    paths it knew about -- ``models[].endpoint.api_key``, its batch override
+    and the two header bags -- and was correct about every one of them. It was
+    the enumeration itself that failed: ``engine.simulator.api_key`` was added
+    later, is a live credential, and was never on the list, so it was written
+    in plaintext into every run directory and from there to whatever the run
+    was backed up to. ``SimulatorConfig.api_key`` even documents itself as
+    "read from the environment, never written to a config file or a log".
+    ``engine.simulator.by_dataset.<id>.api_key`` is the same hole one level
+    down, and the next such field would have been the same bug again.
+
+    So this walks the whole structure. A field is a credential because of what
+    it is called, not because of where it sits, and a new one is covered the
+    day it is added.
+    """
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if _looks_secret(key) and isinstance(value, str) and value.strip():
+                node[key] = "***redacted***"
+            else:
+                _redact_in_place(value)
+    elif isinstance(node, list):
+        for item in node:
+            _redact_in_place(item)
+
+
 def dump_resolved(config: RunConfig, path: str | Path, *, redact: bool = True) -> None:
     """Write the fully-resolved config next to a run's outputs (provenance).
 
-    API keys are redacted by default so run directories are safe to share.
+    Credentials are redacted by default so run directories are safe to share --
+    and they are shared: ``engine.sync`` uploads the run directory, this file
+    included.
     """
     data = config.model_dump(mode="json")
     if redact:
+        _redact_in_place(data)
+        # Header bags are keyed by header name rather than by field name, so
+        # the name-based walk above does not see them: an "Authorization" or
+        # "X-Api-Key" header is a credential under a key that is neither.
         for model in data.get("models", []):
-            endpoint = model.get("endpoint", {})
-            for field_name in ("api_key",):
-                if endpoint.get(field_name):
-                    endpoint[field_name] = "***redacted***"
-            batch = endpoint.get("batch", {})
-            if batch.get("api_key"):
-                batch["api_key"] = "***redacted***"
+            endpoint = model.get("endpoint", {}) or {}
+            batch = endpoint.get("batch", {}) or {}
             for header_bag in (endpoint.get("headers", {}), batch.get("headers", {})):
-                for key in list(header_bag):
+                for key in list(header_bag or {}):
                     if "auth" in key.lower() or "key" in key.lower():
                         header_bag[key] = "***redacted***"
     Path(path).write_text(

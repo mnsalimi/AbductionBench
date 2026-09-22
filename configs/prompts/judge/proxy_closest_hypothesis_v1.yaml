@@ -71,6 +71,13 @@ output_contract:
   score_regex: "score\\s*:?\\s*(?P<score>[01])"
   expect_numeric_score: true
   score_scale: 1
+  # The only two values this metric admits. Enforced, not merely instructed:
+  # the score line is matched by a `[01]` pattern, but when that pattern does
+  # not match, `expect_numeric_score` falls back to the first number anywhere
+  # in the reply -- so "Score: 0.7" was recorded as 0.7 on a metric documented
+  # as strictly 0 or 1, and a judge that declined to answer in binary was
+  # written down as a fractional verdict.
+  score_values: [0, 1]
   labels: ["1", "0"]
   detail_regexes:
     closest_reference: "closest\\s*:?\\s*(?P<closest_reference>\\d+)"

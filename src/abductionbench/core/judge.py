@@ -84,6 +84,23 @@ def clip_middle(text: str, limit: int) -> str:
     )
 
 
+def _clipped_a_longer_number(match: "re.Match[str]", raw: str) -> bool:
+    """Did a bounded score pattern match only the front of a longer number?
+
+    The binary contracts match a single ``[01]`` character, so against
+    "Score: 0.7" the pattern matches the ``0`` and reports a confident 0 --
+    turning a judge that declined to answer in binary into a judge that said
+    "wrong". The reply is not a valid verdict, and recording it as one that
+    could not be parsed is the honest outcome; silently rounding it down is
+    not.
+    """
+    try:
+        end = match.end("score")
+    except (IndexError, re.error):
+        end = match.end()
+    return bool(re.match(r"\d|\.\d", raw[end : end + 2]))
+
+
 @dataclass(slots=True)
 class JudgeVerdict:
     """Parsed judge output."""
@@ -389,6 +406,10 @@ class JudgeStage:
         score_regex = contract.get("score_regex")
         if score_regex:
             match = re.search(score_regex, raw, flags=re.IGNORECASE | re.DOTALL)
+            if match and _clipped_a_longer_number(match, raw):
+                # "Score: 0.7" against a `[01]` pattern is not a 0.
+                verdict.details["judge_score_not_in_contract"] = raw[:80]
+                match = None
             if match:
                 groups = match.groupdict()
                 candidate = groups.get("score") or (match.group(1) if match.groups() else None)
@@ -409,8 +430,47 @@ class JudgeStage:
             # Graded templates declare their scale; normalize to [0, 1] so the
             # same verdict object is comparable across judge templates.
             scale = float(contract.get("score_scale", 1.0) or 1.0)
-            verdict.score = raw_score / scale if scale else raw_score
-            verdict.parsed = True
+            normalized = raw_score / scale if scale else raw_score
+            admissible = contract.get("score_values")
+            if admissible and not any(
+                abs(normalized - float(value)) < 1e-9 for value in admissible
+            ):
+                # A declared value set is the contract, and 0.7 is not in it.
+                # The regex only matches `[01]`, so this value reached here
+                # through the first-number-anywhere fallback -- from a reply
+                # that did not answer in the form it was asked for.
+                verdict.details["judge_score_not_in_contract"] = raw_score
+            elif 0.0 <= normalized <= 1.0:
+                verdict.score = normalized
+                verdict.parsed = True
+            else:
+                # OUT OF RANGE IS NOT A SCORE, IT IS A FAILED PARSE.
+                #
+                # Declaring `score_scale` is what makes verdicts comparable
+                # across templates, so a normalized value outside [0, 1] means
+                # the number came from somewhere other than the verdict line.
+                # And it did: `expect_numeric_score` falls back to the first
+                # number found ANYWHERE in the reply. Measured against the
+                # shipped binary templates, "Score: 2" recorded 2.0, "Score: 7"
+                # recorded 7.0, "Score: -1" recorded -1.0, and a proxy
+                # template's own "Closest: 3" detail line recorded 3.0 -- on
+                # metrics documented as strictly 0 or 1, which then went into
+                # means and rates as though they were verdicts.
+                verdict.details["judge_score_out_of_range"] = raw_score
+
+        if verdict.score is None and (
+            "judge_score_out_of_range" in verdict.details
+            or "judge_score_not_in_contract" in verdict.details
+        ):
+            # ONE REPLY, ONE VERDICT. The label fallback scrapes the labels
+            # list out of the raw text, and against "Score: -1" it finds the
+            # "1" and reports an affirmative -- from the very line whose score
+            # was just rejected as malformed. `JudgeVerdict.positive` then
+            # reads that label, so the sample is scored as correct. A reply
+            # whose score line cannot be trusted does not get to contribute a
+            # label either.
+            verdict.label = None
+            verdict.parsed = False
 
         # Anything else the template wants on the record: which reference the
         # judge scored against, what it said about each rubric dimension. A

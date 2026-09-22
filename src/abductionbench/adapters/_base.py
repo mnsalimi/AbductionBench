@@ -266,11 +266,40 @@ def apply_judged_metric(score: SampleScore, verdict: Any, metric: str) -> Sample
     a filter, so one rule sets them all rather than each adapter remembering
     which strata it declared.
     """
+    metrics = dict(score.metrics)
+    details = {**score.details, "judge_label": getattr(verdict, "label", None)}
+
     value = getattr(verdict, "score", None)
+    if value is None and not getattr(verdict, "parsed", False):
+        # NOT JUDGED IS NOT WRONG.
+        #
+        # This used to fall back to `verdict.positive`, which for a verdict
+        # that parsed nothing is False, so an unreadable judge reply was
+        # written down as a confident 0 -- indistinguishable from a judge that
+        # read the answer and rejected it. On a dataset whose only metric is
+        # the judge's verdict that is the whole score.
+        #
+        # Dropping the metric is the sanctioned way to say "no measurement
+        # here": `aggregate_mean_metrics` skips keys a sample does not carry
+        # rather than averaging them as zero, which is what its own docstring
+        # promises. The sample still appears, with the reason on it.
+        for name in list(metrics):
+            if name == metric or name.startswith(f"{metric}_"):
+                metrics.pop(name)
+        details["judge_unparsed"] = True
+        raw = getattr(verdict, "raw", "") or ""
+        if raw:
+            details["judge_unparsed_raw"] = raw[:200]
+        return SampleScore(
+            metrics=metrics,
+            prediction=score.prediction,
+            parse_ok=score.parse_ok,
+            details=details,
+        )
+
     value = float(value) if value is not None else (
         1.0 if getattr(verdict, "positive", False) else 0.0
     )
-    metrics = dict(score.metrics)
     for name in list(metrics):
         if name == metric or name.startswith(f"{metric}_"):
             metrics[name] = value
@@ -279,7 +308,7 @@ def apply_judged_metric(score: SampleScore, verdict: Any, metric: str) -> Sample
         metrics=metrics,
         prediction=score.prediction,
         parse_ok=score.parse_ok,
-        details={**score.details, "judge_label": getattr(verdict, "label", None)},
+        details=details,
     )
 
 
