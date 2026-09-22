@@ -1082,7 +1082,7 @@ class ReasoningJudgeStage:
             run("step_directionality", ready, ("steps",)),
             run("differential_elimination", ready, ("steps",)),
             run("uncertainty", ready, ("steps",)),
-            run("prior_knowledge", ready, ("steps",)),
+            run("prior_knowledge", ready, ("question", "steps")),
             run("unresolved_contradiction", ready, ("steps",)),
             run("anchoring_point", [t for t in ready if t.reference],
                 ("steps", "reference_answer")),

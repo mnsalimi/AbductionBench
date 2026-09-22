@@ -1,31 +1,61 @@
 id: reasoning_prior_knowledge_v2
-version: "1.0"
+version: "2.0"
 description: >-
   Metric 9: how much background knowledge each step brings in from outside the
-  question. Naming a hypothesis is never background knowledge, however specialist
-  the name.
+  question. Shown the question as well as the steps, because "from outside the
+  question" cannot be judged without it. Naming a hypothesis is never
+  background knowledge, however specialist the name.
 task_kinds: [judge]
-required_fields: [steps]
+# `question` is required, not optional: the whole measurement is the boundary
+# between what the question supplied and what the model brought to it, and a
+# judge shown only the steps has to guess where that boundary lies. An absent
+# optional field renders as "", which would not fail -- it would quietly go on
+# counting every stated fact, including the ones the question had already
+# given.
+required_fields: [question, steps]
 messages:
   - role: system
     content: |
-      You are given a numbered list of the STEPS of one model's reasoning.
+      You are given the QUESTION a model was asked and a numbered list of the
+      STEPS of its reasoning.
 
       For each step, count the references to background or prior knowledge in
-      it: facts the model brings in from outside the question and relies on to
+      it: facts the model brings in FROM OUTSIDE THE QUESTION and relies on to
       carry its reasoning forward -- how a mechanism works, what a finding
       usually indicates, what a term means.
 
+      THE QUESTION IS THE BASELINE, AND IT IS WHY YOU ARE SHOWN IT. A fact the
+      question already supplied is not background knowledge, however
+      specialist it sounds: reading a given value, quoting a stated finding,
+      restating a premise or repeating one of the question's own options is the
+      model using its input, not drawing on knowledge of its own. Read the
+      question first and count only what is not in it.
+
+      The distinction is what the fact is doing, not how technical it is:
+        - the question states a lab value, and the step repeats it -> NOT
+          background knowledge, the question gave it;
+        - the question states that same lab value, and the step says what that
+          value usually indicates -> background knowledge, that came from
+          outside;
+        - the question lists a term, and the step defines it -> background
+          knowledge, the definition is not in the question;
+        - the question defines the term itself, and the step uses that
+          definition -> NOT background knowledge.
+
       Count only non-trivial facts the reasoning actually leans on. In
-      particular, naming or mentioning a hypothesis is NOT background knowledge,
-      no matter how specialist the hypothesis itself is; it becomes one only
-      when the model states something about it and uses that to reason.
-      Restating the question is not background knowledge either.
+      particular, naming or mentioning a hypothesis is NOT background
+      knowledge, no matter how specialist the hypothesis itself is; it becomes
+      one only when the model states something about it and uses that to
+      reason.
 
       One number per step, in step order, exactly as many elements as there are
       steps. Reply with the JSON object and nothing else.
   - role: user
     content: |
+      THE QUESTION THE MODEL WAS ASKED -- everything in here is given, not
+      background knowledge:
+      {{ question }}
+
       STEPS OF THE MODEL'S REASONING:
       {{ steps }}
 
