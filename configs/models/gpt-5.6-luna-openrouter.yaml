@@ -1,0 +1,62 @@
+# openai/gpt-5.6-luna, rented from OpenRouter and EVALUATED -- not a judge.
+#
+# No `judge_only` here, deliberately: this model is under test. It is the same
+# endpoint and the same key the environment simulators use (engine.simulator in
+# pilot.yaml already names gpt-5.6-luna for vivabench), but a different role, so
+# it gets its own file rather than borrowing the simulator's settings.
+#
+# NO BATCH ROUTE. `POST /v1/chat/completions/batch` is a vLLM extension -- it
+# takes `messages: [[...],[...]]`, which is not an OpenAI request shape -- and
+# OpenRouter 404s it, as it 404s the `:batch` model ids for models that do not
+# publish one. Verified against the live API rather than assumed. So every
+# request goes on its own, and concurrency is bought with `max_parallel_batches`
+# (each "batch" is one request) rather than with a group size.
+model:
+  id: gpt-5.6-luna-openrouter
+  model_name: openai/gpt-5.6-luna
+  description: >-
+    gpt-5.6-luna, called through OpenRouter as a model under evaluation
+    alongside whatever this box is serving locally.
+  # Returns its chain in `reasoning` and the answer in `content`, so `content`
+  # can be null if the chain exhausts the budget.
+  reasoning_model: true
+
+  endpoint:
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    api_key: ${env:OPENROUTER_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: false
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # The suite-wide ceiling. Against this model's own window the window binds
+    # first, which is the intended behaviour -- see engine.limits.
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    # One request per "batch", so this is the number in flight. Kept well under
+    # the connection pool below, and modest because it is a paid endpoint being
+    # driven alongside a local GPU rather than the thing being saturated.
+    max_parallel_batches: 16
+    # Left null: OpenRouter's limits move with the account's balance and the
+    # serving provider, and 429 already has its own longer backoff in
+    # core/retry.py. A fixed number here would either throttle below what the
+    # account allows or fail to stop what it does not.
+    requests_per_minute: null
+    tokens_per_minute: null
+    max_connections: 32
+    context_window: 131072
+
+  notes:
+    served_by: OpenRouter (openai/gpt-5.6-luna)
+    role: under evaluation, not judging

@@ -1,0 +1,49 @@
+# GENERATE THE ANSWERS, JUDGE NOTHING.
+#
+# The suite on gemma-4-31b (served alone on this box) and gpt-5.6-luna (rented
+# from OpenRouter), with BOTH judge stages off. What this run buys is model
+# outputs: every judged metric is left at its seeded value and every reasoning
+# column stays empty, and both facts are recorded rather than presented as
+# scores.
+#
+# That is a legitimate thing to want and the engine has a word for it.
+# `judge.enabled: false` on a run containing judge-scored datasets is normally
+# REFUSED -- such a run finishes, looks complete, and quietly reports no score
+# for them -- so `defer: true` is what says the omission is deliberate. The run
+# then logs which datasets are affected, records it per task, and the verdicts
+# are bought later by resuming with the judge on. Both judges support that, and
+# the answers on disk are what they are bought against, so nothing here has to
+# be generated twice.
+#
+# gemma-4-31b takes 0.93 of this card by itself, which is the reason the
+# judge cannot be local and the reason nothing else is served beside it.
+extends:
+  - full.yaml
+
+name: generate-only
+description: >-
+  Answers only, from gemma-4-31b locally and gpt-5.6-luna via OpenRouter, with
+  the answer judge and the reasoning-chain judge both deferred to a later pass.
+
+engine:
+  concurrency:
+    # Two models, one of them remote: the local card is driven by
+    # max_parallel_batches (6 x 8 = 48, its --max-num-seqs) and the remote one
+    # by its own 16, so 24 covers both with headroom and neither is capped here
+    # instead of by itself.
+    max_parallel_tasks: 24
+    max_parallel_batches_global: 24
+
+  judge:
+    enabled: false
+    # Not an oversight. See the header.
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+models:
+  # Served alone on this card at GPU_MEMORY_UTILIZATION 0.93.
+  - file: ../models/gemma-4-31b-local.yaml
+  # Rented, and under evaluation rather than judging.
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
