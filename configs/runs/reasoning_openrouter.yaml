@@ -30,19 +30,6 @@ description: >-
   side on this box, with the answer judge and the reasoning-chain judge both
   answered by openai/gpt-oss-120b on OpenRouter inside the same pass.
 
-# Off for this run. Each is switched off here rather than in its own config
-# file, so the dataset stays available to every other run, and `enabled: false`
-# in the resolved config records that the omission was deliberate rather than a
-# dataset that failed to load.
-disable_datasets:
-  - moose_chem2
-  - researchbench
-  - causalopsbench
-  - causelogics
-  - gear
-  - defab
-  - b_copa
-
 engine:
   concurrency:
     # Three servers to keep fed instead of one, and a task spends part of its

@@ -91,14 +91,54 @@ class PooledDatasetAdapter(DatasetAdapter):
 
     def build_samples(self) -> list[SampleSpec]:
         samples: list[SampleSpec] = []
+        skipped = 0
+        offset = max(0, int(getattr(self.context, "sample_offset", 0) or 0))
+        #: Pool positions of the samples this draw actually took, so the
+        #: manifest can say which records were used rather than only how many.
+        self._drawn_pool_indices: list[int] = []
         for index, item in enumerate(self._pool):
             if len(samples) >= self.context.sample_size:
                 break
             sample = self._safe_make(item, index)
-            if sample is not None:
-                samples.append(sample)
+            if sample is None:
+                continue
+            if skipped < offset:
+                # Counted as built and then dropped, which is what makes the
+                # offset line up with an earlier run: that run consumed exactly
+                # these, in exactly this order, so skipping the same number of
+                # BUILT samples leaves a set disjoint from it. Counting pool
+                # positions instead would drift whenever an item fails to build.
+                skipped += 1
+                continue
+            samples.append(sample)
+            self._drawn_pool_indices.append(index)
         self._built = [s.sample_id for s in samples]
         return samples
+
+    def draw_record(self) -> dict[str, Any]:
+        """Exactly which records this draw took, and how to take the next set.
+
+        Written to the run's ``sample_manifest.jsonl``. The ids are the point:
+        "50 records" is not a claim anyone can check, and a later run that means
+        to extend this one rather than repeat it has to be able to see what this
+        one used.
+        """
+        offset = max(0, int(getattr(self.context, "sample_offset", 0) or 0))
+        return {
+            "dataset_id": self.dataset_id,
+            "split": self.split_used,
+            "split_size": self.split_size,
+            "seed": self.context.seed,
+            "salt": self.dataset_id,
+            "sample_offset": offset,
+            "sample_size": self.context.sample_size,
+            "n_drawn": len(self._built),
+            # Where a run that must not overlap this one should start.
+            "next_offset": offset + len(self._built),
+            "adapter_version": self.adapter_version,
+            "sample_ids": list(self._built),
+            "pool_indices": list(getattr(self, "_drawn_pool_indices", [])),
+        }
 
     def replacement_samples(self, count: int, exclude: set[str]) -> list[SampleSpec]:
         """Replacements for oversize items, expanded for the active modes.

@@ -45,6 +45,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import orjson
+
 from . import batching as batching_mod
 from .adapter import (
     AdapterContext,
@@ -754,6 +756,47 @@ class EvaluationEngine:
             return {}
         return self.sync.flush().as_dict()
 
+    def _record_draw(self, adapter: Any, dataset_cfg: Any, samples: list[Any]) -> None:
+        """Append this dataset's draw to the run's ``sample_manifest.jsonl``.
+
+        WHICH RECORDS, not how many. "50 records per dataset" is not a claim
+        anyone can check against a results sheet, and a later run meant to
+        EXTEND this one rather than repeat it has to be able to see what this
+        one consumed. Each row carries the seed and salt that define the
+        shuffle, the offset this draw started at, every sample id it took, and
+        `next_offset` -- the number to run with next so the two sets do not
+        overlap.
+
+        Every model sees the identical draw: the prompt set is built once,
+        before any model is called, which is what makes the columns of the
+        result grid comparable. So the models are a field on the row rather
+        than a row apiece, and the row says so instead of leaving a reader to
+        assume it.
+
+        Best-effort: a manifest that cannot be written must not stop a run, and
+        the records themselves remain the authoritative account of what ran.
+        """
+        try:
+            row = (
+                adapter.draw_record()
+                if hasattr(adapter, "draw_record")
+                else {
+                    "dataset_id": dataset_cfg.id,
+                    "sample_ids": [s.sample_id for s in samples],
+                    "n_drawn": len(samples),
+                }
+            )
+            row["run_id"] = self.run_id
+            row["models"] = [m.id for m in self.config.evaluated_models()]
+            row["schema"] = "sample_manifest/v1"
+            path = self.run_dir / "sample_manifest.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(orjson.dumps(row).decode() + "\n")
+        except Exception as exc:  # noqa: BLE001 - provenance must not fail a run
+            logger.warning(
+                "dataset %s: could not record the draw manifest: %s", dataset_cfg.id, exc
+            )
+
     # ------------------------------------------------------------------ #
     # endpoint verification
     # ------------------------------------------------------------------ #
@@ -1042,6 +1085,7 @@ class EvaluationEngine:
                     f"Only {len(unique)} samples were available in the chosen split "
                     f"(requested {dataset_cfg.sample_size})."
                 )
+            self._record_draw(adapter, dataset_cfg, unique)
             logger.info(
                 "dataset %s: prepared %d sample(s) in %.1fs",
                 dataset_cfg.id,
@@ -1078,6 +1122,7 @@ class EvaluationEngine:
             data_dir=data_dir,
             modes=modes,
             sample_size=dataset_cfg.sample_size,
+            sample_offset=dataset_cfg.sample_offset,
             seed=dataset_cfg.seed if dataset_cfg.seed is not None else self.config.seed,
             options={
                 **dict(dataset_cfg.options),

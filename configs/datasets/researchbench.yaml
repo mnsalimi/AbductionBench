@@ -1,5 +1,9 @@
 dataset:
   id: researchbench
+  # OFF. Switched off in this file rather than per run, so it stays off
+  # without anyone having to remember a flag. Delete these two lines to
+  # bring it back; nothing else about the dataset has changed.
+  enabled: false
   impl: abductionbench.adapters.researchbench:ResearchBenchAdapter
   options:
     # generation (the released generation/ file) or selection (ranking/).

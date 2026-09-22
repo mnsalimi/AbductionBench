@@ -1,5 +1,9 @@
 dataset:
   id: abductionrules
+  # OFF. Switched off in this file rather than per run, so it stays off
+  # without anyone having to remember a flag. Delete these two lines to
+  # bring it back; nothing else about the dataset has changed.
+  enabled: false
   impl: abductionbench.adapters.abductionrules:AbductionRulesAdapter
   options:
     subsets: null   # null -> all four (Animal / Person, full and Simple)

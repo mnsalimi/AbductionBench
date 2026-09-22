@@ -127,9 +127,59 @@ def build_summary_frame(result: RunResult) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
+    frame = _add_question_level_overall(frame)
     return frame.sort_values(
         ["dataset_id", "model_id", "template_mode"]
     ).reset_index(drop=True)
+
+
+#: Metrics that are a property of the QUESTION, not of the model answering it.
+#:
+#: How many observations a question supplies, and how many answer options it
+#: offers, are the same numbers whichever model is asked -- the observation
+#: inventory is even cached by the exact question text and bought once for the
+#: whole run. So a difference between two models' columns here is not a finding
+#: about the models; it is a difference in which samples each one got a verdict
+#: for, and it makes the denominators of everything built on them incomparable.
+QUESTION_LEVEL_METRICS: tuple[str, ...] = (
+    "reasoning_observations_total",
+    "reasoning_option_count",
+)
+
+
+def _add_question_level_overall(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add each question-level metric's average across every model.
+
+    BOTH NUMBERS, DELIBERATELY, because the two requests behind them disagree
+    and each is right about something:
+
+    * ``metric.<name>`` stays as it is -- that model's mean over the samples it
+      was actually measured on, with skipped samples excluded. It is the honest
+      per-model figure and it is what every other column in the row is
+      consistent with.
+    * ``<name>_overall`` is the mean of those per-model means across the models
+      that produced one, repeated identically on each model's row. Because the
+      metric is a property of the question, this is the figure to compare
+      across datasets and the one to use where a formula must not shift its
+      denominator between models.
+
+    Repeating the same value on every row is the point rather than a quirk: it
+    makes the column visibly model-independent, which is exactly the claim it
+    is making.
+    """
+    keys = ["dataset_id", "prompt_mode", "selection_mode", "template_mode"]
+    for metric in QUESTION_LEVEL_METRICS:
+        column = f"metric.{metric}" if f"metric.{metric}" in frame.columns else metric
+        if column not in frame.columns:
+            continue
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        # Grouped by the question set, not by the dataset alone: an io and a cot
+        # task of the same dataset ask the same questions, but a selection
+        # variant does not offer the same options as a generation one.
+        frame[f"{column}_overall"] = numeric.groupby(
+            [frame[key] for key in keys]
+        ).transform("mean")
+    return frame
 
 
 def _build_tasks_frame(result: RunResult) -> pd.DataFrame:

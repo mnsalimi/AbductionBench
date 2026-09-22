@@ -1,5 +1,9 @@
 dataset:
   id: medqdx
+  # OFF. Switched off in this file rather than per run, so it stays off
+  # without anyone having to remember a flag. Delete these two lines to
+  # bring it back; nothing else about the dataset has changed.
+  enabled: false
   impl: abductionbench.adapters.medqdx:MedQDxAdapter
   options:
     mode: information_levels   # information_levels (100 cases x 3 levels = 300) | inquiry_rounds

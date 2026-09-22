@@ -1148,6 +1148,24 @@ class DatasetConfig(_Base):
     impl: str
     enabled: bool = True
     sample_size: int = Field(200, ge=1)
+    #: How many of the drawn records to skip before taking ``sample_size``.
+    #:
+    #: The draw is one seeded shuffle of the whole split, and the evaluation set
+    #: is a PREFIX of it, so records [offset, offset + sample_size) of that same
+    #: shuffle are a different set with nothing in common with [0, offset).
+    #: That is what makes a second run extend the first rather than repeat it:
+    #: 50 records at offset 0, then 50 at offset 50, is 100 distinct records and
+    #: not 50 measured twice.
+    #:
+    #: It counts SAMPLES BUILT, not positions in the pool, because that is what
+    #: the earlier run consumed -- an item the adapter declines to build is
+    #: skipped by both runs identically, so counting positions would let the two
+    #: draws drift into each other.
+    #:
+    #: The seed must not change between the two runs, and `sample_manifest.jsonl`
+    #: in the run directory records the seed, the offset and every id drawn, so
+    #: the next offset can be read off the last run rather than remembered.
+    sample_offset: int = Field(0, ge=0)
     #: Falls back to the run seed when unset.
     seed: int | None = None
     #: Per-dataset overrides of the engine's input-size policy.

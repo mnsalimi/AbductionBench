@@ -1,5 +1,9 @@
 dataset:
   id: b_copa
+  # OFF. Switched off in this file rather than per run, so it stays off
+  # without anyone having to remember a flag. Delete these two lines to
+  # bring it back; nothing else about the dataset has changed.
+  enabled: false
   impl: abductionbench.adapters.b_copa:BalancedCOPAAdapter
   options: {}
   notes: >-

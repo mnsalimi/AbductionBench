@@ -1,5 +1,9 @@
 dataset:
   id: abd
+  # OFF. Switched off in this file rather than per run, so it stays off
+  # without anyone having to remember a flag. Delete these two lines to
+  # bring it back; nothing else about the dataset has changed.
+  enabled: false
   impl: abductionbench.adapters.abd:ABDAdapter
   options:
     scenarios: null    # null -> ABD_FULL, ABD_PARTIAL, ABD_SKEPTICAL

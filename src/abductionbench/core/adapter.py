@@ -122,6 +122,10 @@ class AdapterContext:
     data_dir: Path
     modes: TaskModes = field(default_factory=TaskModes)
     sample_size: int = 300
+    #: Records of the same seeded draw to skip before taking ``sample_size``.
+    #: See ``DatasetConfig.sample_offset`` -- this is how a later run takes a
+    #: set disjoint from an earlier one.
+    sample_offset: int = 0
     seed: int = 0
     options: dict[str, Any] = field(default_factory=dict)
     input_token_budget: int = 16000
