@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import orjson
@@ -318,6 +319,29 @@ def _satisfies_contract(value: Any, declared: str) -> bool | None:
     return bool(validator(value))
 
 
+def _proportion_of_steps(values: Sequence[float], total_steps: int) -> float | None:
+    """What fraction of the steps exhibit the property at all.
+
+    Binarize, then mean: ``[1, 4, 0, 6]`` -> ``[1, 1, 0, 1]`` -> 0.75.
+
+    The alternative -- ``sum(values) / total_steps``, which is what these
+    columns used to be -- is not a proportion and does not stay inside [0, 1].
+    The same list gives 11/4 = 2.75, a "normalized" metric reported as 2.75,
+    and a step that cites four facts counts four times as much as a step that
+    cites one. That is a density, and a density is already reported: the raw
+    sum is kept beside every one of these as its own column
+    (``reasoning_prior_knowledge`` beside ``reasoning_prior_knowledge_normalized``),
+    so nothing is lost by making the normalized one mean what its name says.
+
+    Whether a step drew on prior knowledge is a property of the step; how many
+    times it did is a different measurement, and mixing them makes a column
+    that is neither.
+    """
+    if not total_steps:
+        return None
+    return sum(1.0 for value in values if value) / total_steps
+
+
 def _numbered(items: list[str]) -> str:
     """``1. first\n2. second`` -- how a list reaches a judge.
 
@@ -506,7 +530,9 @@ def derive_reasoning_metrics(
         compared = sum(comparisons)
         metrics["reasoning_differential_elimination"] = float(compared)
         if total_steps:
-            metrics["reasoning_differential_elimination_normalized"] = compared / total_steps
+            metrics["reasoning_differential_elimination_normalized"] = (
+                _proportion_of_steps(comparisons, total_steps)
+            )
         pairs = comparison_pairs(hypothesis_count or 0)
         if pairs:
             metrics["reasoning_comparison_exhaustiveness"] = compared / pairs
@@ -522,7 +548,9 @@ def derive_reasoning_metrics(
         marked = sum(uncertainty)
         metrics["reasoning_uncertainty_steps"] = float(marked)
         if total_steps:
-            metrics["reasoning_uncertainty_rate"] = marked / total_steps
+            metrics["reasoning_uncertainty_rate"] = _proportion_of_steps(
+                uncertainty, total_steps
+            )
 
     # -- metric 9: prior knowledge -------------------------------------------- #
     prior = per_step("prior_knowledge", "prior_knowledge_per_step",
@@ -531,7 +559,9 @@ def derive_reasoning_metrics(
         borrowed = sum(prior)
         metrics["reasoning_prior_knowledge"] = float(borrowed)
         if total_steps:
-            metrics["reasoning_prior_knowledge_normalized"] = borrowed / total_steps
+            metrics["reasoning_prior_knowledge_normalized"] = _proportion_of_steps(
+                prior, total_steps
+            )
 
     # -- metric 10: anchoring point ------------------------------------------- #
     anchor_blob = raw.get("anchoring_point") or {}
@@ -560,7 +590,9 @@ def derive_reasoning_metrics(
         left = sum(unresolved)
         metrics["reasoning_unresolved_contradictions"] = float(left)
         if total_steps:
-            metrics["reasoning_unresolved_contradiction_normalized"] = left / total_steps
+            metrics["reasoning_unresolved_contradiction_normalized"] = (
+                _proportion_of_steps(unresolved, total_steps)
+            )
 
     return metrics, lists, errors, inapplicable
 

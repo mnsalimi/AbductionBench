@@ -619,9 +619,15 @@ def test_every_sheet_has_a_bold_centred_frozen_header(
 
     for name in workbook.sheetnames:
         sheet = workbook[name]
-        # Row 1 is frozen everywhere. Sheets whose first column carries the row
-        # labels freeze that too, so a wide matrix survives sideways scrolling.
-        assert sheet.freeze_panes in ("A2", "B2"), f"{name}: {sheet.freeze_panes}"
+        # Row 1 is frozen everywhere. Sheets whose leading columns identify the
+        # row freeze those too, so scrolling sideways keeps saying which row it
+        # is: the index column on a pivot (B2), and Summary_Long's
+        # dataset/model/prompt/selection quartet (E2).
+        expected = "E2" if name == "Summary_Long" else ("A2", "B2")
+        if isinstance(expected, str):
+            assert sheet.freeze_panes == expected, f"{name}: {sheet.freeze_panes}"
+        else:
+            assert sheet.freeze_panes in expected, f"{name}: {sheet.freeze_panes}"
 
         header = [cell for cell in sheet[1] if cell.value not in (None, "")]
         assert header, f"{name} has no header row"

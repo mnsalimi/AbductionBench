@@ -552,6 +552,64 @@ def _is_nan(value: Any) -> bool:
         return True
 
 
+#: Metrics that are read together, so they must be averaged over the same rows.
+#:
+#: A mean is only comparable with another mean when both were taken over the
+#: same samples. These columns are not read one at a time -- a reader divides
+#: one by another, or checks that a ratio column agrees with the two it came
+#: from -- and each was being averaged over whatever subset happened to have
+#: it. Measured on one abd task: `observations_total` came from 148 samples,
+#: `observations_used` from 58 and `observation_coverage` from its own set, so
+#: the sheet said used/total = 18.69/89.99 = 0.208 while the coverage column,
+#: computed per sample and then averaged, said 0.346. Both were arithmetically
+#: right and they described different populations.
+#:
+#: DELIBERATELY NARROW. A sample is dropped from a whole group only when the
+#: group is one a formula spans, because every metric excluded from an average
+#: is information thrown away: `total_steps` came from 56 samples and
+#: `useful_steps` from 40, so binding them costs `total_steps` 16 rows. That is
+#: the right price for making the ratio mean something, and the wrong price for
+#: a column nobody divides. Metrics whose normalized form is computed
+#: per-sample -- prior knowledge, uncertainty, directionality -- are not here:
+#: their ratio never crosses two averages.
+CO_AVERAGED_METRIC_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset(
+        {
+            "reasoning_observations_total",
+            "reasoning_observations_used",
+            "reasoning_observation_coverage",
+        }
+    ),
+    frozenset(
+        {
+            "reasoning_total_steps",
+            "reasoning_useful_steps",
+            "reasoning_useless_steps",
+            "reasoning_useful_step_fraction",
+            "reasoning_useless_step_fraction",
+        }
+    ),
+)
+
+
+def _drop_partial_groups(metrics: dict[str, float]) -> set[str]:
+    """Keys this sample must sit out because a metric beside them is missing.
+
+    A sample carrying NONE of a group is untouched -- an io task has no
+    reasoning metrics at all and is not what this is about. Only a sample
+    holding some of a group but not all of it is excluded, and then from the
+    whole group, so every column in it is averaged over identical rows.
+    """
+    excluded: set[str] = set()
+    for group in CO_AVERAGED_METRIC_GROUPS:
+        present = {
+            key for key in group if key in metrics and not _is_nan(metrics.get(key))
+        }
+        if present and present != group:
+            excluded |= present
+    return excluded
+
+
 def aggregate_mean_metrics(
     score_metrics: Sequence[dict[str, float]],
     *,
@@ -561,11 +619,16 @@ def aggregate_mean_metrics(
 
     Keys absent from a given sample are skipped for that sample (not treated as
     zero), so optional sub-metrics do not silently drag an average down.
+
+    Metrics listed together in ``CO_AVERAGED_METRIC_GROUPS`` are an exception:
+    a sample missing any one of them sits out the whole group, so the columns a
+    reader combines are means over the same rows.
     """
     buckets: dict[str, list[float]] = {}
     for metrics in score_metrics:
+        excluded = _drop_partial_groups(metrics or {})
         for key, value in (metrics or {}).items():
-            if _is_nan(value):
+            if key in excluded or _is_nan(value):
                 continue
             buckets.setdefault(key, []).append(float(value))
     return {f"{prefix}{key}": mean(values) for key, values in sorted(buckets.items())}

@@ -581,7 +581,15 @@ def write_reports(result: RunResult) -> dict[str, Path]:
         with pd.ExcelWriter(staged, engine="xlsxwriter") as writer:
             used: set[str] = set()
             _write_sheet(writer, _pivot(summary), _safe_sheet_name("Summary", used), index=True)
-            _write_sheet(writer, summary, _safe_sheet_name("Summary_Long", used))
+            # The four columns that say which row this is: a Summary_Long
+            # scrolled sideways to the reasoning columns is unreadable without
+            # them.
+            _write_sheet(
+                writer,
+                summary,
+                _safe_sheet_name("Summary_Long", used),
+                freeze_columns=4,
+            )
             _write_sheet(writer, metrics, _safe_sheet_name("Metrics", used))
             _write_sheet(writer, tasks, _safe_sheet_name("Tasks", used))
             _write_sheet(writer, datasets, _safe_sheet_name("Datasets", used))
@@ -709,15 +717,46 @@ def _header_format(writer: Any) -> Any:
     return cached
 
 
-def _write_sheet(writer: Any, frame: pd.DataFrame, name: str, *, index: bool = False) -> None:
+def _body_format(writer: Any) -> Any:
+    """The one body format: centred both ways, made once per workbook.
+
+    Cached on the writer for the same reason ``_header_format`` is -- an
+    xlsxwriter format belongs to a workbook, and re-adding an identical one per
+    sheet grows the file for nothing.
+    """
+    cached = getattr(writer, "_abench_body_format", None)
+    if cached is None:
+        cached = writer.book.add_format({"align": "center", "valign": "vcenter"})
+        writer._abench_body_format = cached  # noqa: SLF001
+    return cached
+
+
+def _write_sheet(
+    writer: Any,
+    frame: pd.DataFrame,
+    name: str,
+    *,
+    index: bool = False,
+    freeze_columns: int | None = None,
+) -> None:
     """Write one sheet with a bold, centred, frozen header row.
 
     pandas writes the header with its own default format, so it is rewritten
     afterwards rather than fought with: same cells, same order, our format.
     Freezing the header keeps the column names on screen in sheets that run to
-    thousands of rows -- which the per-sample sheets do -- and the first column
-    is frozen too when it carries the row labels, so a wide matrix stays
-    readable when it is scrolled sideways.
+    thousands of rows -- which the per-sample sheets do.
+
+    ``freeze_columns`` is how many leading columns stay on screen when the
+    sheet is scrolled sideways, counted in the sheet's own columns including
+    the index. It defaults to the index column when there is one and to none
+    otherwise; the sheets whose leading columns are the identity of the row --
+    Summary_Long's dataset/model/prompt/selection quartet -- name their own.
+
+    Body cells are centred horizontally and vertically via a column format
+    rather than by rewriting each cell: pandas writes data cells with no
+    explicit format of their own, so the column's applies, and a per-cell pass
+    over the per-sample sheets would mean hundreds of thousands of writes for
+    the same result.
     """
     if frame is None or frame.empty:
         frame = pd.DataFrame({"note": ["no data"]})
@@ -734,20 +773,23 @@ def _write_sheet(writer: Any, frame: pd.DataFrame, name: str, *, index: bool = F
     for position, column in enumerate(frame.columns):
         worksheet.write(0, position + offset, str(column), header)
 
+    body = _body_format(writer)
     for position, column in enumerate(frame.columns, start=offset):
         # str() per cell rather than astype(str): pandas >= 2.1 leaves missing
         # values as float NaN under astype(str), which has no len().
         widths = [len(str(column))]
         series = frame.iloc[:, position - offset].head(200)
         widths.extend(len(str(value)) for value in series)
-        worksheet.set_column(position, position, min(60, max(10, max(widths) + 2)))
+        worksheet.set_column(position, position, min(60, max(10, max(widths) + 2)), body)
     if index:
         labels = [len(str(frame.index.name or ""))]
         labels.extend(len(str(value)) for value in frame.index[:200])
-        worksheet.set_column(0, 0, min(60, max(10, max(labels) + 2)))
+        worksheet.set_column(0, 0, min(60, max(10, max(labels) + 2)), body)
 
-    # Row 1 down scrolls; the header stays. With an index, its column stays too.
-    worksheet.freeze_panes(1, offset)
+    # Row 1 down scrolls; the header stays. Columns to the left of the split
+    # stay when the sheet is scrolled sideways.
+    frozen = offset if freeze_columns is None else freeze_columns
+    worksheet.freeze_panes(1, min(frozen, len(frame.columns) + offset))
 
 
 def _write_task_documentation(result: RunResult, task: TaskResult) -> Path:

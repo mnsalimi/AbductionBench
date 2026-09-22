@@ -99,7 +99,12 @@ def test_every_derived_value_follows_from_the_lists():
     assert metrics["reasoning_uncertainty_steps"] == 2.0
     assert metrics["reasoning_uncertainty_rate"] == 0.5
     assert metrics["reasoning_prior_knowledge"] == 3.0
-    assert metrics["reasoning_prior_knowledge_normalized"] == 0.75
+    # PROPORTION OF STEPS, NOT DENSITY PER STEP. The list is [0, 2, 1, 0]: two
+    # of the four steps drew on prior knowledge at all, so 0.5. It used to be
+    # sum/steps = 3/4 = 0.75, which counts the step citing two facts twice and
+    # is not bounded by 1 -- [1, 4, 0, 6] would have given a "normalized" 2.75.
+    # The density is not lost: `reasoning_prior_knowledge` above is the sum.
+    assert metrics["reasoning_prior_knowledge_normalized"] == 0.5
     assert metrics["reasoning_unresolved_contradictions"] == 1.0
     assert metrics["reasoning_unresolved_contradiction_normalized"] == 0.25
 
