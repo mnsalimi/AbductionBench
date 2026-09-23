@@ -30,11 +30,16 @@ model:
       batch_base_url_command: null
 
   limits:
-    # MAX_MODEL_LEN=65536 in /workspace/vllm_serving/gpt-oss-120b/.env, the
-    # same window qwen3.5-2b is served with, so a judged answer and the answer
-    # being judged are bounded by the same context length. The model itself
-    # supports 131,072; the GPU is shared, and 64k is what its KV budget buys.
+    # MAX_MODEL_LEN=65536 in /workspace/vllm_serving/gpt-oss-120b/.env. The
+    # judges' input budgets are sized against exactly this window
+    # (tests/test_judge.py), so it is not raised with the server's.
     context_window: 65536
-    # 32 sequences in flight on the server (MAX_NUM_SEQS=32); a judge verdict
-    # is short, so this is about keeping the scheduler fed, not about length.
-    max_parallel_batches: 2
+    # The server runs up to MAX_NUM_SEQS=256 sequences; a batch call carries
+    # group_size (8) of them, so 32 calls in flight fill it. Both judge stages
+    # share one call budget -- engine._judge_calls, the LARGER of their two
+    # max_parallel_calls, not the sum -- so each stage asks for 32.
+    max_parallel_batches: 32
+    # Both stages together can ask for 32 + 32 sockets (the pool check sums
+    # them even though the calls are shared), so the pool has to hold 64 and
+    # more; short of it the surplus dies at pool_s as an empty PoolTimeout.
+    max_connections: 128

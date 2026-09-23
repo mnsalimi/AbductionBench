@@ -1,0 +1,50 @@
+# google/gemma-4-31b-it, rented from OpenRouter and EVALUATED -- not a judge.
+#
+# The same weights as gemma-4-31b-local, served by someone else: no GPU here,
+# and no 32,750-token KV pool to share. Checked against the live model list
+# (2026-09-24): context 262,144, at most 16,384 output tokens, $0.09 / $0.34 per
+# million tokens in / out, and it accepts temperature, top_p, seed and
+# reasoning. No batch route on OpenRouter.
+#
+# A different model id from the local config on purpose: the two are the same
+# model under different serving, and a result has to say which one it came from.
+model:
+  id: gemma-4-31b-it-openrouter
+  model_name: google/gemma-4-31b-it
+  description: >-
+    gemma-4-31b-it, called through OpenRouter as a model under evaluation.
+  # Not a thinking model by default; if the provider does return a chain, it
+  # is read from `reasoning` all the same (adapters/_prompting.py: cot_chain).
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    api_key: ${env:OPENROUTER_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: false
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # The provider's own output ceiling, which is below the suite's 32,000.
+    max_tokens_default: 16384
+    max_tokens_cap: 16384
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    max_parallel_batches: ${env:ABENCH_GEMMA_PARALLEL|64}
+    requests_per_minute: null
+    tokens_per_minute: null
+    max_connections: 128
+    context_window: 262144
+
+  notes:
+    served_by: OpenRouter (google/gemma-4-31b-it)
+    role: under evaluation, not judging

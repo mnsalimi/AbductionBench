@@ -1,0 +1,60 @@
+# gpt-5.6-luna, gemini-3.8-flash and gemma-4-31b-it -- all three rented from
+# OpenRouter -- over every enabled dataset, judged in the same pass by
+# gpt-oss-120b served on this box. A NEW run: its own folder here and on Drive.
+#
+# The split is the reverse of gemma31b_all.yaml. There the GPU held the model
+# under test and the judge had to be rented or deferred; here every evaluated
+# model is remote, so the card belongs to the judge alone and both judges run
+# inside the pass instead of in a second one.
+#
+# Every request carries its own sampling and none of the concurrency below
+# changes an answer: it decides only how many requests are outstanding at once.
+extends:
+  - full.yaml
+
+name: openrouter-trio
+description: >-
+  gpt-5.6-luna, gemini-3.8-flash and gemma-4-31b-it via OpenRouter on every
+  enabled dataset, io and cot, three repeats, answer judge and reasoning judge
+  both by a local gpt-oss-120b.
+
+engine:
+  concurrency:
+    # A task holds its slot through its judge stage, and here every task has
+    # one. 3 models x 72 tasks = 216; 48 at once keeps all three models and
+    # the judge busy together instead of in turn.
+    max_parallel_tasks: 48
+    # Has to cover what the per-model limits ask for, or it silently becomes
+    # the real limit: 64 + 64 + 64 = 192 model requests.
+    max_parallel_batches_global: 256
+
+  judge:
+    enabled: true
+    defer: false
+    model: gpt-oss-120b-local
+    # Batch calls of 8 on the local server's batch route. 8 stays 8: vLLM at
+    # temperature 0 is not bit-stable across batch sizes, so it is the one knob
+    # that would change verdicts. Concurrency is raised with calls instead.
+    group_size: 8
+    # 32 calls x 8 = 256 sequences, the server's MAX_NUM_SEQS. Shared with the
+    # reasoning judge -- the budget is the larger of the two, not the sum.
+    max_parallel_calls: 32
+
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-local
+    group_size: 8
+    max_parallel_calls: 32
+
+  simulator:
+    # The interview datasets' environments are played through OpenRouter as
+    # well. Three models' episodes run at once now, and 8 simulator calls for
+    # all of them would make the environment the bottleneck of every episode.
+    max_parallel_calls: 48
+
+models:
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
+  - file: ../models/gemini-3.8-flash-openrouter.yaml
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+  # The judge. judge_only: planned for nothing, graded against nothing.
+  - file: ../models/gpt-oss-120b-local.yaml

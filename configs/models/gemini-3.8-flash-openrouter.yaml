@@ -1,0 +1,52 @@
+# google/gemini-3.8-flash, rented from OpenRouter and EVALUATED -- not a judge.
+#
+# Checked against the live model list (2026-09-24), not assumed: context
+# 1,048,576, at most 65,536 output tokens, $0.75 / $3.75 per million tokens in /
+# out, and it accepts temperature, top_p, seed and reasoning. No batch route --
+# OpenRouter serves none -- so every request goes on its own and concurrency is
+# max_parallel_batches below.
+model:
+  id: gemini-3.8-flash-openrouter
+  model_name: google/gemini-3.8-flash
+  description: >-
+    gemini-3.8-flash, called through OpenRouter as a model under evaluation.
+  # A thinking model: its chain arrives in `reasoning` when the provider
+  # returns one, and `content` can be empty if the chain spends the budget.
+  reasoning_model: true
+
+  endpoint:
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    api_key: ${env:OPENROUTER_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: false
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # The suite-wide ceiling, as for gpt-5.6-luna; the model allows 65,536.
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    # Provider defaults for reasoning, as for gpt-5.6-luna: nothing is forced
+    # on or off, so each model is measured the way it is served.
+    extra: {}
+
+  limits:
+    # Requests in flight -- the only throughput lever a remote model has.
+    max_parallel_batches: ${env:ABENCH_GEMINI_PARALLEL|64}
+    requests_per_minute: null
+    tokens_per_minute: null
+    # Above max_parallel_batches, or the surplus dies at pool_s as an
+    # empty-message PoolTimeout (RunConfig checks this).
+    max_connections: 128
+    context_window: 1048576
+
+  notes:
+    served_by: OpenRouter (google/gemini-3.8-flash)
+    role: under evaluation, not judging
