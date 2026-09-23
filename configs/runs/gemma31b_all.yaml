@@ -1,0 +1,61 @@
+# gemma-4-31b across every enabled dataset. A NEW run, not a resume.
+#
+# New matters operationally: `sync.per_run_subdir` is true, so this writes to
+# its own gdrive:AbductionBench/<run-id> and is the only writer to it. Two runs
+# pointed at one Drive folder is what produced 95 duplicated paths, and Drive
+# keeps both copies of a name rather than refusing the second.
+#
+# THE WINDOW IS RAISED, and it costs nothing. gemma-4-31b was served with
+# MAX_MODEL_LEN=8192 while the largest prompt this suite sends is scir's 7,690
+# tokens -- leaving ~500 for the answer, which is not an answer under cot. The
+# window is now 16,384.
+#
+# That is nearly free, and the reason is worth stating because it is easy to
+# get backwards: vLLM sizes its KV pool from the memory left after weights, NOT
+# from max_model_len. The pool here is 32,750 tokens whatever the window is.
+# max_model_len only bounds a SINGLE request, so raising it changes the
+# worst-case number vLLM prints ("4.00x" -> "2.00x" at full length) and changes
+# nothing about concurrency at the lengths actually sent.
+#
+# WHAT DOES BOUND CONCURRENCY is that pool, and it is small because the model is
+# dense at 31B: 27.54 GiB of KV holds 32,750 tokens, against qwen3.5-27b's
+# 492,885 from a similar allocation -- hybrid attention is ~15x cheaper per
+# token. At this suite's ~800-2,000-token sequences that is 16-40 genuinely
+# concurrent, so the model config's 6 batches x group 8 = 48 already asks for
+# more than the pool sustains. Raising it further would add queue depth, not
+# parallelism; group_size stays 8 because vLLM at temperature 0 is not
+# bit-stable across batch sizes and that is the one knob that would change the
+# answers.
+#
+# CUDA graphs stay OFF for the same reason. They buy decode speed with captured
+# buffers, and at 27.54 GiB of KV there is nothing to spend.
+
+extends:
+  - full.yaml
+
+name: gemma31b-all
+description: >-
+  gemma-4-31b over every enabled dataset in io and cot, three repeats, no
+  judge -- answers now, verdicts bought later.
+
+engine:
+  concurrency:
+    # One model, and a server whose KV cache is the binding constraint rather
+    # than the client. Enough tasks to keep it fed without piling more work
+    # into a queue that is already the bottleneck.
+    max_parallel_tasks: 12
+    max_parallel_batches_global: 12
+
+  # No judge of either kind. `defer: true` says the omission is deliberate --
+  # without it a run containing judge-scored datasets is refused, because it
+  # would finish, look complete, and quietly report no score for them. The
+  # verdicts are bought later by resuming with the judge enabled; the answers on
+  # disk are what they are bought against, so nothing is generated twice.
+  judge:
+    enabled: false
+    defer: true
+  reasoning_judge:
+    enabled: false
+
+models:
+  - file: ../models/gemma-4-31b-local.yaml

@@ -48,6 +48,6 @@ model:
     tokens_per_minute: null
     # MAX_MODEL_LEN from gemma-4-31b/.env -- half the e4b's window, so the
     # engine's per-sample output clamp bites harder here. It is reported.
-    context_window: 8192
+    context_window: 16384
   notes:
     served_by: vLLM (gemma-4-31b-vllm supervisor service, port 18006)
