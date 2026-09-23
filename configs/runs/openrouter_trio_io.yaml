@@ -1,0 +1,40 @@
+# The io half of openrouter-trio, with reasoning OFF where the model allows it.
+#
+# openrouter_trio.yaml left both rented reasoning models on their provider
+# default, so their io answers were produced after a hidden chain -- which is
+# not io. Stopped 2026-09-24 02:00 once seen; this file finishes io in the SAME
+# run folder (`--resume`) on the datasets io had not reached yet.
+#
+# Why this can share the folder: the model's `sampling.extra` is sent with the
+# request but is not part of the resume fingerprint, so the cot records and the
+# io records already answered stay reusable and are not re-asked. The flip side
+# is that this file cannot redo an io record that already exists -- delete that
+# task's folder first if it has to be re-asked without reasoning.
+#
+# Verified against the live API (2026-09-24), not assumed:
+#   gpt-5.6-luna      reasoning {enabled: false} -> 0 reasoning tokens, no chain
+#   gemini-3.8-flash  cannot disable ("Reasoning is mandatory for this endpoint
+#                     and cannot be disabled", HTTP 400); `minimal` is the
+#                     lowest level it accepts and still spends reasoning tokens
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+modes:
+  prompt_modes: [io]
+
+models:
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
+    sampling:
+      extra:
+        reasoning: {enabled: false}
+  - file: ../models/gemini-3.8-flash-openrouter.yaml
+    sampling:
+      extra:
+        # The floor, not "off": see the header. Not `exclude`d -- hiding the
+        # chain would make a reasoned answer look like io in the records.
+        reasoning: {effort: minimal}
+  # No reasoning in io to begin with: every io record it has shows none.
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+  - file: ../models/gpt-oss-120b-local.yaml
