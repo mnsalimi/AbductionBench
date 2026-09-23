@@ -693,6 +693,7 @@ A pass can fail per file and still exit non-zero only once, and Drive
         """
         if not self.config.enabled or self._degraded:
             return []
+        self._clear_duplicates()
         missing: list[str] = []
         for attempt in range(1, self.config.verify_attempts + 1):
             missing = self._missing_files()
@@ -774,6 +775,62 @@ A pass can fail per file and still exit non-zero only once, and Drive
             if marker in ("+", "*") and path.strip():
                 out_of_date.append(path.strip())
         return out_of_date
+
+    def _clear_duplicates(self) -> None:
+        """Free any remote path that holds more than one object.
+
+        Google Drive allows two files with the SAME NAME in one folder, and
+        rclone will not guess between them: it logs "Duplicate object found in
+        destination - ignoring" and skips the path entirely. Every later pass
+        skips it too, so the file is frozen at whatever it was -- and the pass
+        still exits 0, because from rclone's point of view nothing failed.
+
+        Two writers are all it takes. A manual repair run alongside the run's
+        own 5-minute sync produced 95 such paths here, and the results workbook
+        was one of them: a whole night of results could not be uploaded, and
+        every pass reported success.
+
+        `--dedupe-mode rename` rather than a deleting mode, deliberately.
+        rclone removes byte-identical copies on its own in any mode, which is
+        the common case and is safe; for copies that genuinely DIFFER, renaming
+        keeps both and frees the canonical name, so the next repair writes the
+        right file and nothing is destroyed to achieve it. A backup is the
+        wrong place to resolve an ambiguity by deleting.
+
+        Best-effort and non-fatal: a backend without duplicate names (most of
+        them) does nothing here, and a failure leaves the run alone.
+        """
+        command = [
+            self.config.rclone_binary,
+            "dedupe",
+            "--dedupe-mode",
+            "rename",
+            self.destination,
+            f"--timeout={self.config.timeout_s}s",
+            "--stats=0",
+        ]
+        if self.config.tps_limit:
+            command.extend(["--tpslimit", str(self.config.tps_limit)])
+        try:
+            completed = subprocess.run(  # noqa: S603 - binary and args come from config
+                command, capture_output=True, text=True,
+                timeout=self.config.pass_timeout_s or None, check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("artifact sync: duplicate check failed: %s", exc)
+            return
+        output = f"{completed.stdout}\n{completed.stderr}"
+        found = output.count("files with duplicate names")
+        if found:
+            logger.warning(
+                "artifact sync: %d remote path(s) held more than one object and were "
+                "being skipped by every pass; identical copies removed, differing ones "
+                "renamed so the correct file can be uploaded. This happens when two "
+                "things upload to %s at once -- do not run rclone by hand against a "
+                "destination a run is syncing to.",
+                found, self.destination,
+            )
+            self._emit("sync_duplicates_cleared", destination=self.destination, paths=found)
 
     def _repair(self, missing: list[str]) -> None:
         """Re-upload exactly the named files."""

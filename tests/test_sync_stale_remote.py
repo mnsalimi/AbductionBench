@@ -104,3 +104,83 @@ def test_the_upload_command_decides_on_content_not_on_time(tmp_path):
     command = syncer._command(run)  # noqa: SLF001
     assert "--checksum" in command
     assert "--update" not in command
+
+
+def test_verification_frees_paths_that_hold_more_than_one_object(tmp_path, monkeypatch):
+    """A duplicated remote path is skipped by every pass, silently.
+
+    Google Drive allows two files with the same name in one folder. rclone will
+    not guess between them -- it logs "Duplicate object found in destination -
+    ignoring" and skips the path -- so the file freezes at whatever it was, and
+    the pass still exits 0 because nothing failed.
+
+    Two writers are all it takes: a manual repair alongside the run's own
+    5-minute sync produced 95 such paths, and the results workbook was one of
+    them. A whole night of results could not be uploaded while every pass
+    reported success. So verification now clears them before it repairs.
+    """
+    import subprocess
+
+    syncer, run, _ = _syncer(tmp_path)
+    (run / "engine.log").write_text("x", encoding="utf-8")
+
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def _spy(command, *args, **kwargs):
+        calls.append(list(command))
+        if len(command) > 1 and command[1] == "dedupe":
+            return subprocess.CompletedProcess(
+                command, 0,
+                stdout="NOTICE: reports/results.xlsx: Found 2 files with duplicate names\n",
+                stderr="",
+            )
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    syncer.verify_and_repair()
+
+    dedupe = [c for c in calls if len(c) > 1 and c[1] == "dedupe"]
+    assert dedupe, "verification never checked for duplicated remote paths"
+    command = dedupe[0]
+    assert command.index("--dedupe-mode") + 1 < len(command)
+    assert command[command.index("--dedupe-mode") + 1] == "rename", (
+        "a backup must not resolve an ambiguity by deleting: rclone already removes "
+        "byte-identical copies in any mode, and renaming keeps genuinely differing "
+        "ones while freeing the canonical name"
+    )
+
+
+def test_the_duplicate_check_runs_before_the_repair(tmp_path, monkeypatch):
+    """Order matters: repairing a duplicated path does nothing at all."""
+    import subprocess
+
+    syncer, run, _ = _syncer(tmp_path)
+    (run / "engine.log").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(syncer, "_missing_files", lambda: ["engine.log"])
+
+    order: list[str] = []
+    real_run = subprocess.run
+
+    def _spy(command, *args, **kwargs):
+        if len(command) > 1 and command[1] in ("dedupe", "copy"):
+            order.append(command[1])
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    syncer.verify_and_repair()
+    assert order and order[0] == "dedupe", order
+
+
+def test_a_dedupe_failure_does_not_fail_the_run(tmp_path, monkeypatch):
+    """A backup step must never be the thing that ends a run."""
+    import subprocess
+
+    syncer, run, _ = _syncer(tmp_path)
+    (run / "engine.log").write_text("x", encoding="utf-8")
+
+    def _boom(command, *args, **kwargs):
+        raise OSError("rclone exploded")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    syncer.verify_and_repair()  # must not raise
