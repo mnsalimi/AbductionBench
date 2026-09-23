@@ -2325,6 +2325,11 @@ class EvaluationEngine:
         recovery = self.engine_cfg.retry.recovery
 
         async def _attempt() -> BatchResult:
+            if client.speaks_systemone:
+                # A decision endpoint is not a chat endpoint: it answers from
+                # the sample's options rather than from a rendered prompt, so
+                # it is handed the prompts and not their conversations.
+                return await client.decide(batch.prompts, batch.sampling)
             if use_batch and batch.size > 1:
                 return await client.chat_batch(batch.conversations(), batch.sampling)
             if use_batch and batch.size == 1:

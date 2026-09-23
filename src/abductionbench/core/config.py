@@ -995,12 +995,28 @@ class DiscoveryConfig(_Base):
 
 
 class EndpointConfig(_Base):
-    """OpenAI-compatible endpoint used for discovery and non-batched calls."""
+    """Endpoint used for discovery and non-batched calls.
+
+    OpenAI-compatible unless ``protocol`` says otherwise.
+    """
 
     base_url: str
     api_key: str | None = None
+    #: Wire protocol this endpoint speaks.
+    #:
+    #: ``openai``     -- chat completions: messages in, message out.
+    #: ``systemone``  -- TypeSafe's decision API, which is not a chat API at
+    #:                   all. It takes the evidence as ``state`` and the answer
+    #:                   options as named ``criteria``, and returns a chosen
+    #:                   key with a probability over every option. A model
+    #:                   behind it never sees a rendered prompt and cannot be
+    #:                   asked to produce free text, which is why it is
+    #:                   restricted to selection tasks.
+    protocol: Literal["openai", "systemone"] = "openai"
     models_path: str = "/v1/models"
     chat_path: str = "/v1/chat/completions"
+    #: Path for ``protocol: systemone``.
+    systemone_path: str = "/v1/systemone"
     headers: dict[str, str] = Field(default_factory=dict)
     #: Verify TLS.  Quick tunnels present valid certs, so keep this on.
     verify_tls: bool = True

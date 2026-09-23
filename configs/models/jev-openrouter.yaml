@@ -1,0 +1,78 @@
+# TypeSafe's jev, called through OpenRouter's System One decision API.
+#
+# NOT A CHAT MODEL, and every unusual thing in this file follows from that.
+# https://typesafe.ai/blog/introducing-system-one-models-and-jev
+#
+# The endpoint takes the evidence as `state` and the answer options as named
+# `criteria`, and returns which key it chose plus a probability over all of
+# them:
+#
+#   {"answers": {"answer": {"type": "choice", "choice": "6",
+#                           "probabilities": {"1": 0.01, ..., "11": 0.01},
+#                           "confidence": 0.25}}}
+#
+# Consequences worth stating rather than discovering:
+#
+#   * SELECTION ONLY. There is no free text to produce, so a generation task
+#     has nothing for it to do. The run config restricts it to SCS.
+#   * It never sees a rendered prompt. The system instruction, the answer
+#     contract and the cot instruction that shape every other model's answer do
+#     not reach it -- it is given the observation, the question, the task
+#     instruction and the options as data. So "jev under cot" is not a thing
+#     that exists, and a cot column for it would be a different measurement
+#     wearing the same name.
+#   * No batch route and no group size: one question, one request.
+#
+# The choice is turned into the dataset's own answer line (`Answer: <label>`)
+# so jev is scored by exactly the same code as every other model, which is what
+# makes the column comparable. The probabilities and confidence -- the one
+# thing this endpoint gives that a chat model does not -- are kept on the raw
+# record rather than discarded.
+model:
+  id: jev-openrouter
+  model_name: ${env:ABENCH_JEV_MODEL|typesafe/jev-1.13}
+  description: >-
+    TypeSafe jev via OpenRouter's System One decision API; selection (SCS)
+    tasks only, answering from the options as structured criteria rather than
+    from a rendered prompt.
+  reasoning_model: false
+
+  endpoint:
+    protocol: systemone
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    api_key: ${env:OPENROUTER_API_KEY}
+    systemone_path: /v1/systemone
+    models_path: /v1/models
+    batch:
+      enabled: false
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    # Carried for the record rather than sent: the decision API exposes no
+    # sampling knobs, and pretending otherwise in the resolved config would
+    # claim a determinism guarantee nothing here honours.
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 512
+    max_tokens_cap: 512
+    max_tokens_floor: 16
+    extra: {}
+
+  limits:
+    # One request per sample, so this is simply how many are in flight.
+    max_parallel_batches: ${env:ABENCH_JEV_PARALLEL|16}
+    requests_per_minute: null
+    tokens_per_minute: null
+    max_connections: 64
+    # Generous: the request carries the observation and every option, and the
+    # engine only uses this to reject prompts that cannot possibly fit.
+    context_window: 131072
+
+  notes:
+    served_by: OpenRouter (/v1/systemone, provider TypeSafe)
+    protocol_note: >-
+      Decision API, not chat completions. Restricted to selection tasks; see
+      configs/runs/jev_scs.yaml.

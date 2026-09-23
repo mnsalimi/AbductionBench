@@ -1,0 +1,56 @@
+# jev on the selection (SCS) tasks, and nothing else.
+#
+# Deliberately a separate run config rather than another entry in
+# generate_only.yaml's model list, because the restriction is not a preference:
+# jev answers by choosing among given options, so a generation task has nothing
+# for it to do and a cot instruction never reaches it. Putting it beside the
+# chat models would produce empty columns for two thirds of the grid and invite
+# them to be read as failures.
+#
+# THE SAMPLES ARE THE SAME ONES. Nothing here re-draws them: the draw is a
+# seeded shuffle of each split keyed by `seed`, `salt` (the dataset id),
+# `sample_offset` and `sample_size`, all inherited unchanged from pilot.yaml.
+# Resuming into 20260922-021019_reasoning-openrouter therefore asks jev exactly
+# the records the other models answered, and `sample_manifest.jsonl` in that
+# run directory lists them by id if it needs proving.
+extends:
+  - full.yaml
+
+name: jev-scs
+description: >-
+  TypeSafe jev over the suite's single-choice selection tasks, three repeats
+  per record, no judge -- the same records the other models were asked.
+
+engine:
+  concurrency:
+    max_parallel_tasks: 16
+    max_parallel_batches_global: 24
+
+  # No judge of any kind. An SCS answer is checked against the gold label by
+  # the dataset's own scorer, so nothing here needs one, and the reasoning
+  # judge has no chain to read: jev returns a choice and a probability, not an
+  # argument.
+  judge:
+    enabled: false
+    defer: true
+  reasoning_judge:
+    enabled: false
+
+modes:
+  # io only. Not a default -- a cot instruction is part of the rendered prompt,
+  # and a decision endpoint never receives one, so a "jev cot" column would be
+  # the io measurement under another name.
+  prompt_modes: [io]
+  # SCS only, as asked.
+  selection_modes: [SCS]
+  # Selection tasks only. A generation task poses no options, so there are no
+  # criteria to send.
+  hypothesis_modes: [selection]
+  # Off: BOV asks one yes/no question per candidate, which is a different
+  # protocol again and costs one request per option.
+  bov: false
+  # Three, matching every other model in this run directory.
+  repeats: 3
+
+models:
+  - file: ../models/jev-openrouter.yaml

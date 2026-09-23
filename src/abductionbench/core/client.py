@@ -167,7 +167,14 @@ class ModelClient:
 
     @property
     def supports_batch(self) -> bool:
-        return self.endpoint.batch.enabled
+        # A decision endpoint answers one question per request; there is no
+        # batch route and no group size to fill.
+        return self.endpoint.batch.enabled and not self.speaks_systemone
+
+    @property
+    def speaks_systemone(self) -> bool:
+        """Is this a decision endpoint rather than a chat one?"""
+        return self.endpoint.protocol == "systemone"
 
     def _headers(self, *, batch: bool) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -238,6 +245,105 @@ class ModelClient:
         except EndpointError:
             return False
         return bool(models)
+
+    async def decide(
+        self, prompts: list[Any], sampling: SamplingParams
+    ) -> BatchResult:
+        """Answer selection prompts through a decision endpoint.
+
+        NOT A CHAT CALL, and the difference is the point. A decision endpoint
+        takes the evidence as ``state`` and the answer options as named
+        ``criteria``, and returns which key it chose with a probability over
+        all of them. It never sees the rendered prompt, so the framing the
+        other models get -- the system instruction, the answer-format contract,
+        the chain-of-thought instruction -- does not exist here, and the model
+        cannot produce free text to be parsed. That is why this is restricted
+        to selection tasks: there is nothing for it to do on a generation one.
+
+        The sample's own fields are the source, not the rendered messages.
+        Parsing options back out of a prompt this project wrote would be a
+        second, silently divergent definition of what the options are.
+
+        The reply is turned into the answer line the dataset's scorer already
+        expects, so a jev result is scored by exactly the same code as every
+        other model's -- which is what makes the columns comparable. The
+        probabilities and confidence are kept on the raw record: they are the
+        one thing this endpoint gives that a chat model does not, and throwing
+        them away would waste the reason for using it.
+        """
+        started = time.monotonic()
+        choices: list[RawChoice] = []
+        usage_total: dict[str, Any] = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+        url = f"{self._base_url.rstrip('/')}{self.endpoint.systemone_path}"
+        model_reported: str | None = None
+        response_id: str | None = None
+
+        for index, prompt in enumerate(prompts):
+            fields = dict(getattr(prompt.sample, "fields", {}) or {})
+            labels = [str(label) for label in (fields.get("option_labels") or [])]
+            options = [str(option) for option in (fields.get("options") or [])]
+            if not labels or len(labels) != len(options):
+                raise BatchProtocolError(
+                    f"{url}: sample {prompt.sample_id!r} has {len(labels)} option "
+                    f"label(s) and {len(options)} option(s); a decision endpoint needs "
+                    f"one criterion per option"
+                )
+            state = "\n\n".join(
+                part for part in (
+                    str(fields.get("observation") or "").strip(),
+                    str(fields.get("context") or "").strip(),
+                    (f"Question: {fields['question']}" if fields.get("question") else ""),
+                ) if part
+            )
+            payload = {
+                "model": self.model.model_name,
+                "state": state,
+                "questions": {
+                    "answer": {
+                        "type": "choice",
+                        "instructions": str(fields.get("instructions") or "").strip()
+                        or "Choose the option that best explains the evidence.",
+                        # Keyed by the dataset's own labels, so the chosen key
+                        # IS the answer and nothing has to be matched back by
+                        # text -- which would be ambiguous here anyway: agentrx
+                        # offers both "Intent Not Supported" and "Intent not
+                        # supported" as separate options.
+                        "criteria": dict(zip(labels, options, strict=True)),
+                    }
+                },
+            }
+            data = await self._post(url, payload, batch=False)
+            answer = ((data.get("answers") or {}).get("answer") or {})
+            chosen = answer.get("choice")
+            model_reported = model_reported or data.get("model")
+            response_id = response_id or data.get("id")
+            for key, value in (data.get("usage") or {}).items():
+                if isinstance(value, (int, float)):
+                    usage_total[key] = usage_total.get(key, 0) + value
+            choices.append(
+                RawChoice(
+                    index=index,
+                    # The answer line the dataset's own scorer reads.
+                    content=(f"Answer: {chosen}" if chosen is not None else None),
+                    reasoning=None,
+                    finish_reason="stop" if chosen is not None else "error",
+                    raw={
+                        "choice": chosen,
+                        "probabilities": answer.get("probabilities"),
+                        "confidence": answer.get("confidence"),
+                        "provider": data.get("provider"),
+                    },
+                )
+            )
+        return BatchResult(
+            choices=choices,
+            usage=usage_total,
+            response_id=response_id,
+            model=model_reported,
+            latency_s=time.monotonic() - started,
+            endpoint_url=url,
+            is_batch=len(prompts) > 1,
+        )
 
     async def chat_single(
         self, messages: list[ChatMessage], sampling: SamplingParams
