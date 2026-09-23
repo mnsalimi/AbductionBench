@@ -1080,6 +1080,48 @@ class ModelLimitsConfig(_Base):
     max_connections: int = Field(64, ge=1)
 
 
+class ModelTaskFilter(_Base):
+    """Which tasks a model is asked, when the run asks for more than it can do.
+
+    A run's ``modes`` decide the grid. Most models answer every cell of it, so
+    they carry none of this. A model that cannot is the reason this exists:
+    jev reaches a decision endpoint that takes the answer options as structured
+    criteria, so it has nothing to do on a generation task, and the
+    chain-of-thought instruction that shapes a cot cell lives in a rendered
+    prompt it never receives.
+
+    The alternative was a second run config and a second process, which is what
+    was being done -- and two runs mean two sync threads writing one Drive
+    folder, which is exactly how 95 duplicated remote paths were created.
+    Restricting the model instead keeps it to one run, one sync, one writer.
+
+    An empty list means "no restriction on this axis", so a filter can pin one
+    axis and leave the rest alone.
+    """
+
+    #: io | cot | self-consistency.
+    prompt_modes: list[str] = Field(default_factory=list)
+    #: SCS | MCS | BOV.
+    selection_modes: list[str] = Field(default_factory=list)
+    #: The adapter's own task kind -- generation | selection | ...
+    task_kinds: list[str] = Field(default_factory=list)
+
+    def admits(self, *, prompt_mode: str, selection_mode: str, task_kinds: list[str]) -> bool:
+        """Is this task one the model can be asked?
+
+        A task whose samples mix kinds is admitted if ANY of them is allowed:
+        the alternative is to drop a whole task over one stray sample, and the
+        per-sample kind is on every record either way.
+        """
+        if self.prompt_modes and prompt_mode not in self.prompt_modes:
+            return False
+        if self.selection_modes and (selection_mode or "n/a") not in self.selection_modes:
+            return False
+        return not (
+            self.task_kinds and not any(kind in self.task_kinds for kind in task_kinds)
+        )
+
+
 class ModelConfig(_Base):
     """One model under evaluation."""
 
@@ -1103,6 +1145,9 @@ class ModelConfig(_Base):
     #: nobody asked about.  ``engine.judge.model`` should name a model with
     #: this set.
     judge_only: bool = False
+    #: Restrict this model to a subset of the run's grid.  Empty -- the default
+    #: -- means it is asked every task the run plans.  See ModelTaskFilter.
+    only_tasks: ModelTaskFilter = Field(default_factory=ModelTaskFilter)
 
     @property
     def slug(self) -> str:

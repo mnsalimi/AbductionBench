@@ -1326,6 +1326,21 @@ class EvaluationEngine:
             modes = bundle.modes
             kinds = sorted({sample.task_kind for sample in bundle.samples})
             for model in self.config.evaluated_models():
+                if not model.only_tasks.admits(
+                    prompt_mode=modes.prompt_mode,
+                    selection_mode=modes.selection_mode or "n/a",
+                    task_kinds=kinds,
+                ):
+                    # Not a failure and not a skipped mode: the run asks for a
+                    # cell this model cannot answer, so it is not asked. Logged
+                    # at debug because on a restricted model it is the common
+                    # case, and a line per skipped cell would bury the run.
+                    logger.debug(
+                        "model %s is not asked %s [%s/%s]: outside its only_tasks filter",
+                        model.id, bundle.config.id, modes.prompt_mode,
+                        modes.selection_mode or "n/a",
+                    )
+                    continue
                 identity = TaskIdentity(
                     run_id=self.run_id,
                     dataset_id=bundle.config.id,

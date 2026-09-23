@@ -37,6 +37,22 @@ model:
     from a rendered prompt.
   reasoning_model: false
 
+  # WHAT THIS MODEL CAN BE ASKED, declared on the model rather than left to
+  # whoever writes the run config. A decision endpoint has nothing to do on a
+  # generation task -- there are no options to send -- and the cot instruction
+  # that defines a cot cell lives in a rendered prompt it never receives, so a
+  # "jev cot" column would be the io measurement under another name.
+  #
+  # Carrying it here means jev can sit in a run alongside models that answer
+  # the whole grid: it is simply not asked the cells it cannot answer. That is
+  # what lets one run cover both, instead of two runs and two sync threads
+  # writing the same Drive folder -- which is how 95 duplicated remote paths
+  # were created.
+  only_tasks:
+    prompt_modes: [io]
+    selection_modes: [SCS]
+    task_kinds: [selection]
+
   endpoint:
     protocol: systemone
     base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}

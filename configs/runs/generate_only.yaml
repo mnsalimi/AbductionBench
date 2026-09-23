@@ -53,5 +53,17 @@ models:
   # run follows the supervisor service rather than the other way round.
   - file: ../models/qwen3-5-27b-local.yaml
   # - file: ../models/gemma-4-31b-local.yaml
-  # Rented, and under evaluation rather than judging.
-  - file: ../models/gpt-5.6-luna-openrouter.yaml
+
+  # jev, on the SCS selection cells only -- its own config says so, via
+  # `only_tasks`, so it is simply not asked the rest of the grid. ONE run
+  # rather than a second process beside this one: two runs mean two sync
+  # threads writing one Drive folder, and Drive allows two files to share a
+  # name, so the second writer creates duplicates that rclone then refuses to
+  # touch. That is not hypothetical here -- it produced 95 such paths and cost
+  # a night of results their backup.
+  - file: ../models/jev-openrouter.yaml
+
+  # gpt-5.6-luna is DELIBERATELY NOT LISTED any more. It finished every dataset
+  # already, and `RunResult.all_tasks` carries the tasks the run directory
+  # holds alongside this pass's -- so its columns stay in the workbook without
+  # it being asked anything again.
