@@ -1,0 +1,68 @@
+# Qwen/Qwen3.5-27B served by vLLM on this instance (127.0.0.1:18007), reached
+# without a tunnel because the engine runs on the GPU host.
+#
+# Served ALONE: 27B of bfloat16 weights is ~54 GiB of a 95.6 GiB card, so
+# nothing else fits beside it. That is why the judge for a run using this model
+# has to be rented rather than served here.
+#
+# A hybrid-attention checkpoint -- Qwen3.5's config sets
+# `full_attention_interval: 4`, so three of every four layers use linear
+# attention and the KV cache costs a fraction of a dense model this size. That
+# is what makes a 32,768-token window affordable here where gemma-4-31b, dense
+# at a similar size, is served with 8,192.
+#
+# It is also a vision-language checkpoint (`Qwen3_5ForConditionalGeneration`,
+# image-text-to-text). This suite sends text only; the vision tower is loaded
+# and never called, which costs memory and nothing else.
+model:
+  id: qwen3-5-27b-local
+  model_name: Qwen/Qwen3.5-27B
+  description: >-
+    Qwen3.5-27B served by vLLM with MAX_MODEL_LEN=32768 and MAX_NUM_SEQS=32,
+    prefix caching on, eager mode.
+  # Returns content directly; no separate reasoning channel.
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_27B_URL|http://127.0.0.1:18007}
+    api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_27B_URL|http://127.0.0.1:18007}
+      path: /v1/chat/completions/batch
+      # 8, and it stays 8. vLLM at temperature 0 is not bit-stable across batch
+      # sizes, so this is the one throughput knob that would change the answers
+      # and break comparability with every earlier run. Raise
+      # max_parallel_batches instead.
+      group_size: 8
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    # 4 x group_size 8 = 32 sequences in flight, exactly the server's
+    # --max-num-seqs. Matched rather than overshot: more only queues inside
+    # vLLM, less leaves scheduler slots idle.
+    max_parallel_batches: 4
+    requests_per_minute: null
+    tokens_per_minute: null
+    max_connections: 64
+    # MAX_MODEL_LEN from qwen3.5-27b/.env. Larger than the 16,384 that had
+    # every static task on the smaller gemmas reporting "150 of 150 prompts had
+    # their output budget clamped", so answers here are bounded by the token cap
+    # rather than by the window.
+    context_window: 32768
+
+  notes:
+    served_by: vLLM (qwen3.5-27b-vllm supervisor service, port 18007)

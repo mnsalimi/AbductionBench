@@ -47,7 +47,11 @@ engine:
     enabled: false
 
 models:
-  # Served alone on this card at GPU_MEMORY_UTILIZATION 0.93.
-  - file: ../models/gemma-4-31b-local.yaml
+  # Whichever large model this card is serving right now. Only one of these can
+  # be up at a time -- each takes the best part of the GPU on its own -- so the
+  # one that is not being served is commented out rather than deleted, and the
+  # run follows the supervisor service rather than the other way round.
+  - file: ../models/qwen3-5-27b-local.yaml
+  # - file: ../models/gemma-4-31b-local.yaml
   # Rented, and under evaluation rather than judging.
   - file: ../models/gpt-5.6-luna-openrouter.yaml
