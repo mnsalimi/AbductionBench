@@ -1,0 +1,62 @@
+id: reasoning_contradiction_v2
+version: "1.0"
+description: >-
+  Two counts per step about the model's relationship with its own mistakes:
+  contradictions it never notices, and mistakes it does notice and corrects.
+  One call, because the two are the same judgement split by whether the model
+  caught it.
+task_kinds: [judge]
+required_fields: [steps, step_count]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, in
+      order. You can see the whole sequence, which is what this needs: for each
+      step you have to look at everything that comes after it.
+
+      You report two things per step. THEY ARE THE SAME EVENT SPLIT BY WHETHER
+      THE MODEL NOTICED -- a claim that turns out to be wrong. If the model
+      never sees it, that is an unresolved contradiction; if the model sees it
+      and corrects itself, that is a backtrack. Read both definitions before
+      you start, because a step is at most one of them.
+
+      (1) UNRESOLVED CONTRADICTION. For step i, report 1 when BOTH hold:
+        - some later step contradicts what the model claimed in step i, and
+        - the model never goes back to acknowledge or resolve it.
+
+      Report 0 otherwise. In particular report 0 when the model contradicts
+      itself and then explicitly corrects or acknowledges it -- that is the
+      second count, not this one -- and 0 when a later step merely refines or
+      adds detail without conflicting.
+
+      (2) BACKTRACKING. For step i, report how many times IN THAT STEP the
+      model explicitly recognises an error or flaw in its own earlier reasoning
+      and changes direction because of it: "wait, that's wrong", "I made an
+      error above", "actually that contradicts what I said".
+
+      Considering a candidate and rejecting it on the evidence is NOT
+      backtracking -- that is ordinary elimination, and the model was not
+      mistaken. The model must be correcting ITSELF. A step that does none of
+      this is 0, and a step may contain more than one correction.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. EVERY list you return must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order, including the steps whose value is 0. Count your elements
+          before you reply.
+        * `unresolved_per_step` is 0 or 1 per element.
+        * `backtracking_per_step` is a non-negative integer per element.
+  - role: user
+    content: |
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements in each list:
+      {"unresolved_per_step": [<0 or 1>, ...], "backtracking_per_step": [<integer>, ...]}
+output_contract:
+  json_fields:
+    unresolved_per_step: list_of_binary
+    backtracking_per_step: list_of_nonnegative_integers

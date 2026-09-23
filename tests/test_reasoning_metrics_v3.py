@@ -35,10 +35,10 @@ from abductionbench.core.reasoning_judge import (
 JUDGE = Path("configs/prompts/judge")
 
 RAW = {
-    "steps": {"steps": ["a", "b", "c", "d", "e"], "n_steps": 5,
-              "final_answer": "config_error"},
-    "proof_disproof": {"proof_disproof_per_step": [1, 0, 1, 1, 1],
-                       "backtracking_per_step": [0, 0, 0, 1, 0]},
+    "steps": {"steps": ["a", "b", "c", "d", "e"], "n_steps": 5},
+    "proof_disproof": {"proof_disproof_per_step": [1, 0, 1, 1, 1]},
+    "unresolved_contradiction": {"unresolved_per_step": [0, 0, 0, 0, 0],
+                                 "backtracking_per_step": [0, 0, 0, 1, 0]},
     "helpfulness": {"helpfulness_per_step": [0, -1, 1, 1, 1]},
     "anchoring_point": {"anchoring_step_index": 4,
                         "gold_alive_per_step": [0, 0, 0, 0, 1]},
@@ -154,14 +154,12 @@ def test_backtracking_is_per_step_and_the_rate_is_a_proportion_of_steps():
     assert metrics["reasoning_backtracking_rate"] == pytest.approx(1 / 5)
 
 
-def test_the_segmentation_prompt_no_longer_carries_the_counts():
+def test_the_segmentation_prompt_only_segments():
     blob = yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())
     body = "\n".join(m["content"] for m in blob["messages"]).lower()
     assert "proof" not in body
     assert "backtracking steps:" not in body
-    assert set(blob["output_contract"]["json_fields"]) == {
-        "steps", "n_steps", "final_answer",
-    }
+    assert set(blob["output_contract"]["json_fields"]) == {"steps", "n_steps"}
 
 
 # --------------------------------------------------------------------------- #
@@ -211,22 +209,6 @@ def test_the_segmentation_follows_the_models_own_markers():
         yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())["messages"]
     )
     assert "FOLLOW THE MODEL'S OWN SEGMENTATION WHERE IT HAS ONE" in body
-
-
-def test_the_final_answer_is_forbidden_as_a_step_and_returned_separately():
-    body = "\n".join(
-        m["content"] for m in
-        yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())["messages"]
-    )
-    assert "THE FINAL ANSWER IS NOT A STEP" in body
-    assert "final_answer" in body
-
-
-def test_the_stated_answer_is_kept_but_not_as_a_step():
-    _m, lists, _e, _i = _derive()
-    assert lists["reasoning_steps"] == ["a", "b", "c", "d", "e"]
-    assert lists["reasoning_final_answer"] == ["config_error"]
-    assert "config_error" not in lists["reasoning_steps"]
 
 
 def test_every_new_column_is_registered():

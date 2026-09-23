@@ -4,8 +4,7 @@ description: >-
   The canonical segmentation. The one call that reads the model's chain
   directly, and its step list is what every other per-step metric is indexed
   against -- so the segmentation happens once and every later count refers to
-  the same steps. v3 follows the model's own segmentation where it has one,
-  keeps the final answer out of the steps, and reports it separately.
+  the same steps. v3 follows the model's own segmentation where it has one.
 task_kinds: [judge]
 required_fields: [question, reasoning_chain]
 optional_fields: [options]
@@ -31,15 +30,6 @@ messages:
       paraphrase, summarise, shorten, correct, tidy, translate or re-punctuate.
       Do not add words the model did not write.
 
-      THE FINAL ANSWER IS NOT A STEP. A chain usually ends by stating what the
-      answer is -- "Answer: 3", "So the answer is B", "Therefore the root cause
-      is a config error". That is the conclusion, not an inferential move, and
-      it must NOT appear as an element of the step list. Put it in
-      `final_answer` instead, copied as the model wrote it. If the last step
-      both reasons and concludes, cut the concluding sentence off the end of
-      that step and put it in `final_answer`. If the chain never states an
-      answer, `final_answer` is null.
-
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
         * Reply with ONE JSON object and nothing else. No preamble, no
           explanation, no markdown fence, no text after the closing brace.
@@ -47,8 +37,6 @@ messages:
           that is a single number or symbol.
         * `n_steps` is an integer and must equal the length of `steps`. Count
           them before you write it.
-        * `final_answer` is a string or null. Never a list, never an object.
-        * Nothing in `steps` may be the final answer statement.
   - role: user
     content: |
       QUESTION AS PRESENTED TO THE MODEL:
@@ -63,9 +51,8 @@ messages:
       {{ reasoning_chain }}
 
       Reply with exactly this object and nothing after it:
-      {"steps": ["<step 1>", "<step 2>", ...], "n_steps": <integer>, "final_answer": "<the model's stated answer, or null>"}
+      {"steps": ["<step 1>", "<step 2>", ...], "n_steps": <integer>}
 output_contract:
   json_fields:
     steps: list_of_strings
     n_steps: nonnegative_integer
-    final_answer: string_or_null

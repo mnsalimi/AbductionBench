@@ -133,10 +133,6 @@ _REQUIRED_TEMPLATES = {
 #: two cannot drift apart.
 REASONING_LIST_COLUMNS: tuple[str, ...] = (
     "reasoning_steps",
-    # The model's stated answer, kept out of the steps so it cannot be counted
-    # as an inferential move -- a one-element list so it travels with the other
-    # per-sample lists rather than needing a column of its own.
-    "reasoning_final_answer",
     # The wave-one inventory, kept whole: coverage is a ratio against it, and a
     # ratio nobody can see the denominator of is not auditable.
     "reasoning_observations",
@@ -446,8 +442,18 @@ def derive_reasoning_metrics(
 
     # -- metric 2: the canonical segmentation, first because all else needs it #
     steps_blob = raw.get("steps") or {}
-    steps = _string_list(steps_blob.get("steps"))
-    if steps is None:
+    raw_steps = steps_blob.get("steps")
+    steps = _string_list(raw_steps)
+    if steps is None and isinstance(raw_steps, list) and not raw_steps:
+        # AN EMPTY LIST IS AN ANSWER, NOT A FAILURE. A response with no chain in
+        # it -- an io reply, or a cot reply that gave the answer and nothing
+        # else -- has nothing to segment, and the judge saying so is correct.
+        # Reported as inapplicable so every dependent metric comes out BLANK:
+        # an error would claim the stage went wrong, and a zero would claim the
+        # chain was measured and found to have none of the property.
+        inapplicable.append("steps:no_reasoning_chain_to_segment")
+        total_steps = 0
+    elif steps is None:
         errors.append("steps:invalid_or_missing_step_list")
         total_steps = 0
     else:
@@ -457,14 +463,6 @@ def derive_reasoning_metrics(
         # reported: one of them has to be authoritative, and it is the list.
         metrics["reasoning_total_steps"] = float(total_steps)
 
-    # The model's own stated answer, kept out of the step list on purpose: a
-    # chain almost always ends by saying what the answer is, and counting that
-    # as an inferential step inflated every per-step denominator by one and
-    # gave every metric a final element about a sentence that reasons about
-    # nothing.
-    final_answer = steps_blob.get("final_answer")
-    if isinstance(final_answer, str) and final_answer.strip():
-        lists["reasoning_final_answer"] = [final_answer.strip()]
 
     def per_step(family: str, key: str, column: str, kind=_int_list) -> list[Any] | None:
         """One per-step list, validated against the canonical step count."""
@@ -662,7 +660,10 @@ def derive_reasoning_metrics(
             metrics["reasoning_useful_step_fraction"] = useful / total_steps
             metrics["reasoning_useless_step_fraction"] = useless / total_steps
 
-    backtracks = per_step("proof_disproof", "backtracking_per_step",
+    # Backtracking moved to the contradiction family: the two are one
+    # judgement split by whether the model noticed its own mistake, so asking
+    # them in one call is asking one question rather than two.
+    backtracks = per_step("unresolved_contradiction", "backtracking_per_step",
                           "reasoning_backtracking_per_step")
     if backtracks is not None:
         metrics["reasoning_backtracking_steps"] = float(sum(backtracks))
@@ -1256,19 +1257,18 @@ class ReasoningJudgeStage:
             # and a judge that has been given the number can check itself
             # before replying.
             common[target.index]["step_count"] = len(segmented)
-            # THE ANSWER THE SEGMENTATION FOUND, not the raw response.
+            # `model_answer` stays as the response's own parsed answer, set
+            # with the rest of `common` above. The segmentation used to return
+            # a `final_answer` and no longer does: the answer sits behind an
+            # <answer> tag, so a regex already has it, and asking a judge to
+            # re-extract what a regex can read is a call that can fail for a
+            # value that cannot.
             #
-            # `reasoning_steps_v3` pulls the model's concluding statement out of
-            # the chain and returns it as `final_answer`, precisely so it is not
-            # counted as an inferential step. That same string is what every
-            # downstream metric should be shown: it is the answer as the chain
-            # actually ended, already separated from the reasoning, and using it
-            # keeps one definition of "the model's answer" across the stage.
-            # The response's own parsed answer is the fallback for a
-            # segmentation that did not isolate one.
-            stated = (target.raw.get("steps") or {}).get("final_answer")
-            if isinstance(stated, str) and stated.strip():
-                common[target.index]["model_answer"] = stated.strip()
+            # It is given to the prompts that need it -- anchoring point, which
+            # cannot find where the model first considered its own answer
+            # without knowing what that answer was -- and to no others. Handing
+            # it to every metric gave ten prompts a fact they had no use for
+            # and a paragraph telling them not to use it.
 
         ready = [t for t in targets if "steps" in common[t.index]]
 
@@ -1284,25 +1284,25 @@ class ReasoningJudgeStage:
         inventoried = [t for t in ready if "observations" in common[t.index]]
         wave_two = [
             run("observation_coverage", inventoried,
-                ("question", "steps", "observations", "step_count", "model_answer")),
+                ("question", "steps", "observations", "step_count")),
             run("directionality", targets, ("question", "reasoning_chain")),
-            run("step_directionality", ready, ("steps", "step_count", "model_answer")),
-            run("differential_elimination", ready, ("steps", "step_count", "model_answer")),
-            run("uncertainty", ready, ("steps", "step_count", "model_answer")),
-            run("prior_knowledge", ready, ("question", "steps", "step_count", "model_answer")),
-            run("unresolved_contradiction", ready, ("steps", "step_count", "model_answer")),
+            run("step_directionality", ready, ("steps", "step_count")),
+            run("differential_elimination", ready, ("steps", "step_count")),
+            run("uncertainty", ready, ("steps", "step_count")),
+            run("prior_knowledge", ready, ("question", "steps", "step_count")),
+            run("unresolved_contradiction", ready, ("steps", "step_count")),
             # Now needs the model's own answer as well as the gold: the
             # anchoring step is about where the MODEL settled, and the per-step
             # list is about whether the GOLD was still alive.
             run("anchoring_point", [t for t in ready if t.reference],
                 ("steps", "reference_answer", "model_answer", "step_count")),
-            run("proof_disproof", ready, ("question", "steps", "step_count", "model_answer")),
+            run("proof_disproof", ready, ("question", "steps", "step_count")),
             run("helpfulness", [t for t in ready if t.reference],
-                ("question", "steps", "reference_answer", "step_count", "model_answer")),
+                ("question", "steps", "reference_answer", "step_count")),
             run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
-                ("steps", "question", "option_count", "step_count", "model_answer")),
+                ("steps", "question", "option_count", "step_count")),
             run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
-                ("steps", "step_count", "model_answer")),
+                ("steps", "step_count")),
         ]
         for target in ready:
             if not target.reference:

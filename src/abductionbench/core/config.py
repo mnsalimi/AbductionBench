@@ -621,7 +621,7 @@ def _reasoning_judge_templates() -> dict[str, str]:
         "uncertainty": "reasoning_uncertainty_v2",
         "prior_knowledge": "reasoning_prior_knowledge_v2",
         "anchoring_point": "reasoning_anchoring_point_v3",
-        "unresolved_contradiction": "reasoning_unresolved_contradiction_v1",
+        "unresolved_contradiction": "reasoning_contradiction_v2",
         # Split out of the segmentation call, which was cutting the chain
         # and judging it at the same time.
         "proof_disproof": "reasoning_proof_disproof_v1",

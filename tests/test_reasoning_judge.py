@@ -38,7 +38,6 @@ def _raw(**overrides):
         "steps": {
             "steps": list(STEPS),
             "n_steps": len(STEPS),
-            "final_answer": "the answer",
         },
         # Wave one: the inventory. Its LENGTH is the total -- the judge lists
         # the observations, it is not asked to count them as well.
@@ -58,11 +57,13 @@ def _raw(**overrides):
         "prior_knowledge": {"prior_knowledge_per_step": [0, 2, 1, 0]},
         "anchoring_point": {"anchoring_step_index": 1,
                             "gold_alive_per_step": [0, 1, 1, 1]},
-        "unresolved_contradiction": {"unresolved_per_step": [0, 0, 1, 0]},
+        # Backtracking lives here now: the two are one judgement split by
+        # whether the model noticed its own mistake.
+        "unresolved_contradiction": {"unresolved_per_step": [0, 0, 1, 0],
+                                     "backtracking_per_step": [0, 0, 1, 0]},
         # Split out of `steps`, which was cutting the chain and judging it in
         # the same call.
-        "proof_disproof": {"proof_disproof_per_step": [0, 1, 1, 2],
-                           "backtracking_per_step": [0, 0, 1, 0]},
+        "proof_disproof": {"proof_disproof_per_step": [0, 1, 1, 2]},
         "helpfulness": {"helpfulness_per_step": [0, 1, -1, 1]},
     }
     base.update(overrides)
@@ -328,11 +329,17 @@ def test_the_segmentation_and_its_counts_come_from_one_call():
     # corrects is its own call now: one prompt asked to cut the chain AND judge
     # it produced a worse cut, and `steps` was already the family losing the
     # most replies to truncation.
-    assert declared == {"steps", "n_steps", "final_answer"}
+    # The answer is not returned: it sits behind an <answer> tag, so a regex
+    # already has it, and asking a judge to re-extract what a regex can read is
+    # a call that can fail for a value that cannot.
+    assert declared == {"steps", "n_steps"}
 
     counts = yaml.safe_load((JUDGE_PROMPTS / "reasoning_proof_disproof_v1.yaml").read_text())
-    assert set(counts["output_contract"]["json_fields"]) == {
-        "proof_disproof_per_step", "backtracking_per_step",
+    assert set(counts["output_contract"]["json_fields"]) == {"proof_disproof_per_step"}
+
+    contradiction = yaml.safe_load((JUDGE_PROMPTS / "reasoning_contradiction_v2.yaml").read_text())
+    assert set(contradiction["output_contract"]["json_fields"]) == {
+        "unresolved_per_step", "backtracking_per_step",
     }
 
 
@@ -481,12 +488,11 @@ def _reasoning_responder(conversation, max_tokens):
     """
     body = " ".join(str(message.get("content", "")) for message in conversation)
     if '"n_steps"' in body:
-        return (
-            '{"steps": ["one", "two", "three", "four"], '
-            '"n_steps": 4, "final_answer": "the answer"}'
-        )
+        return '{"steps": ["one", "two", "three", "four"], "n_steps": 4}'
     if '"proof_disproof_per_step"' in body:
-        return ('{"proof_disproof_per_step": [0, 1, 1, 2], '
+        return '{"proof_disproof_per_step": [0, 1, 1, 2]}'
+    if '"unresolved_per_step"' in body:
+        return ('{"unresolved_per_step": [0, 0, 0, 0], '
                 '"backtracking_per_step": [0, 0, 1, 0]}')
     if '"helpfulness_per_step"' in body:
         return '{"helpfulness_per_step": [0, 1, -1, 1]}'
@@ -640,7 +646,7 @@ class ReasonedAdapter(DatasetAdapter):
     lines = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
     assert lines and all(entry["prompt_mode"] == "cot" for entry in lines)
     assert lines[0]["raw"]["steps"]["n_steps"] == 4
-    assert lines[0]["raw"]["proof_disproof"]["backtracking_per_step"] == [0, 0, 1, 0]
+    assert lines[0]["raw"]["unresolved_contradiction"]["backtracking_per_step"] == [0, 0, 1, 0]
     # One of four steps was a correction -- a proportion of steps, not
     # corrections per step.
     assert lines[0]["metrics"]["reasoning_backtracking_rate"] == 0.25

@@ -41,8 +41,6 @@ messages:
         - it led the investigation away from the correct answer;
         - it was wasted effort: it returned nothing usable, or nothing that
           bore on the correct answer;
-        - it repeated an earlier action, asked for what had already been
-          answered, or was superseded by a later one that did the same work.
 
       A STEP IS RELEVANT ONLY INSOFAR AS IT HELPED REACH THE ACTUAL CORRECT
       ANSWER, REGARDLESS OF WHAT THE MODEL ULTIMATELY ANSWERED. The model's own

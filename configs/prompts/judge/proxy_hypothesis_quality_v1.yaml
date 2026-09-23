@@ -6,7 +6,7 @@ description: >-
   1 for acceptable, 0 for not.
 task_kinds: [judge]
 required_fields: [candidate]
-optional_fields: [references, observation, context, criteria, full_prompt, full_response]
+optional_fields: [references, observation, full_prompt, full_response]
 messages:
   - role: system
     content: |

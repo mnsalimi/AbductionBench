@@ -6,7 +6,7 @@ description: >-
   direction?  1 for similar to that gold hypothesis, 0 for not.
 task_kinds: [judge]
 required_fields: [candidate, references]
-optional_fields: [observation, context, criteria, full_prompt, full_response]
+optional_fields: [observation, full_prompt, full_response]
 messages:
   - role: system
     content: |
