@@ -92,7 +92,3 @@ def test_the_shipped_run_asks_qwen_everything_and_jev_only_scs():
 
     qwen = load_layered("configs/models/qwen3-5-27b-local.yaml")["model"]
     assert not qwen.get("only_tasks"), "the local model must answer the whole grid"
-
-    # And the run itself still plans the full grid, so qwen is not narrowed by
-    # jev's presence.
-    assert run["modes"]["prompt_modes"] if "modes" in run else True

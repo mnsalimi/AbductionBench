@@ -49,7 +49,12 @@ def _body(*, pool: int, judge_calls: int, reasoning_calls: int) -> dict:
 
 
 def test_a_pool_smaller_than_both_judges_together_is_refused():
-    """The exact shape that produced the timeouts: 48 + 32 against 64."""
+    """The exact shape that produced the timeouts: 48 + 32 against 64.
+
+    The SUM is what counts. Each stage fits under the pool on its own -- 48 and
+    32 are both below 64 -- and they share one client, so neither stage alone
+    is the test.
+    """
     with pytest.raises(ConfigError) as excinfo:
         RunConfig.model_validate(_body(pool=64, judge_calls=48, reasoning_calls=32))
     message = str(excinfo.value)
@@ -57,15 +62,6 @@ def test_a_pool_smaller_than_both_judges_together_is_refused():
     assert "80 concurrent" in message
     assert "holds 64" in message
     assert "max_connections" in message
-
-
-def test_the_sum_is_what_counts_not_either_stage_alone():
-    """Each stage fits on its own; they share one client, so neither is the test."""
-    body = _body(pool=64, judge_calls=48, reasoning_calls=32)
-    assert body["engine"]["judge"]["max_parallel_calls"] < 64
-    assert body["engine"]["reasoning_judge"]["max_parallel_calls"] < 64
-    with pytest.raises(ConfigError):
-        RunConfig.model_validate(body)
 
 
 def test_a_pool_that_covers_them_is_accepted():

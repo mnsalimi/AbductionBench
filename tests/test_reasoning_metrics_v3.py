@@ -210,7 +210,6 @@ def test_the_segmentation_follows_the_models_own_markers():
         yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())["messages"]
     )
     assert "FOLLOW THE MODEL'S OWN SEGMENTATION WHERE IT HAS ONE" in body
-    assert "Step 1" in body and '"1."' not in body.replace("'", '"') or True
 
 
 def test_the_final_answer_is_forbidden_as_a_step_and_returned_separately():
