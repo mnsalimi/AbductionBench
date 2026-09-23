@@ -191,7 +191,7 @@ class SmokeAdapter(DatasetAdapter):
         overlap = token_f1(answer, sample.reference["gold"])
         return SampleScore(
             metrics={"abduction_score": hit, "keyword_hit": hit, "token_f1": overlap},
-            prediction=answer[:300],
+            prediction=answer,
             details={"matched_keywords": [k for k in keywords if contains_match(answer, k)]},
         )
 

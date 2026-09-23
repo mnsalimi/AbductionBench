@@ -113,7 +113,7 @@ class FakeAdapter(DatasetAdapter):
         )
         return SampleScore(
             metrics={"accuracy": float(correct)},
-            prediction=prediction[:120],
+            prediction=prediction,
             parse_ok=True,
         )
 

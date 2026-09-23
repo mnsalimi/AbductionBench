@@ -96,8 +96,8 @@ class MedRBenchAdapter(PooledDatasetAdapter):
             metadata={
                 "pmcid": item.get("pmcid"),
                 "rare_disease": rare,
-                "body_category": C.as_list(item.get("body_category"))[:2],
-                "disorder_category": C.as_list(item.get("disorder_category"))[:2],
+                "body_category": C.as_list(item.get("body_category")),
+                "disorder_category": C.as_list(item.get("disorder_category")),
             },
         )
 

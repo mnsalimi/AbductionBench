@@ -535,7 +535,7 @@ class MedQDxAdapter(InteractiveMixin, PooledDatasetAdapter):
             metrics=metrics,
             prediction=scored.prediction,
             parse_ok=scored.parse_ok,
-            details={**scored.details, "interim_diagnoses": list(interim)[:8]},
+            details={**scored.details, "interim_diagnoses": list(interim)},
         )
 
     def judge_request(

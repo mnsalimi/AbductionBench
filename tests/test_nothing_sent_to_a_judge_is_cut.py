@@ -19,7 +19,15 @@ from pathlib import Path
 
 import pytest
 
-ADAPTERS = sorted(Path("src/abductionbench/adapters").glob("*.py"))
+ADAPTERS = sorted(
+    [
+        *Path("src/abductionbench/adapters").glob("*.py"),
+        # Not shipped, but copied from and run against the real engine: a cut
+        # here is the pattern the next adapter would be written from.
+        Path("tools/smoke_adapter.py"),
+        Path("tests/fake_adapter.py"),
+    ]
+)
 
 
 def _constant_slices(node: ast.AST) -> list[int]:
