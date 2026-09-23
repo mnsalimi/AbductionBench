@@ -1,0 +1,80 @@
+# BUY THE VERDICTS FOR 20260923-214600_gemma31b-all.
+#
+# The generation pass (gemma31b_all.yaml) ran with BOTH judges off and
+# `defer: true` -- deliberately, so the card was gemma's alone. This config is
+# the other half of that bargain: the same run, the same models, the same
+# samples, resumed with both judges ON and pointed at a rented gpt-oss-120b.
+#
+# It is a RESUME, not a new run, and that is what makes it cheap. The
+# checkpoint fingerprint is {model, template@version, messages, sampling} --
+# nothing about the judge is in it -- so every answer already on disk is reused
+# and only the verdicts are paid for. The judge never touches the GPU, so
+# gemma's own settings are inherited unchanged rather than re-tuned.
+#
+# gemma-4-31b IS STILL LISTED, and has to be: `models` is a list, and lists are
+# REPLACED by a child config rather than merged, so dropping it here would drop
+# the model that produced the answers. Keeping it also lets the resume finish
+# the two tasks that were mid-flight when the run was stopped (aiops2025 cot at
+# 136/150, art cot at 88/150) instead of judging a short task and reporting the
+# mean of a partial one. That needs the vllm service up; it costs nothing if
+# every record is already there.
+#
+# LIMIT THE PASS WITH `-d`. Without it the resume would plan the datasets that
+# were never started and generate them, which is the opposite of stopping the
+# run.
+extends:
+  - gemma31b_all.yaml
+
+name: gemma31b-judge
+description: >-
+  The answer judge and the reasoning-chain judge over gemma-4-31b's stored
+  outputs in 20260923-214600_gemma31b-all, graded by openai/gpt-oss-120b via
+  OpenRouter.
+
+engine:
+  concurrency:
+    # A task holds its slot THROUGH its judge stage, and that stage is now
+    # off-box: a task waiting on OpenRouter uses no GPU but still occupies a
+    # slot that decides whether another task may start. 12 -> 16 so judging and
+    # the remaining generation overlap instead of queueing behind each other.
+    max_parallel_tasks: 16
+    # Has to cover what the per-model limits ask for together, or it silently
+    # becomes the real limit instead of them: gemma 6 + judge 64 = 70.
+    max_parallel_batches_global: 96
+
+  judge:
+    enabled: true
+    # Nothing left to defer: the judge is rented, so it no longer competes with
+    # the model for the card.
+    defer: false
+    model: gpt-oss-120b-openrouter
+    # THE lever for this pass. OpenRouter serves no batch route for this model
+    # (both `:batch` and vLLM's /v1/chat/completions/batch 404), so the stage
+    # sets chunk_size to 1 and every verdict is its own request, dispatched
+    # together under asyncio.gather and throttled only here. 48 stays under the
+    # judge model's own max_parallel_batches (64) and leaves room for the
+    # reasoning judge beside it.
+    max_parallel_calls: 48
+
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-openrouter
+    # One step lower than the answer judge on purpose: this stage issues
+    # several calls per sample (steps, then every metric family), so at equal
+    # settings it would crowd out the stage it shares an endpoint with.
+    # 48 + 32 = 80 in flight, against the judge model's max_connections of 160.
+    max_parallel_calls: 32
+    # UNCHANGED AT 8. Inert while the judge is remote, but temperature-0 vLLM
+    # is not bit-stable across batch sizes, so if this run is ever re-judged
+    # locally a different group size would change verdicts and break
+    # comparability with every earlier run.
+    group_size: 8
+
+models:
+  # The model under test: its answers are what the judges grade, and the
+  # resume needs it to finish the two tasks that were cut off mid-flight.
+  - file: ../models/gemma-4-31b-local.yaml
+  # The judge. `judge_only: true` in its own file keeps the engine from
+  # planning any task for it, so it is graded against nothing and appears in
+  # no report column.
+  - file: ../models/gpt-oss-120b-openrouter.yaml
