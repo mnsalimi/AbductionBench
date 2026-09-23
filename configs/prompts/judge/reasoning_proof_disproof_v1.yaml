@@ -1,0 +1,52 @@
+id: reasoning_proof_disproof_v1
+version: "1.0"
+description: >-
+  Two counts per step: how many candidate answers the model explicitly proves
+  or disproves, and how many times it catches its own mistake and backtracks.
+  Split out of the segmentation prompt, which was being asked to cut the chain
+  and judge it in the same call.
+task_kinds: [judge]
+required_fields: [question, steps, step_count]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, and
+      you report two counts for each step.
+
+      PROOF/DISPROOF: how many explanations, options, causes or candidate
+      answers the model explicitly proves or disproves in that step. Only what
+      the model explicitly states counts; an implication you can infer but the
+      model never states is 0. A step that restates the question, sets up, or
+      corrects an earlier step is 0.
+
+      BACKTRACKING: how many times, IN THAT STEP, the model explicitly
+      recognises an error or flaw in its own earlier reasoning and changes
+      direction because of it. Considering a candidate and rejecting it on the
+      evidence is NOT backtracking -- that is ordinary elimination, and it
+      belongs to the count above. The model must be correcting itself: "wait,
+      that's wrong", "I made an error above", "actually that contradicts what
+      I said". A step that does none of this is 0.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. Each list you return must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order, including the steps whose count is 0. Count your elements
+          before you reply.
+        * Every element is a non-negative integer.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements in each list:
+      {"proof_disproof_per_step": [<integer>, ...], "backtracking_per_step": [<integer>, ...]}
+output_contract:
+  json_fields:
+    proof_disproof_per_step: list_of_nonnegative_integers
+    backtracking_per_step: list_of_nonnegative_integers

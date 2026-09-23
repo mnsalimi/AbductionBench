@@ -1,4 +1,4 @@
-id: reasoning_branchiness_selection_v2
+id: reasoning_branchiness_selection_v3
 version: "1.0"
 description: >-
   Metric 3, selection form: hypotheses newly raised per step. A separate prompt
@@ -24,13 +24,23 @@ messages:
       and is not yours to revise; it is given so you can tell an option the
       question already listed from a hypothesis the model brought in itself.
 
+      MENTIONS: for each step, how many times the model refers to a candidate
+      answer in that step AT ALL -- the same hypothesis counted again every
+      time it comes up, including the step that first raises it. Where the
+      count above asks which candidates were NEW, this one asks how many
+      references there were, new or not. A step that names no candidate is 0.
+
+      Report both as counts. Do not compare them, combine them, or adjust one
+      because of the other.
+
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
         * Reply with ONE JSON object and nothing else. No preamble, no
           markdown fence, no text after the closing brace.
-        * THERE ARE EXACTLY {{ step_count }} STEPS. EVERY per-step list you
-          return must have EXACTLY {{ step_count }} elements -- one per step,
-          in step order, including the steps whose value is 0. Count your
-          elements before you reply.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. EVERY list you return must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order, including the steps whose value is 0. Count your elements
+          before you reply.
+        * Every element is a non-negative integer.
   - role: user
     content: |
       QUESTION AS PRESENTED TO THE MODEL:
@@ -42,8 +52,9 @@ messages:
       {{ steps }}
 
       Reply with exactly this object and nothing after it, with exactly
-      {{ step_count }} elements in the list:
-      {"branchiness_per_step": [<integer>, <integer>, ...]}
+      {{ step_count }} elements in each list:
+      {"branchiness_per_step": [<integer>, ...], "mentions_per_step": [<integer>, ...]}
 output_contract:
   json_fields:
     branchiness_per_step: list_of_nonnegative_integers
+    mentions_per_step: list_of_nonnegative_integers

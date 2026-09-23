@@ -110,6 +110,8 @@ _REQUIRED_TEMPLATES = {
     "prior_knowledge",
     "anchoring_point",
     "unresolved_contradiction",
+    "proof_disproof",
+    "helpfulness",
     # interaction, bought separately for interactive deliveries
     "step_relevance",
 }
@@ -130,10 +132,19 @@ _REQUIRED_TEMPLATES = {
 #: two cannot drift apart.
 REASONING_LIST_COLUMNS: tuple[str, ...] = (
     "reasoning_steps",
+    # The model's stated answer, kept out of the steps so it cannot be counted
+    # as an inferential move -- a one-element list so it travels with the other
+    # per-sample lists rather than needing a column of its own.
+    "reasoning_final_answer",
     # The wave-one inventory, kept whole: coverage is a ratio against it, and a
     # ratio nobody can see the denominator of is not auditable.
     "reasoning_observations",
     "reasoning_proof_disproof_per_step",
+    "reasoning_backtracking_per_step",
+    "reasoning_mentions_per_step",
+    "reasoning_mention_ratio_per_step",
+    "reasoning_gold_alive_per_step",
+    "reasoning_helpfulness_per_step",
     "reasoning_observations_per_step",
     "reasoning_branchiness_per_step",
     "reasoning_step_directionality_per_step",
@@ -180,9 +191,24 @@ REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     # 10. anchoring point
     "reasoning_anchoring_point",
     "reasoning_anchoring_point_normalized",
+    "reasoning_gold_alive_steps",
+    "reasoning_gold_alive_rate",
     # 11. unresolved contradiction
     "reasoning_unresolved_contradictions",
     "reasoning_unresolved_contradiction_normalized",
+    # 12. proof/disproof and backtracking, now their own call and per step
+    "reasoning_proof_disproof_total",
+    # 13. mentions: the non-unique companion to branchiness
+    "reasoning_mentions_total",
+    "reasoning_mention_ratio",
+    # 14. helpfulness -- the only signed metric here
+    "reasoning_helpfulness_mean",
+    "reasoning_helpful_steps",
+    "reasoning_neutral_steps",
+    "reasoning_harmful_steps",
+    "reasoning_helpful_fraction",
+    "reasoning_neutral_fraction",
+    "reasoning_harmful_fraction",
 )
 
 
@@ -272,6 +298,29 @@ def _binary_list(value: Any, expected: int | None = None) -> list[int] | None:
     return parsed
 
 
+def _ternary_list(value: Any, expected: int | None = None) -> list[int] | None:
+    """A list of exactly -1, 0 or 1, optionally of an exact length.
+
+    Helpfulness is the only signed metric here, and the sign is the point: a
+    step that asserts something false is worse than a step that does nothing,
+    and averaging them together would hide that. So -1 is admissible and
+    anything else is not -- not -2, not 0.5, not "harmful".
+    """
+    if not isinstance(value, list):
+        return None
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        number = float(item)
+        if number not in (-1.0, 0.0, 1.0):
+            return None
+        out.append(int(number))
+    if expected is not None and len(out) != expected:
+        return None
+    return out
+
+
 def _directionality_list(value: Any, expected: int | None = None) -> list[float] | None:
     if not isinstance(value, list):
         return None
@@ -301,6 +350,8 @@ _CONTRACT_VALIDATORS: dict[str, Any] = {
     "nonnegative_integer_or_null": lambda value: value is None
     or _nonnegative_int(value) is not None,
     "binary": lambda value: _binary(value) is not None,
+    "list_of_ternary": lambda value: _ternary_list(value) is not None,
+    "string_or_null": lambda value: value is None or isinstance(value, str),
     "directionality": lambda value: _nonnegative_number(value) in (0.0, 0.5, 1.0),
 }
 
@@ -405,31 +456,14 @@ def derive_reasoning_metrics(
         # reported: one of them has to be authoritative, and it is the list.
         metrics["reasoning_total_steps"] = float(total_steps)
 
-    proofs = _int_list(steps_blob.get("proof_disproof_counts"), total_steps or None)
-    if steps is None:
-        pass  # already reported; nothing downstream can be indexed
-    elif proofs is None:
-        errors.append("steps:proof_disproof_list_missing_or_not_one_value_per_step")
-    else:
-        lists["reasoning_proof_disproof_per_step"] = proofs
-        useless = sum(1 for count in proofs if count == 0)
-        useful = total_steps - useless
-        metrics["reasoning_useful_steps"] = float(useful)
-        metrics["reasoning_useless_steps"] = float(useless)
-        if total_steps:
-            metrics["reasoning_useful_step_fraction"] = useful / total_steps
-            metrics["reasoning_useless_step_fraction"] = useless / total_steps
-
-    backtracking = _nonnegative_int(steps_blob.get("backtracking_steps"))
-    if backtracking is None:
-        errors.append("steps:invalid_or_missing_backtracking_count")
-    elif steps is not None and backtracking > total_steps:
-        # More corrections than steps cannot be a reading of this chain.
-        errors.append("steps:backtracking_exceeds_total_steps")
-    else:
-        metrics["reasoning_backtracking_steps"] = float(backtracking)
-        if total_steps:
-            metrics["reasoning_backtracking_rate"] = backtracking / total_steps
+    # The model's own stated answer, kept out of the step list on purpose: a
+    # chain almost always ends by saying what the answer is, and counting that
+    # as an inferential step inflated every per-step denominator by one and
+    # gave every metric a final element about a sentence that reasons about
+    # nothing.
+    final_answer = steps_blob.get("final_answer")
+    if isinstance(final_answer, str) and final_answer.strip():
+        lists["reasoning_final_answer"] = [final_answer.strip()]
 
     def per_step(family: str, key: str, column: str, kind=_int_list) -> list[Any] | None:
         """One per-step list, validated against the canonical step count."""
@@ -583,6 +617,18 @@ def derive_reasoning_metrics(
                 if total_steps:
                     metrics["reasoning_anchoring_point_normalized"] = index / total_steps
 
+    # Whether the CORRECT answer was still alive at each step -- a different
+    # question from the one above, which is about the model's own answer. A
+    # chain that reaches the right answer, disproves it, and never recovers is
+    # not the same as one that never reached it, and only this list can tell
+    # them apart.
+    alive = per_step("anchoring_point", "gold_alive_per_step",
+                     "reasoning_gold_alive_per_step", kind=_binary_list)
+    if alive is not None:
+        metrics["reasoning_gold_alive_steps"] = float(sum(alive))
+        if total_steps:
+            metrics["reasoning_gold_alive_rate"] = sum(alive) / total_steps
+
     # -- metric 11: unresolved contradictions --------------------------------- #
     unresolved = per_step("unresolved_contradiction", "unresolved_per_step",
                           "reasoning_unresolved_per_step", kind=_binary_list)
@@ -593,6 +639,78 @@ def derive_reasoning_metrics(
             metrics["reasoning_unresolved_contradiction_normalized"] = (
                 _proportion_of_steps(unresolved, total_steps)
             )
+
+    # -- metric 12: proof/disproof and backtracking, per step ---------------- #
+    #
+    # Split out of the segmentation call. Asking one prompt to cut the chain
+    # AND count what each cut does made the cut worse: a judge that has to
+    # produce three aligned outputs at once produces a shorter step list, and
+    # `steps` was already the family with the most truncated replies.
+    proofs = per_step("proof_disproof", "proof_disproof_per_step",
+                      "reasoning_proof_disproof_per_step")
+    if proofs is not None:
+        metrics["reasoning_proof_disproof_total"] = float(sum(proofs))
+        useless = sum(1 for count in proofs if count == 0)
+        useful = total_steps - useless
+        metrics["reasoning_useful_steps"] = float(useful)
+        metrics["reasoning_useless_steps"] = float(useless)
+        if total_steps:
+            metrics["reasoning_useful_step_fraction"] = useful / total_steps
+            metrics["reasoning_useless_step_fraction"] = useless / total_steps
+
+    backtracks = per_step("proof_disproof", "backtracking_per_step",
+                          "reasoning_backtracking_per_step")
+    if backtracks is not None:
+        metrics["reasoning_backtracking_steps"] = float(sum(backtracks))
+        if total_steps:
+            # Proportion of steps in which the model caught itself, not
+            # corrections per step -- see _proportion_of_steps.
+            metrics["reasoning_backtracking_rate"] = _proportion_of_steps(
+                backtracks, total_steps
+            )
+
+    # -- metric 13: mentions, the non-unique companion to branchiness -------- #
+    #
+    # Branchiness counts DISTINCT hypotheses; mentions counts every reference
+    # to one. Their ratio is how much revisiting the model did per hypothesis
+    # it had -- a chain that names three candidates twenty times is doing
+    # something different from one that names three candidates three times,
+    # and branchiness alone cannot tell them apart.
+    mention_family = "branchiness_selection" if selection_like else "branchiness_generation"
+    mentions = per_step(mention_family, "mentions_per_step", "reasoning_mentions_per_step")
+    if mentions is not None:
+        total_mentions = sum(mentions)
+        metrics["reasoning_mentions_total"] = float(total_mentions)
+        branch_total = metrics.get("reasoning_branchiness_total")
+        if branch_total:
+            metrics["reasoning_mention_ratio"] = total_mentions / branch_total
+        branch_list = lists.get("reasoning_branchiness_per_step")
+        if branch_list and len(branch_list) == len(mentions):
+            # Per step, and 0 where the step proposed nothing new: a ratio with
+            # a zero denominator is not "infinitely repetitive", it is a step
+            # that introduced no hypothesis to repeat.
+            lists["reasoning_mention_ratio_per_step"] = [
+                (m / b if b else 0.0) for m, b in zip(mentions, branch_list, strict=True)
+            ]
+
+    # -- metric 14: helpfulness, the only signed metric here ------------------ #
+    helpfulness = per_step("helpfulness", "helpfulness_per_step",
+                           "reasoning_helpfulness_per_step", kind=_ternary_list)
+    if helpfulness is not None:
+        helpful = sum(1 for value in helpfulness if value > 0)
+        harmful = sum(1 for value in helpfulness if value < 0)
+        neutral = len(helpfulness) - helpful - harmful
+        metrics["reasoning_helpful_steps"] = float(helpful)
+        metrics["reasoning_neutral_steps"] = float(neutral)
+        metrics["reasoning_harmful_steps"] = float(harmful)
+        if total_steps:
+            # The mean is signed and lives in [-1, 1]: a chain whose harmful
+            # steps outweigh its helpful ones reports a negative number, which
+            # is the finding rather than a floor to be clipped away.
+            metrics["reasoning_helpfulness_mean"] = sum(helpfulness) / total_steps
+            metrics["reasoning_helpful_fraction"] = helpful / total_steps
+            metrics["reasoning_neutral_fraction"] = neutral / total_steps
+            metrics["reasoning_harmful_fraction"] = harmful / total_steps
 
     return metrics, lists, errors, inapplicable
 
@@ -1128,6 +1246,12 @@ class ReasoningJudgeStage:
             # i-th step are the same step. The prompts say "ordered", which is
             # the property that matters and is true either way.
             common[target.index]["steps"] = _numbered(segmented)
+            # Told, not implied. Every per-step prompt now states the count and
+            # requires exactly that many elements back -- a list of the wrong
+            # length is the single commonest way one of these calls is lost,
+            # and a judge that has been given the number can check itself
+            # before replying.
+            common[target.index]["step_count"] = len(segmented)
 
         ready = [t for t in targets if "steps" in common[t.index]]
 
@@ -1142,19 +1266,25 @@ class ReasoningJudgeStage:
         )
         inventoried = [t for t in ready if "observations" in common[t.index]]
         wave_two = [
-            run("observation_coverage", inventoried, ("question", "steps", "observations")),
+            run("observation_coverage", inventoried, ("question", "steps", "observations", "step_count")),
             run("directionality", targets, ("question", "reasoning_chain")),
-            run("step_directionality", ready, ("steps",)),
-            run("differential_elimination", ready, ("steps",)),
-            run("uncertainty", ready, ("steps",)),
-            run("prior_knowledge", ready, ("question", "steps")),
-            run("unresolved_contradiction", ready, ("steps",)),
+            run("step_directionality", ready, ("steps", "step_count")),
+            run("differential_elimination", ready, ("steps", "step_count")),
+            run("uncertainty", ready, ("steps", "step_count")),
+            run("prior_knowledge", ready, ("question", "steps", "step_count")),
+            run("unresolved_contradiction", ready, ("steps", "step_count")),
+            # Now needs the model's own answer as well as the gold: the
+            # anchoring step is about where the MODEL settled, and the per-step
+            # list is about whether the GOLD was still alive.
             run("anchoring_point", [t for t in ready if t.reference],
-                ("steps", "reference_answer")),
+                ("steps", "reference_answer", "model_answer", "step_count")),
+            run("proof_disproof", ready, ("question", "steps", "step_count")),
+            run("helpfulness", [t for t in ready if t.reference],
+                ("question", "steps", "reference_answer", "step_count")),
             run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
-                ("steps", "question", "option_count")),
+                ("steps", "question", "option_count", "step_count")),
             run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
-                ("steps",)),
+                ("steps", "step_count")),
         ]
         for target in ready:
             if not target.reference:

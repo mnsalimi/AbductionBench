@@ -5,7 +5,7 @@ description: >-
   each other. Counts comparison events, not hypotheses, so a step weighing four
   candidates together is one event.
 task_kinds: [judge]
-required_fields: [steps]
+required_fields: [steps, step_count]
 messages:
   - role: system
     content: |
@@ -26,12 +26,20 @@ messages:
 
       One number per step, in step order, exactly as many elements as there are
       steps. Reply with the JSON object and nothing else.
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. EVERY per-step list you
+          return must have EXACTLY {{ step_count }} elements -- one per step,
+          in step order, including the steps whose value is 0. Count your
+          elements before you reply.
   - role: user
     content: |
-      STEPS OF THE MODEL'S REASONING:
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
       {{ steps }}
 
-      Reply with exactly this object and nothing after it:
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements in the list:
       {"comparisons_per_step": [<integer>, <integer>, ...]}
 output_contract:
   json_fields:

@@ -54,13 +54,16 @@ def test_the_runner_actually_sends_the_question():
     wrong.
     """
     source = inspect.getsource(ReasoningJudgeStage._evaluate)
-    assert 'run("prior_knowledge", ready, ("question", "steps"))' in source
+    # `step_count` joined the tuple when every per-step prompt was given the
+    # number of steps it must return; `question` is what this test is about.
+    assert 'run("prior_knowledge", ready, ("question", "steps"' in source
 
 
 def test_the_old_contract_is_gone():
     """`steps` alone was the v1 contract; it must not still be what is sent."""
     source = inspect.getsource(ReasoningJudgeStage._evaluate)
     assert 'run("prior_knowledge", ready, ("steps",))' not in source
+    assert 'run("prior_knowledge", ready, ("steps", "step_count"))' not in source
 
 
 def test_the_version_was_bumped_so_cached_verdicts_are_not_reused():

@@ -1,0 +1,70 @@
+id: reasoning_anchoring_point_v2
+version: "1.0"
+description: >-
+  When the model settled. The first step in which it holds its OWN final answer
+  with high certainty, plus a per-step record of whether the correct answer is
+  alive as a candidate at that point -- so a chain that finds the answer, kills
+  it, and never recovers is distinguishable from one that never found it.
+task_kinds: [judge]
+required_fields: [steps, reference_answer, model_answer, step_count]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, the
+      FINAL ANSWER the model gave, and the CORRECT ANSWER. You report two
+      different things; read both definitions before you start, because they
+      are easy to run together.
+
+      (1) ANCHORING STEP -- about the MODEL'S OWN answer, not the correct one.
+      The first step in which the model holds its final answer as the answer,
+      with high certainty: it has settled on it and is no longer weighing it
+      against alternatives. Listing it among candidates is not enough.
+      Preferring it tentatively, "probably", "leaning towards", is not enough.
+      The model must be treating it as decided.
+
+      Report that step's index, counting the first step as 0. If the model
+      never reaches high certainty about its own final answer within the chain
+      -- it stays tentative to the end, or only states the answer after the
+      last step -- report null. Do not guess an index; null and 0 are different
+      findings.
+
+      (2) GOLD ALIVE PER STEP -- about the CORRECT answer, one binary per step.
+      For each step, is the correct answer still standing as a possible answer
+      as of the end of that step?
+
+        1 -- the correct answer is in play: the model has raised it, or is
+             treating it as a live candidate, or is actively arguing for it.
+        0 -- the correct answer is not in play: the model has not raised it
+             yet, or has explicitly rejected, disproved or ruled it out.
+
+      Once the model disproves the correct answer, that step and every step
+      after it is 0 -- unless the model later revives it, in which case the
+      steps from the revival are 1 again. The step you named as the anchoring
+      step is 1 if and only if the model's final answer IS the correct answer.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. `gold_alive_per_step` must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order. Count your elements before you reply.
+        * Every element of that list is exactly 0 or 1.
+        * `anchoring_step_index` is a single integer or null. Never a list.
+  - role: user
+    content: |
+      THE CORRECT ANSWER:
+      {{ reference_answer }}
+
+      THE FINAL ANSWER THE MODEL GAVE:
+      {{ model_answer }}
+
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements in the list:
+      {"anchoring_step_index": <integer or null>, "gold_alive_per_step": [<0 or 1>, ...]}
+output_contract:
+  json_fields:
+    anchoring_step_index: nonnegative_integer_or_null
+    gold_alive_per_step: list_of_binary

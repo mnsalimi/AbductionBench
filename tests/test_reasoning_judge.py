@@ -32,10 +32,13 @@ def _raw(**overrides):
     """A complete, self-consistent set of judge outputs for a generation task."""
     base = {
 
+        # The segmentation only segments now. What each step proves, disproves
+        # or corrects moved to its own call -- one prompt cutting the chain AND
+        # judging it produced a worse cut.
         "steps": {
             "steps": list(STEPS),
-            "proof_disproof_counts": [0, 1, 1, 2],
-            "backtracking_steps": 1,
+            "n_steps": len(STEPS),
+            "final_answer": "the answer",
         },
         # Wave one: the inventory. Its LENGTH is the total -- the judge lists
         # the observations, it is not asked to count them as well.
@@ -47,14 +50,20 @@ def _raw(**overrides):
         "observation_coverage": {
             "observations_per_step": [1, 1, 0, 1],
         },
-        "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "diversity": 1},
+        "branchiness_generation": {"branchiness_per_step": [0, 1, 1, 0], "mentions_per_step": [1, 1, 1, 1], "diversity": 1},
         "directionality": {"directionality": 0.5},
         "step_directionality": {"directionality_per_step": [1, 0.5, 0.5, 1]},
         "differential_elimination": {"comparisons_per_step": [0, 0, 0, 1]},
         "uncertainty": {"uncertainty_per_step": [0, 1, 1, 0]},
         "prior_knowledge": {"prior_knowledge_per_step": [0, 2, 1, 0]},
-        "anchoring_point": {"anchoring_step_index": 1},
+        "anchoring_point": {"anchoring_step_index": 1,
+                            "gold_alive_per_step": [0, 1, 1, 1]},
         "unresolved_contradiction": {"unresolved_per_step": [0, 0, 1, 0]},
+        # Split out of `steps`, which was cutting the chain and judging it in
+        # the same call.
+        "proof_disproof": {"proof_disproof_per_step": [0, 1, 1, 2],
+                           "backtracking_per_step": [0, 0, 1, 0]},
+        "helpfulness": {"helpfulness_per_step": [0, 1, -1, 1]},
     }
     base.update(overrides)
     return base
@@ -156,7 +165,7 @@ def test_a_per_step_list_of_the_wrong_length_is_refused():
 
 def test_without_a_segmentation_nothing_per_step_can_be_asked():
     """Metric 2 is a dependency, so its failure is reported once, not nine times."""
-    metrics, lists, errors, inapplicable = _derive(_raw(steps={"backtracking_steps": 0}))
+    metrics, lists, errors, inapplicable = _derive(_raw(steps={"n_steps": 0}))
     assert "steps:invalid_or_missing_step_list" in errors
     assert not [key for key in lists if key.endswith("_per_step")]
     assert not [key for key in metrics if "uncertainty" in key]
@@ -176,7 +185,8 @@ def test_selection_and_generation_ask_different_branchiness_questions():
     selection_raw = _raw()
     selection_raw.pop("branchiness_generation")
     selection_raw["branchiness_selection"] = {
-        "branchiness_per_step": [1, 1, 0, 0]
+        "branchiness_per_step": [1, 1, 0, 0],
+        "mentions_per_step": [1, 2, 0, 0],
     }
     selection_raw["option_count"] = {"option_count": 4}
     selection, _l2, errors, sel_inapplicable = _derive(
@@ -193,7 +203,8 @@ def test_selection_and_generation_ask_different_branchiness_questions():
 def test_generation_normalizes_exhaustiveness_by_what_the_model_proposed():
     """No options to pair, so the hypotheses the chain raised are the n."""
     raw = _raw(
-        branchiness_generation={"branchiness_per_step": [0, 2, 1, 0], "diversity": 1},
+        branchiness_generation={"branchiness_per_step": [0, 2, 1, 0],
+                                "mentions_per_step": [0, 2, 1, 0], "diversity": 1},
         differential_elimination={"comparisons_per_step": [0, 1, 1, 1]},
     )
     metrics, _lists, errors, _inapplicable = _derive(raw)
@@ -206,7 +217,8 @@ def test_generation_normalizes_exhaustiveness_by_what_the_model_proposed():
 def test_a_chain_that_never_reaches_the_answer_is_blank_not_zero():
     """Null and step 0 are different findings about where the model landed."""
     metrics, _lists, errors, inapplicable = _derive(
-        _raw(anchoring_point={"anchoring_step_index": None})
+        _raw(anchoring_point={"anchoring_step_index": None,
+                              "gold_alive_per_step": [0, 0, 0, 0]})
     )
     assert not errors, errors
     assert "reasoning_anchoring_point" not in metrics
@@ -214,7 +226,8 @@ def test_a_chain_that_never_reaches_the_answer_is_blank_not_zero():
     assert any("never_considered" in entry for entry in inapplicable)
 
     # An index past the end of the chain is a judge error, not a finding.
-    _m, _l, bad, _i = _derive(_raw(anchoring_point={"anchoring_step_index": 9}))
+    _m, _l, bad, _i = _derive(_raw(anchoring_point={"anchoring_step_index": 9,
+                                     "gold_alive_per_step": [0, 0, 0, 1]}))
     assert "anchoring_point:not_an_index_into_the_step_list" in bad
 
 
@@ -309,9 +322,18 @@ def test_the_segmentation_and_its_counts_come_from_one_call():
     """One reading of the chain, or the lists could not be aligned to it."""
     import yaml
 
-    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_steps_v2.yaml").read_text())
+    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_steps_v3.yaml").read_text())
     declared = set(blob["output_contract"]["json_fields"])
-    assert declared == {"steps", "proof_disproof_counts", "backtracking_steps"}
+    # The segmentation only segments. What each step proves, disproves or
+    # corrects is its own call now: one prompt asked to cut the chain AND judge
+    # it produced a worse cut, and `steps` was already the family losing the
+    # most replies to truncation.
+    assert declared == {"steps", "n_steps", "final_answer"}
+
+    counts = yaml.safe_load((JUDGE_PROMPTS / "reasoning_proof_disproof_v1.yaml").read_text())
+    assert set(counts["output_contract"]["json_fields"]) == {
+        "proof_disproof_per_step", "backtracking_per_step",
+    }
 
 
 def test_every_judge_prompt_asks_for_exactly_its_declared_fields():
@@ -458,11 +480,19 @@ def _reasoning_responder(conversation, max_tokens):
     segmentation it returned was.
     """
     body = " ".join(str(message.get("content", "")) for message in conversation)
-    if '"steps"' in body and '"proof_disproof_counts"' in body:
+    if '"n_steps"' in body:
         return (
             '{"steps": ["one", "two", "three", "four"], '
-            '"proof_disproof_counts": [0, 1, 1, 2], "backtracking_steps": 1}'
+            '"n_steps": 4, "final_answer": "the answer"}'
         )
+    if '"proof_disproof_per_step"' in body:
+        return ('{"proof_disproof_per_step": [0, 1, 1, 2], '
+                '"backtracking_per_step": [0, 0, 1, 0]}')
+    if '"helpfulness_per_step"' in body:
+        return '{"helpfulness_per_step": [0, 1, -1, 1]}'
+    if '"gold_alive_per_step"' in body:
+        return ('{"anchoring_step_index": 1, '
+                '"gold_alive_per_step": [0, 1, 1, 1]}')
     if '"observations"' in body and '"observations_per_step"' not in body:
         return '{"observations": ["fact one", "fact two", "fact three"]}'
     if '"option_count"' in body:
@@ -470,9 +500,11 @@ def _reasoning_responder(conversation, max_tokens):
     if '"observations_per_step"' in body:
         return '{"observations_per_step": [1, 1, 0, 0]}'
     if '"branchiness_per_step"' in body and '"diversity"' in body:
-        return '{"branchiness_per_step": [1, 1, 0, 0], "diversity": 1}'
+        return ('{"branchiness_per_step": [1, 1, 0, 0], '
+                '"mentions_per_step": [1, 2, 0, 0], "diversity": 1}')
     if '"branchiness_per_step"' in body:
-        return '{"branchiness_per_step": [1, 1, 0, 0]}'
+        return ('{"branchiness_per_step": [1, 1, 0, 0], '
+                '"mentions_per_step": [1, 2, 0, 0]}')
     if '"directionality_per_step"' in body:
         return '{"directionality_per_step": [1, 1, 0.5, 1]}'
     if '"directionality"' in body:
@@ -607,8 +639,14 @@ class ReasonedAdapter(DatasetAdapter):
     assert log.exists()
     lines = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
     assert lines and all(entry["prompt_mode"] == "cot" for entry in lines)
-    assert lines[0]["raw"]["steps"]["backtracking_steps"] == 1
+    assert lines[0]["raw"]["steps"]["n_steps"] == 4
+    assert lines[0]["raw"]["proof_disproof"]["backtracking_per_step"] == [0, 0, 1, 0]
+    # One of four steps was a correction -- a proportion of steps, not
+    # corrections per step.
     assert lines[0]["metrics"]["reasoning_backtracking_rate"] == 0.25
+    # And the new families landed.
+    assert lines[0]["metrics"]["reasoning_helpfulness_mean"] == 0.25
+    assert lines[0]["metrics"]["reasoning_harmful_steps"] == 1.0
 
 
 # --------------------------------------------------------------------------- #

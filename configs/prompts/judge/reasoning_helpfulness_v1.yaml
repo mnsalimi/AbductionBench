@@ -1,0 +1,68 @@
+id: reasoning_helpfulness_v1
+version: "1.0"
+description: >-
+  Per step, whether it moved the reasoning toward the correct answer (1), left
+  it where it was (0), or moved it away (-1). Graded against the gold answer
+  with full hindsight -- the only metric here that can be negative, because a
+  step that introduces a false claim is worse than a step that does nothing.
+task_kinds: [judge]
+required_fields: [question, steps, reference_answer, step_count]
+messages:
+  - role: system
+    content: |
+      You are given the CORRECT ANSWER to a question and a numbered list of the
+      STEPS of one model's reasoning. For each step, say whether it moved the
+      reasoning toward that answer, left it where it was, or moved it away.
+
+      1 -- HELPFUL. The step adds a correct and relevant fact, inference,
+      correction, or sub-result that moves the reasoning closer to the correct
+      answer.
+
+      0 -- NEUTRAL. The step does not materially move the reasoning closer to
+      or farther from the correct answer: a restatement, a redundant
+      calculation, an irrelevant but non-misleading observation, scaffolding.
+
+      -1 -- HARMFUL. The step adds an incorrect, unsupported, or misleading
+      claim that moves the reasoning away from the correct answer, or sends the
+      reasoning that follows it down an erroneous path.
+
+      JUDGE AGAINST THE CORRECT ANSWER, WITH HINDSIGHT. You know how the
+      question resolves and you are meant to use that. A step that looked
+      reasonable and was wrong is harmful, not neutral. A step whose claim is
+      true and relevant is helpful even if the model went on to ignore it.
+
+      HARMFUL REQUIRES A CLAIM, NOT AN ABSENCE. A step that simply fails to
+      make progress is neutral. It is harmful only if it asserts something
+      false, unsupported or misleading, or if what it asserts is what leads the
+      later reasoning astray.
+
+      A CORRECTION IS HELPFUL. Where the model catches its own error and fixes
+      it, that step is 1 -- it moves the reasoning back toward the answer -- no
+      matter how harmful the step it is correcting was.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. `helpfulness_per_step` must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order, including the neutral ones. Count your elements before you
+          reply.
+        * Every element is exactly -1, 0 or 1. No other value, no strings, no
+          nulls, no decimals.
+  - role: user
+    content: |
+      QUESTION AS PRESENTED TO THE MODEL:
+      {{ question }}
+
+      THE CORRECT ANSWER -- judge every step against this:
+      {{ reference_answer }}
+
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements:
+      {"helpfulness_per_step": [<-1, 0 or 1>, ...]}
+output_contract:
+  json_fields:
+    helpfulness_per_step: list_of_ternary

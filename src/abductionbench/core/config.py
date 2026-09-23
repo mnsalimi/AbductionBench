@@ -590,7 +590,7 @@ def _reasoning_judge_templates() -> dict[str, str]:
         # become the other's.
         #
         # The canonical segmentation. Everything per-step is indexed by it.
-        "steps": "reasoning_steps_v2",
+        "steps": "reasoning_steps_v3",
         # The question's observations, listed once each. The denominator of
         # coverage, so it is taken once and reused rather than re-read.
         "observation_inventory": "reasoning_observation_inventory_v1",
@@ -612,16 +612,21 @@ def _reasoning_judge_templates() -> dict[str, str]:
         # own inventory.
         "observation_coverage": "reasoning_observation_coverage_v4",
         # Branchiness only; the option count arrives from wave one.
-        "branchiness_selection": "reasoning_branchiness_selection_v2",
-        "branchiness_generation": "reasoning_branchiness_generation_v1",
+        "branchiness_selection": "reasoning_branchiness_selection_v3",
+        "branchiness_generation": "reasoning_branchiness_generation_v2",
         # The one other prompt that reads the raw chain.
         "directionality": "reasoning_directionality_v1",
         "step_directionality": "reasoning_step_directionality_v1",
         "differential_elimination": "reasoning_differential_elimination_v2",
         "uncertainty": "reasoning_uncertainty_v2",
         "prior_knowledge": "reasoning_prior_knowledge_v2",
-        "anchoring_point": "reasoning_anchoring_point_v1",
+        "anchoring_point": "reasoning_anchoring_point_v2",
         "unresolved_contradiction": "reasoning_unresolved_contradiction_v1",
+        # Split out of the segmentation call, which was cutting the chain
+        # and judging it at the same time.
+        "proof_disproof": "reasoning_proof_disproof_v1",
+        # Signed: a step can move the reasoning backwards.
+        "helpfulness": "reasoning_helpfulness_v1",
     }
 
 
