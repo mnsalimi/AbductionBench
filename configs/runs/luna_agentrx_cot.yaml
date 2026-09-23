@@ -1,0 +1,50 @@
+# gpt-5.6-luna on agentrx, chain-of-thought only. A NEW run, not a resume.
+#
+# New matters here: `engine.sync.per_run_subdir` is true, so this writes to its
+# own gdrive:AbductionBench/<run-id> folder and shares nothing with
+# 20260922-021019_reasoning-openrouter. That also means it is the only writer
+# to that destination, which is the property that was missing when two runs
+# were pointed at one folder and Drive answered by keeping both copies of every
+# file.
+#
+# One model, one dataset, one prompt mode -- so the grid is agentrx's selection
+# modes crossed with cot, three repeats each, which is what the rest of the
+# suite was measured at.
+extends:
+  - full.yaml
+
+name: luna-agentrx-cot
+description: >-
+  gpt-5.6-luna over agentrx in chain-of-thought mode only, three repeats per
+  record, as a standalone run with its own Drive folder.
+
+engine:
+  concurrency:
+    # One remote model and one dataset: the model's own max_parallel_batches
+    # (64) is the real limit, and this only has to be large enough not to
+    # become one instead.
+    max_parallel_tasks: 8
+    max_parallel_batches_global: 96
+
+  # No judge. agentrx is scored by accuracy against its gold label, so nothing
+  # here needs one -- it is not among the twelve datasets the judge alone
+  # scores. Turn the reasoning judge on with
+  #   -s engine.reasoning_judge.enabled=true -s engine.reasoning_judge.model=...
+  # if the point of the cot run is the chain metrics rather than the answers;
+  # it costs OpenRouter tokens, which is why it is not on by default.
+  judge:
+    enabled: false
+    defer: true
+  reasoning_judge:
+    enabled: false
+
+modes:
+  # cot only, as asked. Selection modes are left at the default so agentrx is
+  # asked every mode it admits -- restricting them was not part of the request,
+  # and SCS and MCS are different questions rather than different phrasings.
+  prompt_modes: [cot]
+  bov: false
+  repeats: 3
+
+models:
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
