@@ -4,9 +4,10 @@
 #
 #   pass 1  io, every enabled dataset (configs/runs/openrouter_trio_io.yaml):
 #             gpt-5.6-luna      reasoning {enabled: false}   -- verified 0 reasoning tokens
-#             gemini-3.8-flash  reasoning {effort: minimal}  -- the API refuses "off"
+#             gemini-3.8-flash  reasoning {effort: low}      -- the API refuses "off"
 #             gemma-4-31b-it    unchanged (it never reasoned in io)
 #   pass 2  cot, every enabled dataset, settings exactly as the run started
+#           (gemini keeps its provider-default reasoning effort there)
 #
 # luna's and gemini's io was first answered with reasoning ON by mistake. Their
 # io task folders are moved out of the run before pass 1, so pass 1 asks every
@@ -96,7 +97,7 @@ else
 fi
 
 # -- pass 1: io ---------------------------------------------------------------
-say "pass 1/2: io on every dataset -- luna reasoning off, gemini minimal"
+say "pass 1/2: io on every dataset -- luna reasoning off, gemini low effort"
 .venv/bin/abench run configs/runs/openrouter_trio_io.yaml --resume "$RUN" >>"$LOG" 2>&1
 rc=$?
 say "pass 1 exited with $rc"

@@ -14,8 +14,9 @@
 # Verified against the live API (2026-09-24), not assumed:
 #   gpt-5.6-luna      reasoning {enabled: false} -> 0 reasoning tokens, no chain
 #   gemini-3.8-flash  cannot disable ("Reasoning is mandatory for this endpoint
-#                     and cannot be disabled", HTTP 400); `minimal` is the
-#                     lowest level it accepts and still spends reasoning tokens
+#                     and cannot be disabled", HTTP 400), so io runs it at
+#                     effort `low` -- chosen for io only; its cot keeps the
+#                     provider default it was run with (openrouter_trio.yaml)
 extends:
   - openrouter_trio.yaml
 
@@ -32,9 +33,9 @@ models:
   - file: ../models/gemini-3.8-flash-openrouter.yaml
     sampling:
       extra:
-        # The floor, not "off": see the header. Not `exclude`d -- hiding the
-        # chain would make a reasoned answer look like io in the records.
-        reasoning: {effort: minimal}
+        # Low, not "off": see the header. Not `exclude`d -- hiding the chain
+        # would make a reasoned answer look like io in the records.
+        reasoning: {effort: low}
   # No reasoning in io to begin with: every io record it has shows none.
   - file: ../models/gemma-4-31b-it-openrouter.yaml
   - file: ../models/gpt-oss-120b-local.yaml
