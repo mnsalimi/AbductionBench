@@ -2,14 +2,14 @@
 #
 # openrouter_trio.yaml left both rented reasoning models on their provider
 # default, so their io answers were produced after a hidden chain -- which is
-# not io. Stopped 2026-09-24 02:00 once seen; this file finishes io in the SAME
-# run folder (`--resume`) on the datasets io had not reached yet.
+# not io. Stopped 2026-09-24 02:00 once seen. tools/resume_openrouter_trio.sh
+# sets luna's and gemini's io task folders aside and runs this file into the
+# SAME run folder (`--resume`), so every io question is asked of them again.
 #
-# Why this can share the folder: the model's `sampling.extra` is sent with the
-# request but is not part of the resume fingerprint, so the cot records and the
-# io records already answered stay reusable and are not re-asked. The flip side
-# is that this file cannot redo an io record that already exists -- delete that
-# task's folder first if it has to be re-asked without reasoning.
+# Why the set-aside is needed: the model's `sampling.extra` is sent with the
+# request but is not part of the resume fingerprint, so an io record already on
+# disk would be reused as it is. The same fact is what keeps the cot records
+# and gemma's io records reusable under this file.
 #
 # Verified against the live API (2026-09-24), not assumed:
 #   gpt-5.6-luna      reasoning {enabled: false} -> 0 reasoning tokens, no chain
