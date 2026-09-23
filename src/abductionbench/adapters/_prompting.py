@@ -81,6 +81,50 @@ THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 ANSWER_TAG_REGEX = r"(?s).*<answer>\s*(?P<answer>.*?)\s*</answer>"
 THINK_TAG_REGEX = r"(?s)<think>\s*(?P<think>.*?)\s*</think>"
 
+
+def _meaningful(text: str | None) -> str:
+    """``text`` stripped, or empty if it holds no word at all.
+
+    A think block of ``.`` -- which gpt-5.6-luna returns when its reasoning
+    went to the provider's own field -- is a model filling in a required tag,
+    not a chain of one step.
+    """
+    body = (text or "").strip()
+    return body if re.search(r"\w", body) else ""
+
+
+def cot_chain(content: str | None, reasoning: str | None) -> str:
+    """The chain of thought of a reply, from both places a model can put it.
+
+    The provider's separate reasoning field and the ``<think>`` block are the
+    same thing arriving by two routes: a provider that supports reasoning mode
+    moves the chain out of the content, one that does not leaves it in the
+    tags. Both count, in the order the model produced them, so a reasoning
+    model's chain is measured exactly like any other model's:
+
+    ======================  ===================================  ==================
+    reasoning field         content                              chain
+    ======================  ===================================  ==================
+    "R"                     ``<think>T</think><answer>…``        "R" then "T"
+    empty                   ``<think>T</think><answer>…``        "T"
+    empty                   ``<think>.</think><answer>…``        empty
+    "R"                     ``<answer>…``                        "R"
+    empty                   ``<answer>…``                        empty
+    ======================  ===================================  ==================
+
+    An empty chain is an empty chain whichever row produced it. The answer
+    block is never part of it: it is the conclusion, not a step. A reply with
+    no tags at all (one written before the tagged format) contributes its
+    prose instead, since that is where its reasoning was.
+    """
+    content = content or ""
+    think = re.search(THINK_TAG_REGEX, content)
+    if think:
+        body = think.group("think")
+    else:
+        body = re.sub(r"(?s)<answer>.*?</answer>", "", content)
+    return "\n\n".join(part for part in (_meaningful(reasoning), _meaningful(body)) if part)
+
 _COT_INSTRUCTION = (
     "Reason and explain explicitly by working through the evidence step by step "
     "before answering. Consider what each "
@@ -130,7 +174,9 @@ _FORMAT_COT = (
 )
 
 
-def format_compliance(text: str | None, modes: TaskModes) -> bool:
+def format_compliance(
+    text: str | None, modes: TaskModes, reasoning: str | None = None
+) -> bool:
     """Did the reply obey the format block exactly?
 
     REPORTED SEPARATELY FROM CORRECTNESS, and that separation is the point. A
@@ -143,11 +189,23 @@ def format_compliance(text: str | None, modes: TaskModes) -> bool:
     Strict means strict: exactly one answer block, nothing outside the blocks,
     and under cot exactly one think block before it. Whitespace between them is
     allowed and nothing else is.
+
+    UNDER COT, THE PROVIDER'S REASONING FIELD IS THE THINK BLOCK. A provider
+    that supports reasoning mode takes the chain out of the content and
+    returns it separately, so the content is a bare answer block through no
+    choice of the model's -- the same chain :func:`cot_chain` reads from that
+    field. Counting it as a violation reported every reasoning model as
+    ignoring the format. A reply with neither a think block nor a reasoning
+    field did not reason where it was asked to, and still is one.
     """
     body = (text or "").strip()
     if not body:
         return False
-    if modes.prompt_mode in (COT, SELF_CONSISTENCY):
+    cot = modes.prompt_mode in (COT, SELF_CONSISTENCY)
+    if cot and THINK_OPEN not in body and _meaningful(reasoning):
+        # Held to the io shape: one answer block and nothing else.
+        return format_compliance(body, TaskModes(prompt_mode="io"))
+    if cot:
         pattern = (
             rf"\A{THINK_OPEN}(?P<think>.*?){THINK_CLOSE}\s*"
             rf"{ANSWER_OPEN}(?P<answer>.*?){ANSWER_CLOSE}\Z"
@@ -159,9 +217,7 @@ def format_compliance(text: str | None, modes: TaskModes) -> bool:
         return False
     # One block each: a reply that opens a second answer block inside the first
     # matched the non-greedy body above but is not the shape that was asked for.
-    return body.count(ANSWER_OPEN) == 1 and (
-        body.count(THINK_OPEN) == (1 if modes.prompt_mode in (COT, SELF_CONSISTENCY) else 0)
-    )
+    return body.count(ANSWER_OPEN) == 1 and body.count(THINK_OPEN) == (1 if cot else 0)
 
 
 def format_segment(modes: TaskModes) -> str:

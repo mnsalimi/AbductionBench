@@ -2985,7 +2985,9 @@ class EvaluationEngine:
             )
             replies = [r for _s, r, _sc in fresh if r.text]
             if replies:
-                obeyed = sum(1 for r in replies if format_compliance(r.text, modes))
+                obeyed = sum(
+                    1 for r in replies if format_compliance(r.text, modes, reasoning=r.reasoning)
+                )
                 metrics["format_compliance_rate"] = obeyed / len(replies)
                 metrics["n_format_violations"] = float(len(replies) - obeyed)
 

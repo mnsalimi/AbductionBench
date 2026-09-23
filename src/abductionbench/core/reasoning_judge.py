@@ -45,7 +45,7 @@ from typing import Any
 
 import orjson
 
-from ..adapters._prompting import THINK_TAG_REGEX
+from ..adapters._prompting import cot_chain
 from .adapter import DatasetAdapter
 from .batching import iter_chunks
 from .client import ModelClient
@@ -2008,41 +2008,9 @@ class ReasoningJudgeStage:
         question = "\n\n".join(
             f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
         )
-        # BOTH CHANNELS, IN ORDER, WHEN BOTH ARE THERE.
-        #
-        # This used to be `reasoning or content`, which takes whichever channel
-        # is populated and silently drops the other when both are. That is only
-        # correct if a model puts its whole chain in exactly one of them, and
-        # gpt-5.6-luna does not: measured over one sample in six prompt/
-        # reasoning settings, it returned a trace in the reasoning channel for
-        # one of them, nothing there but 58-293 tokens of explanation in the
-        # content for two more, and eight tokens of bare answer for the rest.
-        # So `reasoning or content` fed the metrics the trace alone where both
-        # existed -- losing the conclusion the trace was building toward -- and
-        # the content alone everywhere else, which reads as two different
-        # measurements sharing a column.
-        #
-        # Concatenated the way the model produced them: the hidden chain first,
-        # then what it actually said. Where only one is present it is used as
-        # it is, with no separator and nothing implying the other was empty for
-        # a reason.
-        # THE CHAIN, FROM WHEREVER THE MODEL PUT IT.
-        #
-        # Three places it can be, and they are not exclusive:
-        #   * a <think> block in the content -- what the cot format now asks for;
-        #   * the provider's separate `reasoning` field, which some return
-        #     whether or not the prompt asked for tags;
-        #   * the content itself, for a model that reasoned without tagging.
-        #
-        # The answer block is removed either way. It is the conclusion, not an
-        # inferential step, and leaving it in gave every per-step metric a final
-        # element about a sentence that reasons about nothing -- the same reason
-        # `reasoning_steps_v3` returns it separately.
-        content = response.content or ""
-        think = re.search(THINK_TAG_REGEX, content)
-        if think:
-            body = think.group("think").strip()
-        else:
-            body = re.sub(r"(?s)<answer>.*?</answer>", "", content).strip()
-        parts = [part for part in (response.reasoning, body) if part and part.strip()]
-        return question, "\n\n".join(parts)
+        # THE CHAIN, FROM WHEREVER THE MODEL PUT IT: the provider's reasoning
+        # field and the <think> block, in that order, with a placeholder like
+        # "<think>.</think>" counted as empty. One definition, in cot_chain,
+        # shared with format_compliance so the two cannot disagree about where
+        # a reasoning model's chain is.
+        return question, cot_chain(response.content, response.reasoning)

@@ -30,7 +30,7 @@ messages:
       count above asks which candidates were NEW, this one asks how many
       references there were, new or not. A step that names no candidate is 0.
 
-      Report both as counts. Do not compare them, combine them, or adjust one
+      Report both BRANCHINESS and MENTIONS as counts. Do not compare them, combine them, or adjust one
       because of the other.
 
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.

@@ -52,6 +52,10 @@ class FakeServerState:
         self.responder: Callable[[list[dict[str, Any]], int], str] = (
             lambda conv, max_tokens: f"echo:{conv[-1]['content'][:80]}"
         )
+        #: What the provider returns in its separate reasoning field, per
+        #: conversation -- the way a reasoning-mode provider takes the chain out
+        #: of the content. None keeps the default behaviour.
+        self.reasoner: Callable[[list[dict[str, Any]]], str | None] | None = None
         self.batch_calls: list[int] = []       # size of every batch call served
         self.single_calls = 0
         self.requests = 0
@@ -180,7 +184,11 @@ class _Handler(BaseHTTPRequestHandler):
                     "message": {
                         "role": "assistant",
                         "content": _clip_to_budget(content, max_tokens),
-                        "reasoning": None if content else "thought too long",
+                        "reasoning": (
+                            self.state.reasoner(conversation)
+                            if self.state.reasoner
+                            else (None if content else "thought too long")
+                        ),
                     },
                     # Real servers report "length" both when the budget is spent
                     # before any content (reasoning models) and when a longer
@@ -225,6 +233,9 @@ class _Handler(BaseHTTPRequestHandler):
                         "message": {
                             "role": "assistant",
                             "content": _clip_to_budget(content, max_tokens),
+                            "reasoning": (
+                                self.state.reasoner(conversation) if self.state.reasoner else None
+                            ),
                         },
                         "finish_reason": _finish_reason(content, max_tokens),
                     }

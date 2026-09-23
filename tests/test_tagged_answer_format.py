@@ -219,3 +219,107 @@ def test_a_providers_separate_reasoning_field_is_still_used():
 def test_an_untagged_reply_still_yields_a_chain():
     """A model that reasoned without tagging is not a model that did not reason."""
     assert _chain(None, "I thought about it. Answer: 3") == "I thought about it. Answer: 3"
+
+
+# --------------------------------------------------------------------------- #
+# the chain of a reasoning model is read like anyone else's
+# --------------------------------------------------------------------------- #
+
+from abductionbench.adapters._prompting import cot_chain  # noqa: E402
+
+#: The five shapes gpt-5.6-luna returned on agentrx under cot with its
+#: provider's reasoning mode on, and what each one's chain is.
+_LUNA_SHAPES = [
+    ("R1. R2.", "<think>T1. T2.</think> <answer>3</answer>", "R1. R2.\n\nT1. T2."),
+    (None, "<think>T1. T2.</think> <answer>3</answer>", "T1. T2."),
+    (None, "<think>.</think> <answer>3</answer>", ""),
+    ("R1. R2.", "<answer>3</answer>", "R1. R2."),
+    (None, "<answer>3</answer>", ""),
+]
+
+
+@pytest.mark.parametrize(("reasoning", "content", "chain"), _LUNA_SHAPES)
+def test_the_chain_is_the_reasoning_field_then_the_think_block(reasoning, content, chain):
+    assert cot_chain(content, reasoning) == chain
+
+
+@pytest.mark.parametrize("empty", [None, "", "   ", ".", " . \n"])
+def test_an_empty_or_placeholder_part_is_no_part(empty):
+    """A placeholder cannot turn a missing chain into a one-step chain."""
+    assert cot_chain(f"<think>{empty or ''}</think><answer>3</answer>", empty) == ""
+    assert cot_chain("<think>T.</think><answer>3</answer>", empty) == "T."
+
+
+def test_the_reasoning_judge_reads_the_same_chain(tmp_path):
+    """The stage goes through cot_chain, not a copy of it."""
+    from abductionbench.core.reasoning_judge import ReasoningJudgeStage
+    from abductionbench.core.types import (
+        ChatMessage, ModelResponse, RenderedPrompt, ResponseStatus, SampleSpec, SamplingParams,
+    )
+
+    sample = SampleSpec(sample_id="s", fields={}, task_kind="generation")
+    prompt = RenderedPrompt(sample=sample, messages=[ChatMessage(role="user", content="q")],
+                            template_id="t", template_version="1", input_tokens_est=1,
+                            sampling=SamplingParams(max_tokens=8))
+    for reasoning, content, chain in _LUNA_SHAPES:
+        response = ModelResponse(sample_id="s", model_id="m", status=ResponseStatus.OK,
+                                 content=content, reasoning=reasoning)
+        assert ReasoningJudgeStage._question_and_reasoning(prompt, response)[1] == chain
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "content", "compliant"),
+    [
+        ("R1.", "<think>T1.</think><answer>3</answer>", True),
+        (None, "<think>T1.</think><answer>3</answer>", True),
+        (None, "<think>.</think><answer>3</answer>", True),
+        # The provider took the think block out of the content: not the model's doing.
+        ("R1.", "<answer>3</answer>", True),
+        # No chain anywhere: the model did not reason where it was asked to.
+        (None, "<answer>3</answer>", False),
+        (".", "<answer>3</answer>", False),
+        # A reasoning field does not excuse anything else.
+        ("R1.", "Sure! <answer>3</answer>", False),
+        ("R1.", "<answer>3</answer><answer>4</answer>", False),
+    ],
+)
+def test_under_cot_the_reasoning_field_counts_as_the_think_block(reasoning, content, compliant):
+    assert format_compliance(content, TaskModes(prompt_mode="cot"), reasoning=reasoning) is compliant
+
+
+def test_io_is_not_excused_by_a_reasoning_field():
+    """io asks for no reasoning, so a reasoning field changes nothing about its shape."""
+    io = TaskModes(prompt_mode="io")
+    assert format_compliance("<answer>3</answer>", io, reasoning="R1.") is True
+    assert format_compliance("<think>x</think><answer>3</answer>", io, reasoning="R1.") is False
+
+
+def test_a_reasoning_model_under_cot_is_reported_compliant(
+    fake_server, write_run_config, fake_dataset
+):
+    """End to end: the provider returns the chain in its own field and the
+    content as a bare answer block. Every reply obeyed the format."""
+    fake_server.state.responder = lambda conv, max_tokens: "<answer>yes</answer>"
+    fake_server.state.reasoner = lambda conv: "The evidence points one way."
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[{"id": "fake", "impl": "fake_adapter:FakeAdapter",
+                   "sample_size": 4, "options": {"n": 4}}],
+        modes={"prompt_modes": ["cot"]},
+    )
+    import asyncio
+
+    from abductionbench.core.config import load_run_config
+    from abductionbench.core.engine import EvaluationEngine
+
+    result = asyncio.run(EvaluationEngine(load_run_config(config_path)).run())
+    metrics = result.tasks[0].metrics
+    assert metrics["format_compliance_rate"] == 1.0, metrics
+    assert metrics["n_format_violations"] == 0.0
+
+    # And without the field, the same content is a violation: no chain anywhere.
+    fake_server.state.reasoner = None
+    result = asyncio.run(
+        EvaluationEngine(load_run_config(config_path), run_id="no-reasoning-field").run()
+    )
+    assert result.tasks[0].metrics["format_compliance_rate"] == 0.0
