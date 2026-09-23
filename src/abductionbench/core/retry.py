@@ -24,6 +24,7 @@ from typing import Any, TypeVar
 
 from .config import RetryConfig
 from .errors import AbenchError, EndpointError, ErrorClass
+from .shutdown import RunInterrupted, Shutdown
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,13 @@ class RetryOutcome:
 class RetryPolicy:
     """Decides whether and how long to wait before the next attempt."""
 
-    def __init__(self, config: RetryConfig):
+    def __init__(self, config: RetryConfig, shutdown: Shutdown | None = None):
         self.config = config
         self._retryable = {ErrorClass(v) for v in config.retry_error_classes}
+        #: Once this is requested, a failed attempt is not retried and an
+        #: endpoint is not recovered: the run is draining, and a retry is new
+        #: work. The call ends in RunInterrupted rather than as an error.
+        self.shutdown = shutdown
 
     def error_class_of(self, exc: BaseException) -> ErrorClass:
         if isinstance(exc, EndpointError):
@@ -117,11 +122,22 @@ async def with_retry(
         try:
             result = await operation()
             return result, outcome
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RunInterrupted):
             raise
         except BaseException as exc:  # noqa: BLE001 - classified below
             outcome.last_error = exc
             outcome.error_class = policy.error_class_of(exc)
+            if policy.shutdown is not None and policy.shutdown.requested and (
+                policy.should_retry(exc, attempt)
+            ):
+                # Would have been retried. Not now: the attempt that failed was
+                # in flight when the stop came, the retry would not be.
+                logger.warning(
+                    "%s attempt %d failed [%s] during shutdown; not retried: %s",
+                    description, attempt,
+                    outcome.error_class.value if outcome.error_class else "?", _short(exc),
+                )
+                raise RunInterrupted(f"{description}: not retried, the run is stopping") from exc
             if not policy.should_retry(exc, attempt):
                 logger.error(
                     "%s failed permanently after %d attempt(s) [%s]: %s",
@@ -136,7 +152,7 @@ async def with_retry(
             if on_recover is not None and outcome.error_class is ErrorClass.TRANSIENT:
                 try:
                     recovered = await on_recover(exc)
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, RunInterrupted):
                     raise
                 except Exception as recovery_exc:  # recovery is best-effort
                     logger.warning("%s: endpoint recovery failed: %s", description, recovery_exc)
@@ -154,7 +170,11 @@ async def with_retry(
                 _short(exc),
                 sleep_s,
             )
-            if sleep_s:
+            if policy.shutdown is not None:
+                # Ends early, and refuses the retry, if a stop arrives meanwhile
+                # -- recovery included, which can take minutes of probing.
+                await policy.shutdown.sleep(sleep_s, description)
+            elif sleep_s:
                 await asyncio.sleep(sleep_s)
 
 

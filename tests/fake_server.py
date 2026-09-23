@@ -56,6 +56,10 @@ class FakeServerState:
         #: conversation -- the way a reasoning-mode provider takes the chain out
         #: of the content. None keeps the default behaviour.
         self.reasoner: Callable[[list[dict[str, Any]]], str | None] | None = None
+        #: Called with the request payload before anything is answered; a
+        #: status it returns fails the request with that status. May block --
+        #: it is how a test holds a request in flight and then fails it.
+        self.fail_request: Callable[[dict[str, Any]], int | None] | None = None
         self.batch_calls: list[int] = []       # size of every batch call served
         self.single_calls = 0
         self.requests = 0
@@ -119,6 +123,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         forced = self._consume_failure()
+        if forced is None and self.state.fail_request is not None:
+            forced = self.state.fail_request(payload)
         if forced is not None:
             self._json(forced, {"error": {"message": f"injected failure {forced}"}})
             return

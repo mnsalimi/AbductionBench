@@ -329,6 +329,9 @@ def run(
     try:
         result: RunResult = asyncio.run(engine.run())
     except KeyboardInterrupt:
+        # Only reachable where the engine could not take the signal itself (not
+        # the main thread). Everywhere else SIGINT and SIGTERM start the drain
+        # and engine.run() returns normally, reports and all.
         console.print("[yellow]interrupted -- partial results are checkpointed[/yellow]")
         raise typer.Exit(code=130) from None
     except AbenchError as exc:
@@ -348,6 +351,10 @@ def run(
                 f"({stats['successes']} ok, {stats['failures']} failed)"
             )
     _print_summary(result)
+    if result.shutdown:
+        # Reported, backed up, and still an interruption: a script that runs
+        # this has to be able to tell a stopped run from a finished one.
+        raise typer.Exit(code=130)
     if any(task.failure for task in result.tasks):
         raise typer.Exit(code=3)
 
@@ -436,6 +443,25 @@ def _print_summary(result: RunResult) -> None:
     from .core.reporting import build_summary_frame
 
     frame = build_summary_frame(result)
+    if result.shutdown:
+        drained = result.shutdown.get("drained")
+        console.print(
+            f"[yellow]stopped ({result.shutdown.get('reason')}): "
+            + (
+                "in-flight work finished before the drain window closed"
+                if drained or drained is None
+                else f"{result.shutdown.get('cancelled_tasks', 0)} task(s) cancelled when "
+                f"the {result.shutdown.get('drain_timeout_s')}s drain window closed"
+            )
+            + "[/yellow]"
+        )
+        for row in result.interrupted:
+            console.print(f"  - {row['task']}: {row['stage']}")
+        if result.interrupted:
+            console.print(
+                "  what they finished is recorded; resume the run to do the rest "
+                f"(--resume {result.run_id})"
+            )
     if frame.empty:
         console.print("[yellow]no results[/yellow]")
         return

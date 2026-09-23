@@ -111,6 +111,8 @@ class ModelClient:
         self.endpoint: EndpointConfig = model.endpoint
         self._timeouts = timeouts
         self._rediscover = rediscover
+        #: Set by the first aclose(); a closed client is never reopened.
+        self.closed = False
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=timeouts.connect_s,
@@ -145,6 +147,10 @@ class ModelClient:
     # ------------------------------------------------------------------ #
 
     async def aclose(self) -> None:
+        """Close the connection pool. Idempotent: only the first call closes."""
+        if self.closed:
+            return
+        self.closed = True
         await self._client.aclose()
 
     async def __aenter__(self) -> ModelClient:

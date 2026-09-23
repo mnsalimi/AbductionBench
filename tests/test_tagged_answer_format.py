@@ -179,7 +179,12 @@ def test_compliance_is_reported_as_its_own_metric():
 def _chain(reasoning, content):
     from abductionbench.core.reasoning_judge import ReasoningJudgeStage
     from abductionbench.core.types import (
-        ChatMessage, ModelResponse, RenderedPrompt, ResponseStatus, SampleSpec, SamplingParams,
+        ChatMessage,
+        ModelResponse,
+        RenderedPrompt,
+        ResponseStatus,
+        SampleSpec,
+        SamplingParams,
     )
 
     prompt = RenderedPrompt(
@@ -254,7 +259,12 @@ def test_the_reasoning_judge_reads_the_same_chain(tmp_path):
     """The stage goes through cot_chain, not a copy of it."""
     from abductionbench.core.reasoning_judge import ReasoningJudgeStage
     from abductionbench.core.types import (
-        ChatMessage, ModelResponse, RenderedPrompt, ResponseStatus, SampleSpec, SamplingParams,
+        ChatMessage,
+        ModelResponse,
+        RenderedPrompt,
+        ResponseStatus,
+        SampleSpec,
+        SamplingParams,
     )
 
     sample = SampleSpec(sample_id="s", fields={}, task_kind="generation")

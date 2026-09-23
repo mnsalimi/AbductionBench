@@ -205,3 +205,13 @@ engine:
     # silently cut off full model responses (and any reasoning trace) well
     # short of what a cell can actually hold.
     response_clip_chars: 0
+
+  # What an interrupt does (SIGINT or SIGTERM -- Ctrl-C, `kill`, `pkill -INT`).
+  # First nothing new starts -- no task, batch, retry or simulator retry -- and
+  # work already in flight gets drain_timeout_s to finish and be recorded as
+  # usual. Then whatever is left is cancelled, recorded as interrupted rather
+  # than as a model error, and left pending for `--resume`. Only after that are
+  # the clients closed and the run backed up. A second signal skips the drain.
+  shutdown:
+    drain_timeout_s: 300
+    handle_signals: true

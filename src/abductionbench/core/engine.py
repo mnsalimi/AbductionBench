@@ -74,6 +74,7 @@ from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
 from .registry import resolve_adapter
 from .retry import RetryPolicy, summarize, with_retry
+from .shutdown import RunInterrupted, Shutdown
 from .simulator import SimulatorPool
 from .sync import ArtifactSync
 from .telemetry import EventLog, ScorerWatchdog, clip, setup_logging
@@ -233,6 +234,13 @@ class RunResult:
     #: that conducted it; it never carries the API key.
     simulators: dict[str, Any] = field(default_factory=dict)
     sync_stats: dict[str, Any] = field(default_factory=dict)
+    #: Set when the run was stopped before it finished: why, when, whether the
+    #: drain completed, and how long it took. Empty for a run that ran out.
+    shutdown: dict[str, Any] = field(default_factory=dict)
+    #: One row per task the stop interrupted -- never started, or cut off
+    #: part-way -- with where it was stopped. None of these are failures: what
+    #: they had finished is recorded, and a resume runs what they had not.
+    interrupted: list[dict[str, str]] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
 
@@ -311,7 +319,11 @@ class EvaluationEngine:
                 update={"hf_model": config.models[0].model_name}
             )
         self.token_counter = build_token_counter(tokenizer_cfg)
-        self.retry_policy = RetryPolicy(self.engine_cfg.retry)
+        #: The run's stop signal -- see core/shutdown.py. Shared by the retry
+        #: policy and the simulators, so once it is requested nothing anywhere
+        #: in the run starts a retry.
+        self.shutdown = Shutdown()
+        self.retry_policy = RetryPolicy(self.engine_cfg.retry, shutdown=self.shutdown)
         self._clients: dict[str, ModelClient] = {}
         self._global_batch_sem = asyncio.Semaphore(
             self.engine_cfg.concurrency.max_parallel_batches_global
@@ -422,6 +434,10 @@ class EvaluationEngine:
             dry_run=self.dry_run,
         )
 
+        # Every task running when the run began is someone else's; everything
+        # started after it is the run's, and none of it may outlive the clients.
+        baseline = asyncio.all_tasks()
+        installed = self._install_signal_handlers()
         try:
             # --- endpoints ------------------------------------------------ #
             for model in self.config.models:
@@ -439,7 +455,8 @@ class EvaluationEngine:
             self._scorer_watchdog.start()
 
             self._simulators = SimulatorPool(
-                self.engine_cfg.simulator, self.engine_cfg.timeouts, self.run_dir
+                self.engine_cfg.simulator, self.engine_cfg.timeouts, self.run_dir,
+                shutdown=self.shutdown,
             )
 
             self._judge_calls = asyncio.Semaphore(
@@ -478,7 +495,9 @@ class EvaluationEngine:
                 )
 
             if not self.dry_run:
-                result.endpoint_reports = await self._verify_endpoints()
+                result.endpoint_reports = await self._stoppable(
+                    self._verify_endpoints(), "endpoint verification"
+                )
 
             # A dataset with no answer key is scored by the judge and by
             # nothing else, so a missing judge is a broken run, not a quieter
@@ -556,10 +575,19 @@ class EvaluationEngine:
 
             async def _guarded(identity, prompt_set, model, bundle) -> None:
                 try:
+                    self.shutdown.check(f"task {identity.slug}")
                     async with semaphore:
+                        # Checked again once a slot is free: the wait for one
+                        # can outlast the moment the stop was requested.
+                        self.shutdown.check(f"task {identity.slug}")
                         outcome = await self._run_task(identity, prompt_set, model, bundle)
                 except asyncio.CancelledError:
+                    if self.shutdown.requested:
+                        self._note_interrupted(result, identity, "cancelled")
                     raise
+                except RunInterrupted as exc:
+                    self._note_interrupted(result, identity, "stopped", detail=str(exc))
+                    return
                 except BaseException as exc:  # noqa: BLE001 - one task must not end the run
                     logger.exception("task %s crashed: %s", identity.slug, exc)
                     outcome = TaskResult(
@@ -574,31 +602,221 @@ class EvaluationEngine:
                 if outstanding[identity.dataset_id] <= 0:
                     await self._report_interim(result, identity.dataset_id)
 
-            await asyncio.gather(*(_guarded(*task) for task in tasks))
-        finally:
-            self._scorer_watchdog.stop()
-            for client in self._clients.values():
-                await client.aclose()
-            if self._simulators is not None:
-                # What each interview dataset's environment was played by, and
-                # how often it had to be retried -- part of the result, because
-                # a score from a simulated environment is only interpretable
-                # next to it.
-                result.simulators = self._simulators.as_record()
-                await self._simulators.aclose()
-            result.finished_at = time.time()
-            # One last upload of everything the run produced.  Reports are
-            # written after this returns, so the CLI calls flush_sync() again.
-            sync_stats = self.sync.stop()
-            result.sync_stats = sync_stats.as_dict() if self.engine_cfg.sync.enabled else {}
-            self.events.emit(
-                "run_finished",
-                run_id=self.run_id,
-                tasks=len(result.tasks),
-                skipped=len(result.skipped_datasets),
-                duration_s=round(result.duration_s, 1),
+            await self._supervise(
+                [asyncio.ensure_future(_guarded(*task)) for task in tasks], result
             )
+        except RunInterrupted as exc:
+            # Stopped before any task began: nothing had been produced, so
+            # there was nothing to drain.
+            logger.warning("%s", exc)
+        finally:
+            # The close-down runs as its own task and is shielded: a second
+            # cancellation of this one -- a caller cancelling twice, or a
+            # second Ctrl-C reaching asyncio.run -- would otherwise stop it
+            # part-way, with the clients never closed and the last upload never
+            # made. Whatever cancelled the run still propagates once it is done.
+            spare = baseline | {asyncio.current_task()}
+            closing = asyncio.ensure_future(self._close_down(result, spare, installed))
+            while not closing.done():
+                try:
+                    await asyncio.shield(closing)
+                except asyncio.CancelledError:
+                    continue
+            closing.result()
         return result
+
+    # ------------------------------------------------------------------ #
+    # stopping
+    # ------------------------------------------------------------------ #
+
+    async def _close_down(
+        self, result: RunResult, spare: set[asyncio.Task], installed: list[int]
+    ) -> None:
+        """Everything that happens once the run's work is over, in order."""
+        # NOTHING THE RUN STARTED MAY OUTLIVE THE CLIENTS. However this
+        # block was reached -- a normal finish, a drain, a crash, the run
+        # itself being cancelled -- every task begun since `baseline` is
+        # cancelled and awaited first, including a batch or judge call
+        # orphaned by a gather that stopped waiting for it. Closing a
+        # client under a live request is what turned one interrupt into
+        # 150 recorded model errors.
+        await self._cancel_stragglers(spare)
+        self._remove_signal_handlers(installed)
+        if self.shutdown.requested:
+            result.shutdown = {
+                **result.shutdown,
+                "reason": self.shutdown.reason,
+                "requested_at": self.shutdown.requested_at,
+                "forced": self.shutdown.forced,
+                "interrupted_tasks": len(result.interrupted),
+            }
+            self.events.emit("run_interrupted", **result.shutdown)
+        self._scorer_watchdog.stop()
+        # Each exactly once: ModelClient.aclose is idempotent, and the
+        # simulators own their clients and clear them as they close.
+        for client in self._clients.values():
+            await client.aclose()
+        if self._simulators is not None:
+            # What each interview dataset's environment was played by, and
+            # how often it had to be retried -- part of the result, because
+            # a score from a simulated environment is only interpretable
+            # next to it.
+            result.simulators = self._simulators.as_record()
+            await self._simulators.aclose()
+        result.finished_at = time.time()
+        # One last upload of everything the run produced.  Reports are
+        # written after this returns, so the CLI calls flush_sync() again.
+        sync_stats = self.sync.stop()
+        result.sync_stats = sync_stats.as_dict() if self.engine_cfg.sync.enabled else {}
+        self.events.emit(
+            "run_finished",
+            run_id=self.run_id,
+            tasks=len(result.tasks),
+            skipped=len(result.skipped_datasets),
+            duration_s=round(result.duration_s, 1),
+        )
+
+    def request_shutdown(self, reason: str = "requested", *, force: bool = False) -> None:
+        """Stop the run: drain first, or cancel at once with ``force``.
+
+        What a SIGINT or SIGTERM calls, and what an embedding calls instead
+        when it manages its own signals. Safe to call more than once; the
+        second call forces.
+        """
+        if force:
+            self.shutdown.force(reason)
+        else:
+            self.shutdown.request(reason)
+
+    def _install_signal_handlers(self) -> list[int]:
+        """Route SIGINT and SIGTERM to request_shutdown for the life of the run.
+
+        SIGTERM matters as much as SIGINT: it is what `kill`, supervisor and a
+        container stop send, and by default it ends the process with no cleanup
+        at all -- no drain, no final checkpoint, no last upload. Only possible
+        on the main thread; anywhere else the run can still be stopped through
+        request_shutdown().
+        """
+        if not self.engine_cfg.shutdown.handle_signals:
+            return []
+        import signal
+        import threading
+
+        if threading.current_thread() is not threading.main_thread():
+            return []
+        loop = asyncio.get_running_loop()
+        installed: list[int] = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self.request_shutdown, signal.Signals(sig).name)
+            except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover
+                continue
+            installed.append(sig)
+        return installed
+
+    @staticmethod
+    def _remove_signal_handlers(installed: list[int]) -> None:
+        if not installed:
+            return
+        loop = asyncio.get_running_loop()
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+
+    def _note_interrupted(
+        self, result: RunResult, identity: TaskIdentity, stage: str, detail: str = ""
+    ) -> None:
+        """Record a task the stop interrupted -- as interrupted, not as failed."""
+        row = {"task": identity.slug, "stage": stage}
+        if detail:
+            row["detail"] = detail
+        result.interrupted.append(row)
+        self.events.emit("task_interrupted", **row)
+        logger.warning("task %s interrupted (%s)%s", identity.slug, stage,
+                       f": {detail}" if detail else "")
+
+    async def _stoppable(self, coro: Any, what: str) -> Any:
+        """Run a preparation step, abandoning it at once if the run is stopped.
+
+        Preparation -- probing endpoints before any task starts -- produces no
+        result a drain could preserve, and a probe against a slow endpoint can
+        take a full read timeout. So a stop does not wait for it.
+        """
+        work = asyncio.ensure_future(coro)
+        stop = asyncio.ensure_future(self.shutdown.wait())
+        try:
+            done, _pending = await asyncio.wait({work, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+        if work in done:
+            return work.result()
+        work.cancel()
+        await asyncio.gather(work, return_exceptions=True)
+        raise RunInterrupted(f"{what}: abandoned, the run is stopping ({self.shutdown.reason})")
+
+    async def _supervise(self, running: list[asyncio.Future], result: RunResult) -> None:
+        """Wait for every task; on a stop request, drain and then cancel.
+
+        Phase 1 waits up to ``engine.shutdown.drain_timeout_s`` for what is in
+        flight, while _guarded and the retry policy refuse to start anything
+        new. Phase 2 cancels what is left and awaits it, so that when this
+        returns nothing the run started is still running.
+        """
+        pending = set(running)
+        stop = asyncio.ensure_future(self.shutdown.wait())
+        try:
+            while pending and not self.shutdown.requested:
+                done, pending = await asyncio.wait(
+                    pending | {stop}, return_when=asyncio.FIRST_COMPLETED
+                )
+                pending.discard(stop)
+        finally:
+            stop.cancel()
+        if not pending:
+            return
+
+        started = time.monotonic()
+        timeout = self.engine_cfg.shutdown.drain_timeout_s
+        result.shutdown["drain_timeout_s"] = timeout
+        logger.warning(
+            "draining: %d task(s) still running; waiting up to %.0fs for in-flight work",
+            len(pending), timeout,
+        )
+        forced = asyncio.ensure_future(self.shutdown.wait_forced())
+        try:
+            deadline = started + timeout
+            while pending and not self.shutdown.forced:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                _done, pending = await asyncio.wait(
+                    pending | {forced}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+                )
+                pending.discard(forced)
+        finally:
+            forced.cancel()
+
+        result.shutdown["drained"] = not pending
+        result.shutdown["drain_s"] = round(time.monotonic() - started, 3)
+        if pending:
+            logger.warning("drain window closed: cancelling %d task(s)", len(pending))
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        result.shutdown["cancelled_tasks"] = len(pending)
+
+    async def _cancel_stragglers(self, baseline: set[asyncio.Task]) -> None:
+        """Cancel and await every task the run started that is still running."""
+        current = asyncio.current_task()
+        while True:
+            stragglers = [
+                task for task in asyncio.all_tasks()
+                if task is not current and task not in baseline and not task.done()
+            ]
+            if not stragglers:
+                return
+            for task in stragglers:
+                task.cancel()
+            await asyncio.gather(*stragglers, return_exceptions=True)
 
     def _load_prior_tasks(self) -> list[TaskResult]:
         """Task results already on disk in this run directory.
@@ -1642,7 +1860,10 @@ class EvaluationEngine:
                 prompt_set.modes.data_delivery_mode,
             )
             async with self._global_batch_sem, model_sem:
-                pairs = await self._run_episodes(
+                # Episodes are started together or not at all; once started they
+                # are in flight, and the drain lets them finish.
+                self.shutdown.check(f"episodes of {identity.slug}")
+                pairs, cut_short = await self._run_episodes(
                     adapter, pending, client=client, store=store, use_batch=use_batch,
                     checkpoint=checkpoint, model=model, group_size=group_size,
                     identity=identity,
@@ -1654,6 +1875,16 @@ class EvaluationEngine:
             store.append_many(records)
             store.save_checkpoint(checkpoint)
             batches = []
+            if cut_short:
+                # The episodes that finished are recorded above, as they would
+                # have been; the ones the stop cut short are not recorded at
+                # all, so they are still pending and a resume replays them.
+                raise RunInterrupted(
+                    f"{len(cut_short)} episode(s) of {identity.slug} cut short by the stop "
+                    f"({', '.join(sorted(cut_short)[:5])}"
+                    f"{', ...' if len(cut_short) > 5 else ''}); "
+                    f"{len(pairs)} finished and recorded"
+                )
 
         async def _process(batch: batching_mod.Batch) -> None:
             nonlocal fatal
@@ -1662,6 +1893,9 @@ class EvaluationEngine:
             async with self._global_batch_sem, model_sem:
                 if fatal is not None:
                     return
+                # A batch still waiting for a slot when the stop came is new
+                # work: it is not sent, and its samples stay pending.
+                self.shutdown.check(f"batch {batch.batch_id}")
                 try:
                     pairs = await self._execute_batch(batch, client, store, use_batch, checkpoint)
                 except AuthError as exc:
@@ -1693,7 +1927,17 @@ class EvaluationEngine:
             store.append_many(records)
             store.save_checkpoint(checkpoint)
 
-        await asyncio.gather(*(_process(batch) for batch in batches))
+        # Every batch is waited for, including after one of them is interrupted:
+        # a plain gather would return on the first RunInterrupted and leave the
+        # others running unowned, and those are the requests that later met a
+        # closed client. Only once all of them have landed is the interruption
+        # passed on.
+        outcomes = await asyncio.gather(
+            *(_process(batch) for batch in batches), return_exceptions=True
+        )
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
 
         if fatal is not None:
             result.failure = f"{type(fatal).__name__}: {fatal}"
@@ -2086,8 +2330,14 @@ class EvaluationEngine:
         group_size: int,
         identity: TaskIdentity,
         max_output_tokens: int | None = None,
-    ) -> list[tuple[RenderedPrompt, ModelResponse]]:
+    ) -> tuple[list[tuple[RenderedPrompt, ModelResponse]], set[str]]:
         """Drive an interactive benchmark to completion, one turn at a time.
+
+        Returns the finished episodes, and the ids of any the run's stop cut
+        short: a turn whose request was refused a retry, or whose simulated
+        environment was. Those are left out of the pairs rather than scored
+        from wherever they stopped -- the model was not done -- and the other
+        episodes carry on, since they are still in flight.
 
         Every live episode's *current* conversation is submitted together, so a
         multi-turn benchmark still uses the batch endpoint: turn 1 of all 300
@@ -2225,9 +2475,14 @@ class EvaluationEngine:
                 ),
             )
             for batch in batches:
-                results.extend(
-                    await self._execute_batch(batch, client, store, use_batch, checkpoint)
-                )
+                try:
+                    results.extend(
+                        await self._execute_batch(batch, client, store, use_batch, checkpoint)
+                    )
+                except RunInterrupted as exc:
+                    logger.warning("%s", exc)
+                    for turn_prompt in batch.prompts:
+                        index[turn_prompt.sample_id]["interrupted"] = True
 
             # One log row per request, written before the episode is advanced so
             # a turn is recorded even if the episode dies on this turn. These
@@ -2282,6 +2537,12 @@ class EvaluationEngine:
                     # is belongs to the adapter.
                     if inspect.isawaitable(reply):
                         reply = await reply
+                except RunInterrupted as exc:
+                    # The environment's retry was refused; the episode stops
+                    # here as interrupted, not as an environment failure.
+                    logger.warning("episode %s: %s", turn_prompt.sample_id, exc)
+                    episode["interrupted"] = True
+                    continue
                 except Exception as exc:  # noqa: BLE001 - environments must not break the run
                     logger.warning(
                         "episode %s: environment step failed: %s",
@@ -2302,7 +2563,10 @@ class EvaluationEngine:
             )
 
         pairs: list[tuple[RenderedPrompt, ModelResponse]] = []
+        cut_short = {e["prompt"].sample_id for e in episodes if e.get("interrupted")}
         for episode in episodes:
+            if episode.get("interrupted"):
+                continue
             prompt = episode["prompt"]
             response = episode["response"]
             failure = episode["state"].get("_environment_failed") if episode["state"] else None
@@ -2353,7 +2617,7 @@ class EvaluationEngine:
             # predictions, the evidence that was actually requested.
             prompt.sample.metadata["_episode_state"] = episode["state"]
             pairs.append((prompt, response))
-        return pairs
+        return pairs, cut_short
 
     async def _execute_batch(
         self,
@@ -2408,6 +2672,12 @@ class EvaluationEngine:
             )
         except AuthError:
             checkpoint.batches_failed += 1
+            raise
+        except (asyncio.CancelledError, RunInterrupted):
+            # Neither is a failure of the batch. Caught by the handler below,
+            # a cancellation was classified as an unknown error, bisected and
+            # re-sent -- and, failing again, written down as ERROR records --
+            # which is how a stopped run kept sending requests.
             raise
         except BaseException as exc:  # noqa: BLE001
             checkpoint.batches_failed += 1

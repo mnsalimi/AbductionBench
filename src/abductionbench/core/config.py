@@ -945,6 +945,25 @@ class ReportingConfig(_Base):
     interim_after_each_dataset: bool = True
 
 
+class ShutdownConfig(_Base):
+    """How a run stops when it is interrupted (SIGINT or SIGTERM).
+
+    Two phases -- see core/shutdown.py. First nothing new starts and work in
+    flight is given ``drain_timeout_s`` to finish and be recorded normally;
+    then whatever is left is cancelled, recorded as interrupted, and left
+    pending for a resume. A second signal skips the rest of the drain.
+    """
+
+    #: How long in-flight requests and episodes may take to finish once a stop
+    #: is requested. An interactive episode is several turns, each a request
+    #: that can take minutes, so this is not seconds; 0 cancels at once.
+    drain_timeout_s: float = Field(300.0, ge=0)
+    #: Install the SIGINT/SIGTERM handlers that start the drain. Off only for
+    #: an embedding that manages signals itself; the engine then stops through
+    #: EvaluationEngine.request_shutdown().
+    handle_signals: bool = True
+
+
 class EngineConfig(_Base):
     """Everything that is not model-, dataset- or prompt-specific."""
 
@@ -970,6 +989,7 @@ class EngineConfig(_Base):
     simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
+    shutdown: ShutdownConfig = Field(default_factory=ShutdownConfig)
 
 
 # --------------------------------------------------------------------------- #

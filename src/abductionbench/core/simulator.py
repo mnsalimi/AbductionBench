@@ -55,6 +55,7 @@ from .config import (
     SimulatorConfig,
     TimeoutConfig,
 )
+from .shutdown import RunInterrupted, Shutdown
 from .types import ChatMessage, SamplingParams, TaskIdentity
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,9 @@ class EnvironmentSimulator:
     #: Shared across datasets, so ``max_parallel_calls`` bounds the whole run
     #: and not each dataset separately.
     calls: asyncio.Semaphore | None = None
+    #: The run's stop signal. Once it is requested a failed call is not
+    #: retried: the episode it belongs to is interrupted, not failed.
+    shutdown: Shutdown | None = None
     stats: dict[str, int] = field(
         default_factory=lambda: {"calls": 0, "failures": 0, "retries": 0}
     )
@@ -143,8 +147,10 @@ class EnvironmentSimulator:
         apart in the signature is what makes the information boundary
         checkable.
 
-        Never raises.  A simulator that cannot be reached comes back with
-        ``ok=False`` and the caller abandons the episode.
+        Never raises for a failure.  A simulator that cannot be reached comes
+        back with ``ok=False`` and the caller abandons the episode.  The one
+        exception is :class:`RunInterrupted`, when the run is stopping and a
+        failed call is therefore not retried: that is not a failure.
         """
         messages = [ChatMessage(role="system", content=hidden_brief), *conversation]
         sampling = SamplingParams(
@@ -184,6 +190,14 @@ class EnvironmentSimulator:
                     # An empty turn is not something the environment said; it
                     # is a call that did not work, and retrying is right.
                     last_error = "the simulator returned an empty reply"
+                if self.shutdown is not None and self.shutdown.requested:
+                    # The attempt was in flight when the stop came; a retry
+                    # would not be. Raised rather than returned as ok=False,
+                    # which would end the episode as an environment failure --
+                    # a recorded error for something that did not go wrong.
+                    raise RunInterrupted(
+                        f"simulator {self.config.model}: not retried, the run is stopping"
+                    )
                 self.stats["retries"] += 1
                 logger.warning(
                     "simulator %s (%s): attempt %d/%d failed: %s",
@@ -287,10 +301,12 @@ class SimulatorPool:
         config: SimulatorConfig,
         timeouts: TimeoutConfig,
         run_dir: Path | None = None,
+        shutdown: Shutdown | None = None,
     ) -> None:
         self.config = config
         self.timeouts = timeouts
         self.run_dir = run_dir
+        self.shutdown = shutdown
         self._calls = asyncio.Semaphore(max(1, config.max_parallel_calls))
         self._clients: dict[tuple[str, str], ModelClient] = {}
         self._simulators: dict[str, EnvironmentSimulator] = {}
@@ -342,6 +358,7 @@ class SimulatorPool:
             dataset_id=dataset_id,
             run_dir=self.run_dir,
             calls=self._calls,
+            shutdown=self.shutdown,
         )
         self._simulators[dataset_id] = simulator
         return simulator
