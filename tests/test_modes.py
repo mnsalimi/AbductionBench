@@ -666,7 +666,11 @@ def test_the_five_corrected_datasets_offer_one_mode_each():
         "abductionbench.adapters.ddxplus:DDXPlusAdapter": ("selection", "interactive"),
         "abductionbench.adapters.diagnosisarena:DiagnosisArenaAdapter": ("selection", "static"),
         "abductionbench.adapters.med_inquire:MedInquireAdapter": ("generation", "interactive"),
-        "abductionbench.adapters.medups:MedUPSAdapter": ("generation", "sequential"),
+        # STATIC, not sequential. The label was declarative: this adapter has no
+        # turn machinery, and the release hands the model a masked trajectory in
+        # one prompt rather than disclosing observations turn by turn. Two
+        # samples cut from the same trajectory share no history.
+        "abductionbench.adapters.medups:MedUPSAdapter": ("generation", "static"),
         # VivaBench is a multi-turn viva in its release and is run as one:
         # ASSISTANT_BASE_PROMPT, the action vocabulary, the reviewed-patient
         # gate and the limits all come from the published code. It was for a

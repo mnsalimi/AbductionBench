@@ -891,3 +891,73 @@ def test_medqdx_reports_questions_to_correct_diagnosis():
     assert never["mqd"] == float(cap), "a failure must be assigned the cap"
     assert never["reached_correct_lexically"] == 0.0
     assert never["questions_asked"] == float(cap)
+
+
+def test_medups_is_a_static_dataset_not_a_sequential_one():
+    """It was labelled `sequential` and never behaved like one.
+
+    The release hands the model a MASKED TRAJECTORY in a single prompt. It does
+    not disclose new observations turn by turn, and two samples cut from the
+    same trajectory share no history -- the model is never told what it
+    answered about an earlier prefix of the same case.
+
+    The adapter matched that all along: no environment, no `next_turn`, no
+    `max_turns`, just `PooledDatasetAdapter.make_sample` building one
+    independent prompt per item, like every static dataset here.
+
+    The label was not free. `data_delivery_mode in ("interactive",
+    "sequential")` routes a task down `_run_episodes`, so every sample ran as a
+    one-turn episode instead of being batched; and the delivery mode also picks
+    the raw-payload cap, the oversize policy and the input-token budget, each of
+    which was applying an episode's rule to a static prompt.
+    """
+    from abductionbench.adapters.medups import MedUPSAdapter
+
+    assert MedUPSAdapter.data_delivery_mode == "static"
+
+    # Defined BY THIS ADAPTER, not inherited: `max_turns` is a base-class
+    # default every adapter carries whether or not it has turns, so `hasattr`
+    # would be true for a plainly static dataset too and would prove nothing.
+    own = set(MedUPSAdapter.__dict__)
+    for machinery in ("next_turn", "max_turns", "environment", "build_protocol_messages"):
+        assert machinery not in own, (
+            f"MedUPSAdapter defines {machinery}, so the static claim needs re-checking"
+        )
+    # And the one that actually drives an episode is absent outright.
+    assert not hasattr(MedUPSAdapter, "next_turn")
+
+
+def test_medups_builds_a_prompt_in_both_io_and_cot():
+    """Being static is what gets it both modes, and the reasoning metrics with
+    cot -- neither of which a sequential task received."""
+    import yaml
+    from pathlib import Path as _P
+
+    from abductionbench.adapters.medups import MedUPSAdapter
+    from abductionbench.core.adapter import AdapterContext
+    from abductionbench.core.modes import TaskModes
+
+    cfg = yaml.safe_load(_P("configs/datasets/medups.yaml").read_text())["dataset"]
+    ctx = AdapterContext(
+        dataset_id="medups", data_dir=_P("data/medups"), sample_size=2, seed=20260903,
+        options=cfg.get("options") or {}, cache_dir=_P("data/_cache"),
+    )
+    adapter = MedUPSAdapter(ctx)
+    adapter.prepare()
+    sample = adapter.build_samples()[0]
+
+    rendered = {}
+    for mode in ("io", "cot"):
+        adapter.context.modes = TaskModes(prompt_mode=mode, data_delivery_mode="static")
+        messages, contract = adapter.build_messages(sample)
+        rendered[mode] = (messages[0].content, messages[-1].content)
+        # The shared static format, same as every other static dataset.
+        assert "<answer>" in messages[0].content, mode
+        assert contract["answer_regex"]
+
+    io_system, io_user = rendered["io"]
+    cot_system, cot_user = rendered["cot"]
+    assert "<think>your reasoning</think>" not in io_system
+    assert "<think>your reasoning</think>" in cot_system
+    # The question does not change with the mode.
+    assert io_user == cot_user

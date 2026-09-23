@@ -45,7 +45,7 @@ COLLECTION_URL = "https://huggingface.co/collections/oriel9p/medups"
 class MedUPSAdapter(PooledDatasetAdapter):
     """Diagnose an uncommon published case; free text (default) or 6-way choice."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "
@@ -54,7 +54,23 @@ class MedUPSAdapter(PooledDatasetAdapter):
         "clinicians received them, and a question about what comes next. Answer that "
         "question from what has been disclosed so far."
     )
-    data_delivery_mode = "sequential"
+    # STATIC, NOT SEQUENTIAL. The label was declarative and wrong: this adapter
+    # has no turn machinery at all -- no environment, no next_turn, no
+    # max_turns -- and `PooledDatasetAdapter.make_sample` builds one
+    # independent prompt per item like every static dataset here.
+    #
+    # What the release actually does is hand the model a MASKED TRAJECTORY in a
+    # single prompt. It does not disclose new observations turn by turn, and
+    # two samples cut from the same trajectory share no history: the model is
+    # not told what it answered about an earlier prefix of the same case. So
+    # nothing about the delivery was sequential except the word.
+    #
+    # The label was not free. `data_delivery_mode in ("interactive",
+    # "sequential")` routes a task down `_run_episodes`, so every medups sample
+    # was driven as a one-turn episode instead of batched; and the delivery mode
+    # gates the raw-payload cap, the oversize policy and the input-token budget,
+    # each of which was applying the episode rule to a static prompt.
+    data_delivery_mode = "static"
 
     #: NOT "a single diagnosis". The question decides the shape of its own
     #: answer: a next test, an imaging study, a management step, an expected
