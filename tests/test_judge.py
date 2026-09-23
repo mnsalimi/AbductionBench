@@ -219,17 +219,21 @@ class ExchangeAdapter(DatasetAdapter):
     assert "Answer: a sprinkler" in body, "the judge cannot see what the model actually replied"
 
 
-def test_the_whole_exchange_is_budgeted_not_unbounded():
-    """A request that overruns the judge's window gets no verdict at all."""
-    from abductionbench.core.judge import clip_middle
+def test_the_whole_request_is_budgeted_and_nothing_in_it_is_cut():
+    """Every field goes to the judge whole, so the SUM is what is bounded.
 
-    text = "HEAD" + ("x" * 100_000) + "TAIL"
-    clipped = clip_middle(text, 1000)
-    assert len(clipped) <= 1100
-    assert clipped.startswith("HEAD") and clipped.endswith("TAIL")
-    assert "omitted from the middle" in clipped
-    # Anything that already fits is passed through untouched.
-    assert clip_middle("short", 1000) == "short"
+    The answer, gold and observation used to be sliced to a few hundred
+    characters each, which kept the request small by showing the judge a cut
+    answer and calling it the model's. Nothing is sliced now; a request whose
+    fields together would overrun the window is skipped and counted instead.
+    """
+    from abductionbench.core.judge import exceeds_total
+
+    assert exceeds_total(["x" * 40, "y" * 40, None, ""], 100) is None
+    reason = exceeds_total(["x" * 60, "y" * 60], 100)
+    assert reason and "100" in reason and "120" in reason
+    # No limit configured is no limit.
+    assert exceeds_total(["x" * 10_000], 0) is None
 
 
 def test_what_a_judge_may_be_shown_fits_the_window_it_has():

@@ -195,7 +195,7 @@ class AIOps2025Adapter(PooledDatasetAdapter):
                 "root_cause_match": strict,
                 "root_cause_mentioned": lenient,
             },
-            prediction=answer[:300],
+            prediction=answer,
             details={"gold": ", ".join(gold)},
         )
 

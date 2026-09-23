@@ -441,7 +441,7 @@ class ABDAdapter(PooledDatasetAdapter):
             # recorded, and `valid` is absent rather than zero.
             return SampleScore(
                 metrics={"evaluator_crashed": 1.0},
-                prediction=candidate[:400],
+                prediction=candidate,
                 details={"gold": gold[:300], "evaluator_crash": result.crash_reason},
             )
 
@@ -481,7 +481,7 @@ class ABDAdapter(PooledDatasetAdapter):
                 metrics[f"valid_{stratum}"] = valid
         return SampleScore(
             metrics=metrics,
-            prediction=candidate[:400],
+            prediction=candidate,
             details={
                 "gold": gold[:300],
                 "valid": bool(result.valid),

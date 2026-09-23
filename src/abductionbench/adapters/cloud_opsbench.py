@@ -433,7 +433,7 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
             metrics[f"root_cause_judged_{difficulty}"] = 0.0
         return SampleScore(
             metrics=metrics,
-            prediction=answer[:400],
+            prediction=answer,
             details={"gold_root_cause": reference["root_cause"]},
         )
 
@@ -443,9 +443,9 @@ class CloudOpsBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:800],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["root_cause"],
-            "observation": C.clip_words(sample.fields.get("observation", ""), 150),
+            "observation": sample.fields.get("observation", ""),
             "criteria": (
                 "Root causes are written as short technical labels. The candidate is correct "
                 "if it identifies the same underlying fault as the reference, in whatever "

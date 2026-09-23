@@ -1443,6 +1443,68 @@ class LateJudgedAdapter(FakeAdapter):
     assert all(r["metrics"]["verdict"] == 1.0 for r in records[-4:]), records[-1]
 
 
+def test_a_resume_restores_a_prediction_an_older_run_stored_cut_short(
+    fake_server, write_run_config, fake_dataset, tmp_path, monkeypatch
+):
+    """The judge graded the stored prediction, and older runs stored it cut.
+
+    Adapters sliced ``prediction`` to 300-600 characters before storing it, and
+    a resume reuses the stored prediction rather than re-scoring -- so every
+    later judge pass was handed the cut copy as the model's answer. The metrics
+    were computed from the whole answer and stay as they are; only the
+    prediction is put back, and it reaches disk even with no judge running.
+    """
+    adapter_src = tmp_path / "whole_answer_adapter.py"
+    adapter_src.write_text(
+        '''
+from fake_adapter import FakeAdapter
+
+
+class WholeAnswerAdapter(FakeAdapter):
+    def score(self, sample, response, *, output_contract=None):
+        from abductionbench.core.types import SampleScore
+
+        return SampleScore(metrics={"length": float(len(response.text))},
+                           prediction=response.text)
+
+    def aggregate(self, scores):
+        return {"length": sum(s.metrics["length"] for s in scores) / max(1, len(scores))}
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    answer = "Answer: " + " ".join(["because"] * 200)
+    fake_server.state.responder = lambda conv, mt: answer
+
+    config_path = write_run_config(
+        base_url=fake_server.base_url,
+        datasets=[{"id": "whole", "impl": "whole_answer_adapter:WholeAnswerAdapter",
+                   "sample_size": 3, "options": {"n": 3}}],
+    )
+    result, _ = _run(config_path)
+    task_dir = next((result.run_dir / "datasets" / "whole").glob("*/*"))
+
+    # What an older run left on disk: the same records, the prediction cut at 500.
+    records = _records(task_dir)
+    assert all(len(r["prediction"]) > 500 for r in records)
+    for record in records:
+        record["prediction"] = record["prediction"][:500]
+    (task_dir / "records.jsonl").write_bytes(
+        b"".join(orjson.dumps(r) + b"\n" for r in records)
+    )
+
+    config = load_run_config(config_path)
+    engine = EvaluationEngine(config, run_id=result.run_id, run_dir=result.run_dir)
+    result2 = asyncio.run(engine.run())
+
+    assert result2.tasks[0].n_reused == 3, "the answers must be reused, not re-generated"
+    newest = {r["sample_id"]: r for r in _records(task_dir)}
+    assert len(newest) == 3
+    for record in newest.values():
+        assert record["prediction"] == answer
+        assert record["metrics"]["length"] == float(len(answer))
+
+
 def test_deferring_the_judge_is_allowed_only_when_said_explicitly(
     fake_server, write_run_config, fake_dataset, tmp_path, monkeypatch
 ):

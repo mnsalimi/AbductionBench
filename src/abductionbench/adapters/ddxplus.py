@@ -440,7 +440,7 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
             # extract_answer_span falls back to the whole response when no marker
             # is supplied, so under cot the judge graded the model's thinking,
             # on 79% of house_md's records and 48-70% of the other four.
-            "candidate": (score.prediction or extract_answer_span(response.text, None))[:400],
+            "candidate": score.prediction or extract_answer_span(response.text, None),
             "gold": sample.reference["gold"],
             "criteria": "Equivalent condition names (synonyms, abbreviations) count as correct.",
         }

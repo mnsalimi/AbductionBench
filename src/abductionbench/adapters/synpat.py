@@ -312,7 +312,7 @@ class SynPATAdapter(PooledDatasetAdapter):
             metrics[f"equation_equivalent_{config}"] = equivalent
         return SampleScore(
             metrics=metrics,
-            prediction=(candidate or answer)[:300],
+            prediction=candidate or answer,
             details={"gold": gold[:200], "decided": verdict is not None},
         )
 
@@ -327,7 +327,7 @@ class SynPATAdapter(PooledDatasetAdapter):
         if not response.text or not score.metrics.get("symbolic_undecidable"):
             return None
         return {
-            "candidate": score.prediction or response.text[:400],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["gold"],
             "observation": (
                 "Both are expressions that the system sets equal to zero, in the symbols: "

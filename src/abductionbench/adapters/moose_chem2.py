@@ -151,8 +151,8 @@ class MooseChem2Adapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": (score.prediction or response.text)[:900],
-            "gold": sample.reference.get("coarse") or sample.reference["gold"][:600],
+            "candidate": score.prediction or response.text,
+            "gold": sample.reference.get("coarse") or sample.reference["gold"],
             "observation": sample.fields["observation"],
             "criteria": (
                 "Correct if the candidate proposes the same core mechanism/material strategy as "

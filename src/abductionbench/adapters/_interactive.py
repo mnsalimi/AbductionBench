@@ -144,8 +144,8 @@ def parse_action(text: str, *, actions: tuple[str, ...]) -> Action:
     for name in actions:
         match = re.search(rf'\b{re.escape(name)}\b\W{{0,4}}(.*)', lowered)
         if match:
-            return Action(action=name, query=match.group(1).strip()[:400], raw=stripped)
-    return Action(action="", query=stripped[:400], raw=stripped, parsed=False)
+            return Action(action=name, query=match.group(1).strip(), raw=stripped)
+    return Action(action="", query=stripped, raw=stripped, parsed=False)
 
 
 def flatten(value: Any, prefix: str = "") -> dict[str, str]:

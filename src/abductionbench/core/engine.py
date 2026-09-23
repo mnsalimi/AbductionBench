@@ -94,6 +94,13 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+#: The lengths adapters once cut a stored ``prediction`` to (300 in aiops2025,
+#: causalopsbench and synpat; 400 in abd and cloud_opsbench; 500 in the shared
+#: generation scorer; 600 in med_inquire). Every cap is gone; this is only how
+#: a resume recognises a record written before they went -- see
+#: EvaluationEngine._restore_cut_predictions.
+_LEGACY_PREDICTION_CAPS = frozenset({300, 400, 500, 600})
+
 
 def _turn_identity(prompts: list[RenderedPrompt]) -> dict[str, list[Any]]:
     """``turn_ids``/``turn_numbers`` for an interactive batch, or nothing.
@@ -1753,6 +1760,10 @@ class EvaluationEngine:
                 )
             )
 
+        restored = await self._restore_cut_predictions(
+            adapter, identity, prompt_by_id, reused_triplets
+        )
+
         # Structural reasoning metrics. The stage itself refuses anything that
         # is not cot/self-consistency, so an io output can never enter it; it is
         # shared across tasks so an observation inventory is bought once.
@@ -1902,10 +1913,21 @@ class EvaluationEngine:
         # the newest per (sample_id, prompt_fingerprint), which is what puts
         # every judged metric into the per-sample sheet.
         to_refresh = [*scores, *(reused_triplets if reasoning_mode else [])]
-        if to_refresh and (
+        if not (
             self.engine_cfg.judge.enabled
             or (self._reasoning_judge is not None and reasoning_mode)
         ):
+            to_refresh = []
+        # A prediction restored from an older run's cut copy reaches disk whether
+        # or not anything judged it this pass. (The answer judge's own verdicts
+        # are written back in place above, by store.update_scores.)
+        covered = {sample.sample_id for sample, _response, _score in to_refresh}
+        to_refresh += [
+            triplet
+            for triplet in reused_triplets
+            if triplet[0].sample_id in restored and triplet[0].sample_id not in covered
+        ]
+        if to_refresh:
             refreshed = [
                 self._make_record(
                     identity,
@@ -2614,6 +2636,50 @@ class EvaluationEngine:
                 scores.append((prompt.sample, response, score))
         return records
 
+    async def _restore_cut_predictions(
+        self,
+        adapter: DatasetAdapter,
+        identity: TaskIdentity,
+        prompt_by_id: dict[str, RenderedPrompt],
+        triplets: list[tuple[SampleSpec, ModelResponse, SampleScore]],
+    ) -> set[str]:
+        """Put back the predictions older runs stored cut short.
+
+        Adapters used to store ``prediction`` sliced to 300-600 characters, and
+        a resume reuses the stored prediction rather than re-scoring -- so the
+        judge graded the cut copy as the model's answer, and self-consistency
+        voted on it, merging two different long answers that happened to share
+        an opening. The metrics were never affected: they were computed from
+        the whole answer before it was stored.
+
+        Only the prediction is replaced, and only when the stored one is
+        exactly one of those lengths and a strict prefix of what the scorer
+        now reads from the same stored reply -- which is what a cut looks like
+        and nothing else does. The stored metrics stay, so a verdict already
+        on the record survives a pass that does not judge. Interactive records
+        are left alone: re-scoring one needs the episode, which is not stored.
+        """
+        if identity.data_delivery_mode == "interactive":
+            return set()
+        restored: set[str] = set()
+        for index, (sample, response, score) in enumerate(triplets):
+            stored = score.prediction
+            if not isinstance(stored, str) or len(stored) not in _LEGACY_PREDICTION_CAPS:
+                continue
+            prompt = prompt_by_id.get(sample.sample_id)
+            if prompt is None or len(response.text) <= len(stored):
+                continue
+            full = (await self._score(adapter, prompt, response)).prediction
+            if isinstance(full, str) and len(full) > len(stored) and full.startswith(stored):
+                triplets[index] = (sample, response, replace(score, prediction=full))
+                restored.add(sample.sample_id)
+        if restored:
+            logger.info(
+                "task %s: restored %d prediction(s) stored cut short by an older run",
+                identity.slug, len(restored),
+            )
+        return restored
+
     async def _score(
         self, adapter: DatasetAdapter, prompt: RenderedPrompt, response: ModelResponse
     ) -> SampleScore:
@@ -3071,7 +3137,6 @@ class EvaluationEngine:
         score: SampleScore,
         fingerprint: str | None = None,
     ) -> EvalRecord:
-        clip_chars = self.engine_cfg.reporting.response_clip_chars
         return EvalRecord(
             task=identity,
             sample_id=prompt.sample_id,
@@ -3085,7 +3150,10 @@ class EvaluationEngine:
             sampling=prompt.sampling.to_payload(),
             response={
                 "content": response.content,
-                "reasoning": clip(response.reasoning, clip_chars) if response.reasoning else None,
+                # Whole, like content: this file is what a resumed judge reads,
+                # so a trace cut here is a trace cut for every later pass.
+                # reporting.response_clip_chars bounds workbook cells only.
+                "reasoning": response.reasoning or None,
                 "finish_reason": response.finish_reason,
                 "status": response.status.value,
                 "error": response.error,

@@ -39,7 +39,7 @@ from .types import ModelResponse, SampleScore, SampleSpec, SamplingParams, stabl
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["JudgeVerdict", "JudgeStage", "clip_middle", "exceeds_budget"]
+__all__ = ["JudgeVerdict", "JudgeStage", "exceeds_budget", "exceeds_total"]
 
 
 def exceeds_budget(parts: dict[str, str], limits: dict[str, int]) -> str | None:
@@ -59,29 +59,18 @@ def exceeds_budget(parts: dict[str, str], limits: dict[str, int]) -> str | None:
     return None
 
 
-def clip_middle(text: str, limit: int) -> str:
-    """Keep ``text`` under ``limit`` characters, losing the middle if it must.
+def exceeds_total(parts: list[Any], limit: int) -> str | None:
+    """Why a whole request is too big to judge, or ``None`` if it fits.
 
-    Shared by both judge stages, because both face the same problem: a judge
-    should be shown everything the model was given and everything it produced,
-    and on the longest items that does not fit in the judge's own context
-    window -- a request that overruns is rejected outright, so the sample gets
-    no verdict rather than a slightly thinner one.
-
-    The middle goes rather than the tail. The opening of a prompt says what the
-    task is and the opening of a response says what the model set out to do;
-    the close of a response is where it commits to an answer. Truncating from
-    the end throws away the answer, which is the one part every judge needs.
-    The cut is marked, so a judge is never silently shown a doctored document.
+    The per-field limits above bound each field; this bounds what they add up
+    to, which is what the judge's context window actually constrains. Every
+    field goes in whole or the sample is skipped -- the same rule as above,
+    applied to the sum -- so no field ever has to be cut to make room.
     """
-    if limit <= 0 or len(text) <= limit:
-        return text
-    half = max(1, (limit - 80) // 2)
-    return (
-        text[:half]
-        + f"\n\n[... {len(text) - 2 * half} characters omitted from the middle ...]\n\n"
-        + text[-half:]
-    )
+    total = sum(len(str(part)) for part in parts if part)
+    if limit and total > limit:
+        return f"request_exceeds_{limit}_chars_at_{total}"
+    return None
 
 
 def _clipped_a_longer_number(match: "re.Match[str]", raw: str) -> bool:
@@ -238,6 +227,15 @@ class JudgeStage:
                     "full_response": self.config.max_response_chars,
                 },
             )
+            if not too_big:
+                # The answer, gold and observation go in whole too, so the sum
+                # is what has to fit -- the same total the per-field limits
+                # were sized to (tests/test_judge.py checks it against the
+                # judge's window).
+                too_big = exceeds_total(
+                    [*exchange.values(), *request.values()],
+                    self.config.max_prompt_chars + self.config.max_response_chars,
+                )
             if too_big:
                 # No verdict rather than a verdict on a cut-down exchange: the
                 # two would be reported as the same measurement.
@@ -336,7 +334,7 @@ class JudgeStage:
                 self._cache[key] = {
                     "label": verdict.label,
                     "score": verdict.score,
-                    "raw": verdict.raw[:2000],
+                    "raw": verdict.raw,
                     "parsed": verdict.parsed,
                     "details": dict(verdict.details),
                 }
@@ -378,10 +376,11 @@ class JudgeStage:
     def _whole_exchange(self, prompt: Any, response: ModelResponse) -> dict[str, Any]:
         """The conversation sent and the reply received, both in full.
 
-        Budgeted rather than unbounded: the two together can exceed the judge's
-        own context window on the longest items, and a request that overruns is
-        rejected outright -- no verdict at all, which is strictly worse than a
-        verdict read from a marked, middle-clipped copy.
+        Neither is cut. On the longest items the two together can exceed the
+        judge's own context window, and a request that overruns is rejected
+        outright, so :func:`exceeds_budget` and :func:`exceeds_total` skip such a
+        sample instead -- counted and named in the coverage report, never judged
+        from a doctored copy.
         """
         fields: dict[str, Any] = {}
         if prompt is not None:

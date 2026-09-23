@@ -163,7 +163,7 @@ class HypoArenaAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:900],
+            "candidate": score.prediction or response.text,
             # Passed for calibration, explicitly not as the answer: HypoArena's
             # source-derived hypotheses are one good analysis of the case, not
             # the only one, and scoring resemblance to them marked a better

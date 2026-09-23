@@ -145,7 +145,7 @@ class UncommonsenseAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:600],
+            "candidate": score.prediction or response.text,
             # Every human explanation for this item, not just the first one
             # stored. They are alternatives -- people explained the same outcome
             # differently -- so scoring against whichever happened to be first

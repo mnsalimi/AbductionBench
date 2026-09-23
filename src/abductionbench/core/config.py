@@ -698,17 +698,21 @@ class ReasoningJudgeConfig(_Base):
     #: replies were exactly that.  Counting steps in a chain is a reading task;
     #: it does not need a research budget.  ``None`` leaves the server default.
     reasoning_effort: str | None = "low"
-    #: Longest answer and reference shown to a judge.  Deliberately far smaller
-    #: than ``max_chain_chars``: these are an answer and a reference, not a
-    #: chain, and clipping all four fields at the chain's limit lets the request
-    #: total 240,000 characters -- 88,000 tokens against a 65,536 window.  A
-    #: per-field cap does not bound a sum, which is the same mistake in a new
-    #: place.
+    #: The answer's and the reference's share of the request budget.  Not a
+    #: cap on either -- nothing sent to this judge is cut.  A request whose
+    #: question, chain, answer and reference together exceed
+    #: ``2 * max_chain_chars + 2 * max_reference_chars`` is skipped and counted
+    #: as oversize instead, because a per-field cap does not bound a sum and the
+    #: sum is what the judge's window constrains: four fields at the chain's
+    #: limit came to 240,000 characters, 88,000 tokens against a 65,536 window.
+    #: The split lets one field run long (moose_chem2's reference is 16,000
+    #: characters, and was clipped at 8,000 when this was a cap) as long as the
+    #: rest leave room.
     max_reference_chars: int = Field(8000, ge=200)
-    #: Longest chain (in characters) shown to a judge; longer ones are clipped
-    #: in the middle, keeping both ends.  Without this the prompt can exceed the
-    #: judge's own context window -- observed at 65,621 tokens against a 65,536
-    #: limit -- and the call is rejected outright rather than degraded.
+    #: Longest question and longest chain (in characters) a judge is sent; a
+    #: sample with a longer one is skipped, not clipped.  Without a bound the
+    #: prompt can exceed the judge's own context window -- observed at 65,621
+    #: tokens against a 65,536 limit -- and the call is rejected outright.
     max_chain_chars: int = Field(60000, ge=1000)
     #: Conversations per batch call.  In-flight sequences are
     #: ``group_size x max_parallel_calls``; together they should fill the judge
@@ -925,11 +929,12 @@ class ReportingConfig(_Base):
     write_csv: bool = True
     #: Per-task markdown run documentation.
     write_run_documentation: bool = True
-    #: Longest response text kept in the workbook and in the sample-level log.
-    #: 32,000 is Excel's own per-cell ceiling, so this preserves the complete
-    #: model output up to the limit of what a cell can physically hold rather
-    #: than storing a preview of it.  0 means no limit (Excel will still refuse
-    #: a longer cell, so the writer clamps to 32,000 when it writes).
+    #: Longest response text written to a workbook cell.  32,000 is Excel's own
+    #: per-cell ceiling, so this keeps the complete model output up to what a
+    #: cell can physically hold.  0 means no limit of our own (Excel still
+    #: refuses a longer cell, so the writer clamps to 32,000 when it writes).
+    #: WORKBOOK ONLY: records.jsonl always keeps the whole response and the
+    #: whole reasoning trace, because it is what a resumed judge reads.
     response_clip_chars: int = Field(32_000, ge=0)
     #: Rewrite the whole report set every time a dataset finishes, instead of
     #: only once at the end of the run.  A full run is many hours of API calls,

@@ -329,7 +329,7 @@ def apply_judged_metric(score: SampleScore, verdict: Any, metric: str) -> Sample
         details["judge_unparsed"] = True
         raw = getattr(verdict, "raw", "") or ""
         if raw:
-            details["judge_unparsed_raw"] = raw[:200]
+            details["judge_unparsed_raw"] = raw
         return SampleScore(
             metrics=metrics,
             prediction=score.prediction,
@@ -487,7 +487,7 @@ def text_match_score(
     metrics.update(extra_metrics or {})
     return SampleScore(
         metrics=metrics,
-        prediction=answer[:500],
+        prediction=answer,
         details={"gold": str(gold)[:300]},
     )
 
@@ -530,7 +530,7 @@ def apply_proxy_score(
     metrics = dict(score.metrics)
     details = dict(score.details or {})
     value = getattr(verdict, "score", None)
-    raw = (getattr(verdict, "raw", "") or "")[:2000]
+    raw = getattr(verdict, "raw", "") or ""
     judge_details = dict(getattr(verdict, "details", {}) or {})
 
     if value is None or not getattr(verdict, "parsed", False):

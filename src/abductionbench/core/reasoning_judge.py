@@ -51,7 +51,7 @@ from .batching import iter_chunks
 from .client import ModelClient
 from .config import ReasoningJudgeConfig
 from .errors import ConfigError, EndpointError
-from .judge import clip_middle, exceeds_budget
+from .judge import exceeds_budget, exceeds_total
 from .modes import BOV, COT, SELF_CONSISTENCY
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .retry import RetryPolicy, with_retry
@@ -850,6 +850,17 @@ class ReasoningJudgeStage:
                     "reasoning_chain": self.config.max_chain_chars,
                 },
             )
+            answer = score.prediction or response.text or ""
+            reference = json.dumps(sample.reference, ensure_ascii=False, default=str)
+            if not too_big:
+                # The answer and the reference go in whole as well, so it is
+                # their sum with the chain that has to fit the judge's window.
+                # The budget is the one the per-field limits were sized to
+                # (tests/test_judge.py checks it against the window).
+                too_big = exceeds_total(
+                    [question, reasoning, answer, reference],
+                    2 * self.config.max_chain_chars + 2 * self.config.max_reference_chars,
+                )
             if too_big:
                 # A judge shown a chain with its middle removed is answering a
                 # different question -- "how many steps are there" least of all
@@ -878,19 +889,10 @@ class ReasoningJudgeStage:
                     score=score,
                     question=question,
                     reasoning=reasoning,
-                    # Not truncated at a fixed few thousand characters any more:
-                    # what a judge may be shown is a property of its context
-                    # window, and _clip_chain applies that one budget to all of
-                    # it. A reference cut mid-JSON told the judge less than
-                    # nothing.
-                    answer=clip_middle(
-                        score.prediction or response.text or "",
-                        self.config.max_reference_chars,
-                    ),
-                    reference=clip_middle(
-                        json.dumps(sample.reference, ensure_ascii=False, default=str),
-                        self.config.max_reference_chars,
-                    ),
+                    # Whole, never clipped: the size check above skips a sample
+                    # that cannot fit rather than showing the judge part of it.
+                    answer=answer,
+                    reference=reference,
                     options=options,
                     generation_like=generation_like,
                     selection_like=selection_like,
@@ -1470,11 +1472,11 @@ class ReasoningJudgeStage:
                 gold = "; ".join(str(item) for item in accepted)
         if isinstance(gold, (list, tuple)):
             gold = "; ".join(str(item) for item in gold)
-        # 600, not 400: vivabench's gold is every accepted diagnosis joined,
-        # and clipping that mid-list would hide alternatives that count as
-        # correct -- so a step ruling one of them in would be graded against a
-        # standard it does not appear in.
-        return str(gold or "").strip()[:600]
+        # Whole: vivabench's gold is every accepted diagnosis joined, and
+        # cutting that list anywhere hides alternatives that count as correct,
+        # so a step ruling one of them in would be graded against a standard it
+        # does not appear in.
+        return str(gold or "").strip()
 
     @staticmethod
     def _episode_actions(sample: SampleSpec) -> tuple[list[str], str]:
@@ -1862,22 +1864,6 @@ class ReasoningJudgeStage:
         if not self.config.reasoning_effort:
             return ()
         return (("reasoning_effort", self.config.reasoning_effort),)
-
-    def _clip_chain(self, chain: str) -> str:  # noqa: D401 - kept for the short fields
-        """Keep a chain inside the judge's own context window.
-
-        Clipped from the middle rather than the end: the opening says what the
-        model set out to do and the close is where it commits, and both matter
-        to every metric here.  A chain long enough to need this is one where
-        losing the middle costs less than losing the whole call, which is what
-        happens otherwise -- the request is rejected for length and the sample
-        gets no metrics at all.
-        """
-        limit = self.config.max_chain_chars
-        if len(chain) <= limit:
-            return chain
-        self.stats["clipped"] = self.stats.get("clipped", 0) + 1
-        return clip_middle(chain, limit)
 
     # -- parsing -------------------------------------------------------------- #
 

@@ -144,8 +144,8 @@ class CrossTraceAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": response.text[:900],
-            "gold": sample.reference.get("insight") or sample.reference["gold"][:600],
+            "candidate": score.prediction or response.text,
+            "gold": sample.reference.get("insight") or sample.reference["gold"],
             "observation": sample.fields["observation"],
             "criteria": (
                 "Correct if the candidate's core insight matches the reference hypothesis, even "

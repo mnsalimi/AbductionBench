@@ -179,13 +179,12 @@ class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:600],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(
+            "observation": (
                 (sample.fields.get("context") or "")
                 + "\nConclusion: "
-                + sample.fields.get("observation", ""),
-                200,
+                + sample.fields.get("observation", "")
             ),
             "criteria": (
                 "The candidate is correct if, taken with the premise already given, it would "

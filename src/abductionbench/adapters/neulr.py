@@ -111,10 +111,10 @@ class NeuLRAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:400],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["gold"],
-            "observation": C.clip_words(
-                sample.fields["context"] + "\nThe fact is: " + sample.fields["observation"], 400
+            "observation": (
+                sample.fields["context"] + "\nThe fact is: " + sample.fields["observation"]
             ),
             "criteria": (
                 "Symbols here are meaningless strings, so compare them character by character. "

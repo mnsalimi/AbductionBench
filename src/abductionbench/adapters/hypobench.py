@@ -234,7 +234,7 @@ class HypoBenchAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:600],
+            "candidate": score.prediction or response.text,
             # All known hypotheses, not just the first: a dataset can be
             # separated by several patterns, and finding the second one is not
             # a failure to find the first.

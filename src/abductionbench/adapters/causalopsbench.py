@@ -174,7 +174,7 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
             metrics[f"component_match_{domain}"] = metrics["component_match"]
         return SampleScore(
             metrics=metrics,
-            prediction=(extract_answer_span(text, output_contract) or text)[:300],
+            prediction=extract_answer_span(text, output_contract) or text,
             details={"gold": f"{reference['component']} / {reference['fault_type']}"},
         )
 
@@ -185,7 +185,7 @@ class CausalOpsBenchAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:600],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["fault_type"],
             "observation": sample.fields["observation"],
             "criteria": (

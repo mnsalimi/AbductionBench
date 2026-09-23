@@ -380,9 +380,9 @@ class ResearchBenchAdapter(PooledDatasetAdapter):
         if sample.task_kind != "generation" or not response.text:
             return None
         return {
-            "candidate": (score.prediction or response.text)[:900],
-            "gold": str((sample.reference or {}).get("gold", ""))[:900],
-            "observation": C.clip_words(str(sample.fields.get("observation", "")), 150),
+            "candidate": score.prediction or response.text,
+            "gold": str((sample.reference or {}).get("gold", "")),
+            "observation": str(sample.fields.get("observation", "")),
             "criteria": (
                 "Correct if the candidate states the same hypothesis as the reference: the "
                 "same mechanism or relationship, even in different words. A restatement of "

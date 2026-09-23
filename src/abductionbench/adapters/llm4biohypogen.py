@@ -132,7 +132,7 @@ class LLM4BioHypoGenAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:900],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["gold"],
             "observation": sample.fields["observation"],
             "criteria": (

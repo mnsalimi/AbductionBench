@@ -685,34 +685,79 @@ def test_the_judge_is_told_how_hard_to_think(tmp_path):
     assert stage(reasoning_effort=None)._sampling_extra() == ()
 
 
-def test_an_over_long_chain_is_clipped_from_the_middle(tmp_path):
-    """Better to lose the middle of a chain than the whole call.
-
-    A chain plus its question can exceed the judge's own context window -- seen
-    at 65,621 tokens against a 65,536 limit -- and the request is then rejected
-    outright, so the sample gets no metrics at all. Both ends are kept: the
-    opening says what the model set out to do, the close is where it commits,
-    and every metric here reads one or both.
-    """
+def _targets_sent(tmp_path, *, reference: str, answer: str, **limits):
+    """The targets the reasoning judge would query, without querying anything."""
     from abductionbench.core.config import ReasoningJudgeConfig
+    from abductionbench.core.types import (
+        ChatMessage,
+        ModelResponse,
+        RenderedPrompt,
+        ResponseStatus,
+        SampleScore,
+        SampleSpec,
+        SamplingParams,
+        TaskIdentity,
+    )
 
     stage = ReasoningJudgeStage(
-        config=ReasoningJudgeConfig(enabled=True, model="m", max_chain_chars=1000),
+        config=ReasoningJudgeConfig(enabled=True, model="m", **limits),
         registry=_FakeRegistry(),
         renderer=None,
         clients={"m": object()},
         retry_policy=None,
         cache_dir=tmp_path,
     )
-    chain = "START" + ("x" * 5000) + "END"
-    clipped = stage._clip_chain(chain)
-    assert len(clipped) < len(chain)
-    assert clipped.startswith("START")
-    assert clipped.endswith("END")
-    assert "omitted" in clipped, "the cut must be marked, not silent"
-    assert stage.stats["clipped"] == 1
-    # A chain that fits is returned untouched.
-    assert stage._clip_chain("short") == "short"
+    sent: list = []
+
+    async def capture(targets, identity):
+        sent.extend(targets)
+        for target in targets:
+            target.raw = {}
+
+    stage._evaluate = capture
+    sample = SampleSpec(sample_id="s1", fields={"observation": "x"},
+                        reference={"gold": reference}, task_kind="generation")
+    prompt = RenderedPrompt(
+        sample=sample, messages=[ChatMessage(role="user", content="what happened?")],
+        template_id="t", template_version="1.0", sampling=SamplingParams(max_tokens=64),
+        input_tokens_est=1,
+    )
+    response = ModelResponse(sample_id="s1", model_id="m", status=ResponseStatus.OK,
+                             content=f"<think>step one. step two.</think><answer>{answer}</answer>")
+    identity = TaskIdentity(
+        run_id="r", dataset_id="d", model_id="m", template_id="t", template_version="1.0",
+        prompt_mode="cot", selection_mode="n/a", data_delivery_mode="static",
+        task_kind="generation",
+    )
+    scored = [(sample, response, SampleScore(metrics={}, prediction=answer))]
+    out = asyncio.run(stage.apply(_FakeAdapter(), identity, [prompt], scored))
+    return sent, out
+
+
+def test_a_long_reference_and_answer_reach_the_judge_whole(tmp_path):
+    """moose_chem2's reference runs to 16,000 characters; it used to be cut at 8,000.
+
+    The judge was then grading steps against the middle-less copy of a gold
+    hypothesis -- so a step matching the part that was cut away was graded
+    against a standard it did not appear in.
+    """
+    reference, answer = "R" * 16_000, "A" * 9_000
+    sent, _out = _targets_sent(tmp_path, reference=reference, answer=answer)
+    assert len(sent) == 1
+    assert sent[0].answer == answer
+    assert reference in sent[0].reference
+    assert "omitted" not in sent[0].reference
+
+
+def test_a_request_too_big_for_the_window_is_skipped_not_cut(tmp_path):
+    """Whole or not at all: an oversize sample is counted, never judged from a cut copy."""
+    sent, out = _targets_sent(
+        tmp_path, reference="R" * 3_000, answer="A" * 3_000,
+        max_chain_chars=1_000, max_reference_chars=1_000,
+    )
+    assert sent == []
+    status = out[0][2].details.get("reasoning_metrics_status", "")
+    assert "oversize" in status and "request_exceeds_4000" in status, status
 
 
 def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):

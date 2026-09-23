@@ -838,7 +838,7 @@ class VivaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         if not response.text or not score.prediction:
             return None
         return {
-            "candidate": str(score.prediction)[:600],
+            "candidate": str(score.prediction),
             "gold": "; ".join(sample.reference.get("accepted", [sample.reference["gold"]])),
             "observation": sample.fields["observation"],
             "criteria": "Any of the listed accepted diagnoses counts as correct.",

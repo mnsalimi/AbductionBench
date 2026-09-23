@@ -211,7 +211,7 @@ class InAbHyDAdapter(PooledDatasetAdapter):
         if not response.text:
             return None
         return {
-            "candidate": score.prediction or response.text[:400],
+            "candidate": score.prediction or response.text,
             "gold": sample.reference["gold"],
             "observation": sample.fields["observation"],
             "criteria": (
