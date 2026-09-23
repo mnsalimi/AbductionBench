@@ -383,6 +383,18 @@ class ModelClient:
         choices = data.get("choices") or []
         if not choices:
             raise BatchProtocolError(f"{url} returned no choices: {str(data)[:400]}")
+        if choices[0].get("finish_reason") == "error":
+            # THE PROVIDER FAILED MID-GENERATION, NOT THE MODEL. OpenRouter
+            # reports an upstream failure as a 200 whose choice finishes with
+            # "error": content null or cut off, usage all zeros. Taken as an
+            # answer it became an EMPTY record scored as wrong -- and EMPTY is
+            # reusable on resume, so it could never be retried either. Raised
+            # as transient, the retry loop gets it like any other outage.
+            detail = choices[0].get("error") or (choices[0].get("message") or {}).get("error")
+            raise TransientEndpointError(
+                f"{url} choice finished with 'error' (provider failure): {str(detail)[:300]}",
+                body=str(data)[:2000],
+            )
         content, reasoning = _extract_message(choices[0])
         return BatchResult(
             choices=[

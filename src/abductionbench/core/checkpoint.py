@@ -175,6 +175,11 @@ class RecordStore:
         for record in self.existing():
             if record.get("status") not in reusable_status:
                 continue
+            # A choice the provider finished with "error" is an outage that
+            # was recorded as an answer (EMPTY, or OK on a cut-off fragment)
+            # before the client learnt to raise on it. Retried, like `error`.
+            if (record.get("response") or {}).get("finish_reason") == "error":
+                continue
             sample_id = record.get("sample_id")
             if not sample_id:
                 continue
