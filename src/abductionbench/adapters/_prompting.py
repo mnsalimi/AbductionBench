@@ -43,6 +43,8 @@ evidence step by step" into the same prompt on 27 datasets.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -56,7 +58,28 @@ __all__ = [
 
 #: The answer marker every scorer looks for.  One marker across the suite means
 #: a dataset's scorer keeps working when its prompt mode changes.
+#: Retained for the interactive protocols and the adapters that quote their
+#: release's own prompt, which still ask for a marker. The static closings no
+#: longer use it -- see ANSWER_TAG below.
 ANSWER_PREFIX = "Answer:"
+
+#: The tags a static reply is built from.
+#:
+#: WHY TAGS RATHER THAN A MARKER. "Answer:" is a string a model can write in
+#: the middle of its reasoning, and under cot it often did -- the parser took
+#: the LAST occurrence precisely because an earlier one was usually a false
+#: positive. A closing tag cannot be produced by accident in the same way, it
+#: delimits the answer at both ends rather than only the front, and it gives
+#: the reasoning its own container instead of leaving it as "everything above
+#: the marker".
+ANSWER_OPEN, ANSWER_CLOSE = "<answer>", "</answer>"
+THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
+
+#: Finds the LAST answer block. Greedy prefix, then non-greedy body: a reply
+#: that mentions the tag while reasoning still parses to what it finally
+#: submitted, which is the same property the marker parser had.
+ANSWER_TAG_REGEX = r"(?s).*<answer>\s*(?P<answer>.*?)\s*</answer>"
+THINK_TAG_REGEX = r"(?s)<think>\s*(?P<think>.*?)\s*</think>"
 
 _COT_INSTRUCTION = (
     "Reason and explain explicitly by working through the evidence step by step "
@@ -77,40 +100,80 @@ _COT_INSTRUCTION_BOV = (
 
 _IO_INSTRUCTION = "Answer directly. Do not explain your reasoning."
 
-#: The closing for a dataset whose answer is genuinely several lines.  "On the
-#: last line" and "one fact per line" cannot both be obeyed, and the dataset that
-#: asks for both was telling the model to do two incompatible things; the parser
-#: was never the problem -- ``extract_answer_span`` already returns everything
-#: after the final marker, newlines included.
-_ANSWER_BLOCK_ONLY = "Put nothing in that block but the answer itself, one item per line."
+#: The format block, which ends the system prompt in both modes.
+#:
+#: It sits there, immediately after the mode instruction, because the two say
+#: one thing between them: whether to reason, and where the reasoning and the
+#: answer go. Splitting them left the format half in the user turn, next to the
+#: options, where it had to be re-stated per selection mode and drifted out of
+#: agreement with the mode instruction above it -- io prompts that said "answer
+#: directly" and then "on the last line", cot prompts that restricted the whole
+#: response.
+#:
+#: The two modes do NOT share a format any more, and that is the point: an io
+#: reply has no reasoning to contain, so naming <think> there would invite one.
+_FORMAT_IO = (
+    "Reply with exactly one answer block and nothing else:\n"
+    f"{ANSWER_OPEN}your answer{ANSWER_CLOSE}\n"
+    "Write nothing before it and nothing after it. Do not include a "
+    f"{THINK_OPEN} block."
+)
 
-def _where_the_answer_goes(modes: TaskModes, example: str) -> str:
-    """How the closing asks for the answer, in the only way each mode allows.
+_FORMAT_COT = (
+    "Put all of your reasoning inside one think block, then give your answer "
+    "inside one answer block:\n"
+    f"{THINK_OPEN}your reasoning{THINK_CLOSE}\n"
+    f"{ANSWER_OPEN}your answer{ANSWER_CLOSE}\n"
+    "Write nothing before the think block and nothing after the answer block, "
+    "and put the answer only inside the answer block -- not inside the think "
+    "block as well."
+)
 
-    ``cot`` reasons first, so its answer genuinely is the last line and saying
-    "on the last line" is both true and necessary.  ``io`` has just been told
-    "Answer directly. Do not explain your reasoning." -- and then, until now,
-    "on the last line, give your final answer as", which only means anything if
-    something precedes it.  The prompt was asking for a bare answer and
-    describing a reply that has a body above it, which is the same kind of
-    self-contradiction this module exists to remove; a model reading it could
-    reasonably infer that some preamble was expected, i.e. that this was the
-    reasoning mode.
 
-    The marker is identical in both, so the parsing contract does not move.
+def format_compliance(text: str | None, modes: TaskModes) -> bool:
+    """Did the reply obey the format block exactly?
+
+    REPORTED SEPARATELY FROM CORRECTNESS, and that separation is the point. A
+    model can answer correctly in the wrong shape, and a harness that folds the
+    two together cannot tell "wrong about the task" from "wrote it another
+    way" -- which is a difference about the model, not about the benchmark.
+    The parser stays lenient so a sloppy reply is still scored; this says how
+    often it had to be.
+
+    Strict means strict: exactly one answer block, nothing outside the blocks,
+    and under cot exactly one think block before it. Whitespace between them is
+    allowed and nothing else is.
+    """
+    body = (text or "").strip()
+    if not body:
+        return False
+    if modes.prompt_mode in (COT, SELF_CONSISTENCY):
+        pattern = (
+            rf"\A{THINK_OPEN}(?P<think>.*?){THINK_CLOSE}\s*"
+            rf"{ANSWER_OPEN}(?P<answer>.*?){ANSWER_CLOSE}\Z"
+        )
+    else:
+        pattern = rf"\A{ANSWER_OPEN}(?P<answer>.*?){ANSWER_CLOSE}\Z"
+    match = re.fullmatch(pattern, body, flags=re.DOTALL)
+    if match is None:
+        return False
+    # One block each: a reply that opens a second answer block inside the first
+    # matched the non-greedy body above but is not the shape that was asked for.
+    return body.count(ANSWER_OPEN) == 1 and (
+        body.count(THINK_OPEN) == (1 if modes.prompt_mode in (COT, SELF_CONSISTENCY) else 0)
+    )
+
+
+def format_segment(modes: TaskModes) -> str:
+    """The output-format block that ends the system prompt.
+
+    One per mode, deliberately not one shared template: io and cot no longer
+    ask for the same shape, and a single block that tried to cover both is what
+    produced instructions arguing with each other.
     """
     if modes.prompt_mode in (COT, SELF_CONSISTENCY):
-        return f"On the last line, give your final answer as:\n{example}\n{_ANSWER_LINE_ONLY}"
-    return f"Your entire response must be:\n{example}"
-
-
-#: The one sentence that replaces the seventeen per-dataset "output only the
-#: diagnosis name" / "output only the formula" clauses.  Said once, in shared
-#: wording, and scoped to the marker rather than to the response -- which is
-#: what lets it be true in ``io`` and ``cot`` alike, where a per-dataset
-#: "output only the fact" had to be either dropped or left to argue with the
-#: reasoning instruction.
-_ANSWER_LINE_ONLY = "Write the answer itself after that marker and nothing else."
+        return _FORMAT_COT
+    return _FORMAT_IO
 
 
 def mode_instruction(modes: TaskModes, *, one_at_a_time: bool = False) -> str:
@@ -289,7 +352,13 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
     letters were, and the marker is what lets the parser take the label the
     model *submitted* rather than the last digit it happened to write.
     """
-    contract: dict[str, Any] = {"answer_prefix": ANSWER_PREFIX, "strip_markdown": True}
+    # EMITTED AND PARSED FROM ONE PLACE. The system prompt asks for
+    # <answer>...</answer>; this is what reads it back. They cannot drift,
+    # because nothing else sets either one.
+    contract: dict[str, Any] = {
+        "answer_regex": ANSWER_TAG_REGEX,
+        "strip_markdown": True,
+    }
 
     # THE SCAFFOLDING FOLLOWS THE CONTENT, NOT THE DECLARATION. A selection
     # closing tells the model to answer with a label from a list; if the prompt
@@ -330,13 +399,12 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
             "You are shown one candidate hypothesis at a time; the others are not listed "
             "here, so judge this one on its own merits rather than against them.\n"
             f"Decide whether this hypothesis {asks}.\n"
-            "Answer with only YES or NO.\n"
-            # Both options, not one of them: the example line is read as much
-            # as the instruction above it, and "Answer: YES" on every single
-            # BOV prompt is a standing nudge toward yes. Naming both is safe
-            # precisely because it is symmetric -- neither is favoured, and
-            # between them they cover every admissible answer.
-            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <YES or NO>")
+            # The admissible answers, and nothing about where they go -- the
+            # system prompt's format block owns that now, in both modes. Both
+            # options are named rather than one: an example showing only YES on
+            # every BOV prompt is a standing nudge toward it, and naming both is
+            # safe precisely because it is symmetric.
+            "Answer with only YES or NO."
         ), contract
 
     if modes.selection_mode == MCS:
@@ -349,10 +417,7 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
         # the same letters every time.
         return (
             "Select every hypothesis that applies -- there may be one or several.\n"
-            f"Answer with only their {_label_noun(labels)}, separated by commas.\n"
-            + _where_the_answer_goes(
-                modes, f"{ANSWER_PREFIX} <the applicable labels, separated by commas>"
-            )
+            f"Answer with only their {_label_noun(labels)}, separated by commas."
         ), contract
 
     if modes.selection_mode == SCS:
@@ -360,34 +425,25 @@ def _closing(parts: PromptParts, modes: TaskModes, labels: list[str]) -> tuple[s
         # "Answer with only one of" forbids the explanation cot has just asked
         # for, so under cot the restriction is scoped to the final answer
         # instead of to the whole reply. io keeps the answer-only form.
-        lead = (
-            f"In the end, your final answer should be only one of: {_label_list(labels)}."
-            if modes.prompt_mode in (COT, SELF_CONSISTENCY)
-            else f"Answer with only one of: {_label_list(labels)}."
-        )
+        # ONE WORDING FOR BOTH MODES NOW. They used to differ because "answer
+        # with only one of" forbade the explanation cot had just asked for; with
+        # the answer in its own block that conflict is gone -- the restriction is
+        # on what goes in the block, which is true in io and cot alike.
+        lead = f"Answer with only one of: {_label_list(labels)}."
         # Same reasoning as MCS: `labels[0]` is the *same* label on every
         # sample of the dataset, so it showed "Answer: A" -- or "Answer: 1" --
         # beside every question the model was ever asked.
-        return (
-            "Select exactly one hypothesis.\n"
-            f"{lead}\n"
-            + _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <the chosen label>")
-        ), contract
+        return ("Select exactly one hypothesis.\n" + lead), contract
 
     contract.update({"style": "free_form"})
     shape = parts.answer_format or "your answer"
     if parts.answer_is_block:
         # Same split as the one-line closing: under cot the block genuinely
         # ends a reply that has reasoning above it, under io it is the reply.
-        lead = (
-            "End your reply with the answer block:"
-            if modes.prompt_mode in (COT, SELF_CONSISTENCY)
-            else "Your entire response must be the answer block:"
-        )
-        return (
-            f"{lead}\n{ANSWER_PREFIX}\n<{shape}>\n{_ANSWER_BLOCK_ONLY}"
-        ), contract
-    return _where_the_answer_goes(modes, f"{ANSWER_PREFIX} <{shape}>"), contract
+        # A multiline answer is still one answer block; what changes is what
+        # goes inside it, so this says that and nothing about the reply's shape.
+        return f"Give {shape}, one item per line.", contract
+    return f"Give {shape}.", contract
 
 
 def build_messages(
@@ -424,8 +480,15 @@ def build_messages(
     # standing instruction before the question, and there is exactly one of it.
     one_at_a_time = bool(parts.options) and modes.selection_mode == BOV
     mode_line = mode_instruction(modes, one_at_a_time=one_at_a_time)
+    # The format block comes LAST, straight after the mode instruction, because
+    # the two are one statement: whether to reason, and where the reasoning and
+    # the answer go. Anywhere else and they drift -- which is what happened when
+    # the format lived in the user turn beside the options.
     messages: list[ChatMessage] = []
-    system = "\n\n".join(part for part in ((parts.system or "").strip(), mode_line) if part)
+    system = "\n\n".join(
+        part for part in ((parts.system or "").strip(), mode_line, format_segment(modes))
+        if part
+    )
     if system:
         messages.append(ChatMessage(role="system", content=system))
     messages.append(ChatMessage(role="user", content="\n\n".join(b for b in body if b).strip()))

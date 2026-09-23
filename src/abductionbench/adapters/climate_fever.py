@@ -48,7 +48,7 @@ STATUS_NAMES = ("SUPPORTS", "REFUTES", "NOT_ENOUGH_INFO", "DISPUTED")
 class ClimateFeverAdapter(PooledDatasetAdapter):
     """Select the claim status that accounts for the retrieved evidence."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

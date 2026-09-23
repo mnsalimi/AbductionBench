@@ -6,7 +6,7 @@ description: >-
   with full hindsight -- the only metric here that can be negative, because a
   step that introduces a false claim is worse than a step that does nothing.
 task_kinds: [judge]
-required_fields: [question, steps, reference_answer, step_count]
+required_fields: [question, steps, reference_answer, step_count, model_answer]
 messages:
   - role: system
     content: |
@@ -40,6 +40,16 @@ messages:
       it, that step is 1 -- it moves the reasoning back toward the answer -- no
       matter how harmful the step it is correcting was.
 
+      THE MODEL'S OWN ANSWER IS SHOWN TO YOU, AND IT IS NOT THE RIGHT ANSWER.
+      It is what this model concluded at the end of the reasoning above --
+      nothing more. It may be correct or incorrect; you are not told which and
+      it is not your job here to decide. It is given so you can read the chain
+      as the argument that led to it, which is often the only way to tell what
+      an earlier step was for.
+
+      Do not treat it as a correct answer, do not grade the chain against it,
+      and do not let it change a count you would otherwise have made.
+
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
         * Reply with ONE JSON object and nothing else. No preamble, no
           markdown fence, no text after the closing brace.
@@ -56,6 +66,10 @@ messages:
 
       THE CORRECT ANSWER -- judge every step against this:
       {{ reference_answer }}
+
+      THE ANSWER THIS MODEL PRODUCED (its own conclusion, not the
+      correct answer):
+      {{ model_answer }}
 
       STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
       {{ steps }}

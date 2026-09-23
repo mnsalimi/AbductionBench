@@ -43,7 +43,7 @@ LABELS = C.choice_labels(2)
 class ECareAdapter(PooledDatasetAdapter):
     """Abductive half of e-CARE: pick the cause that explains the premise."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

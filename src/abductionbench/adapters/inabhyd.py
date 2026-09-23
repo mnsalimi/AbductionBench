@@ -61,7 +61,7 @@ DEFAULT_HOPS = (1, 2, 3, 4)
 class InAbHyDAdapter(PooledDatasetAdapter):
     """Generate the hypothesis that completes an incomplete world model."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

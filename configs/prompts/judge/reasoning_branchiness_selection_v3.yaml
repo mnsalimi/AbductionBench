@@ -7,7 +7,7 @@ description: >-
   the wave-one option-count prompt, so branchiness and the n it normalizes by
   are not two readings of the same question.
 task_kinds: [judge]
-required_fields: [steps, question, option_count, step_count]
+required_fields: [steps, question, option_count, step_count, model_answer]
 messages:
   - role: system
     content: |
@@ -33,6 +33,16 @@ messages:
       Report both as counts. Do not compare them, combine them, or adjust one
       because of the other.
 
+      THE MODEL'S OWN ANSWER IS SHOWN TO YOU, AND IT IS NOT THE RIGHT ANSWER.
+      It is what this model concluded at the end of the reasoning above --
+      nothing more. It may be correct or incorrect; you are not told which and
+      it is not your job here to decide. It is given so you can read the chain
+      as the argument that led to it, which is often the only way to tell what
+      an earlier step was for.
+
+      Do not treat it as a correct answer, do not grade the chain against it,
+      and do not let it change a count you would otherwise have made.
+
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
         * Reply with ONE JSON object and nothing else. No preamble, no
           markdown fence, no text after the closing brace.
@@ -47,6 +57,10 @@ messages:
       {{ question }}
 
       NUMBER OF ANSWER OPTIONS THE QUESTION OFFERS: {{ option_count }}
+
+      THE ANSWER THIS MODEL PRODUCED (its own conclusion, not the
+      correct answer):
+      {{ model_answer }}
 
       STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
       {{ steps }}

@@ -259,17 +259,26 @@ def test_io_and_cot_prompts_differ_only_where_the_mode_requires():
     from abductionbench.core.modes import TaskModes
 
     parts = _free_form_parts(["do not restate the observation"])
-    io = build_messages(parts, TaskModes(prompt_mode="io"))[0][-1].content
-    cot = build_messages(parts, TaskModes(prompt_mode="cot"))[0][-1].content
+    io_msgs = build_messages(parts, TaskModes(prompt_mode="io"))[0]
+    cot_msgs = build_messages(parts, TaskModes(prompt_mode="cot"))[0]
+
+    # STRONGER THAN IT USED TO BE. The user turn is now byte-identical between
+    # the modes: the mode instruction and the format block both live in the
+    # system prompt, so the question a model is asked does not change with the
+    # mode at all -- only how it is told to reply. That is the property that
+    # makes an io/cot comparison mean something.
+    assert io_msgs[-1].content == cot_msgs[-1].content
+
+    io, cot = io_msgs[0].content, cot_msgs[0].content
     assert io != cot
+    assert "Answer directly" in io and "step by step" not in io
+    assert "step by step" in cot and "Answer directly" not in cot
 
-    # The mode instruction now ends the system prompt, so the user turn's
-    # only difference is the closing each mode requires.
-    assert "Answer directly" not in io and "step by step" not in cot
-
-    # And the only difference below it is the closing each mode requires.
-    assert "Your entire response must be" in io and "on the last line" not in io.lower()
-    assert "On the last line" in cot and "Your entire response must be" not in cot
+    # io names the think tag only to forbid it; cot offers one.
+    assert "<think>your reasoning</think>" not in io
+    assert "Do not include a <think> block." in io
+    assert "<think>your reasoning</think>" in cot
+    assert "<answer>" in io and "<answer>" in cot
 
 
 def test_self_consistency_renders_exactly_the_cot_prompt():
@@ -292,16 +301,18 @@ def test_the_answer_line_is_scoped_once_in_shared_wording():
     says nothing else may appear, and repeating it would be the duplication this
     module exists to prevent.
     """
-    from abductionbench.adapters._prompting import _ANSWER_LINE_ONLY, build_messages
+    from abductionbench.adapters._prompting import build_messages
     from abductionbench.core.modes import TaskModes
 
-    cot = build_messages(_free_form_parts([]), TaskModes(prompt_mode="cot"))[0][-1].content
-    assert cot.count(_ANSWER_LINE_ONLY) == 1
-    assert cot.rstrip().endswith(_ANSWER_LINE_ONLY)
+    cot = build_messages(_free_form_parts([]), TaskModes(prompt_mode="cot"))[0][0].content
+    # Said once, and last: the format block ends the system prompt in both
+    # modes, so there is exactly one statement of where the answer goes.
+    assert cot.count("<answer>") == 1
+    assert cot.rstrip().endswith("block as well.")
 
-    io = build_messages(_free_form_parts([]), TaskModes(prompt_mode="io"))[0][-1].content
-    assert _ANSWER_LINE_ONLY not in io, "io says it once, in the closing itself"
-    assert io.count("Your entire response must be") == 1
+    io = build_messages(_free_form_parts([]), TaskModes(prompt_mode="io"))[0][0].content
+    assert io.count("<answer>") == 1
+    assert io.rstrip().endswith("Do not include a <think> block.")
 
 
 def test_requirements_survive_every_selection_mode():
@@ -334,7 +345,8 @@ def test_an_empty_requirements_list_renders_no_heading():
 
     text = build_messages(_free_form_parts([]), TaskModes(prompt_mode="cot"))[0][-1].content
     assert "Requirements" not in text
-    assert "Answer:" in text
+    # The closing still ends the user turn; only its vocabulary changed.
+    assert "Give " in text
 
 
 def test_no_shipped_dataset_talks_about_reasoning_outside_the_mode_instruction():
@@ -404,10 +416,12 @@ def test_no_selection_scaffolding_without_a_candidate_list():
         text = messages[-1].content
         assert "the label" not in text, selection
         assert "Answer: 1" not in text, selection
+        assert "Answer:" not in text, selection
         assert "Select exactly one hypothesis" not in text, selection
         assert "Select every hypothesis" not in text, selection
         # it falls back to the dataset's own answer shape
-        assert "Answer: <the root cause>" in text, selection
+        # The free-form closing names the answer, not where it goes.
+        assert "Give the root cause." in text, selection
         assert contract["style"] == "free_form", selection
 
 
@@ -454,18 +468,24 @@ def test_the_example_answer_names_no_concrete_label():
             option_labels=list(pool),
         )
         for selection, expected in (
-            ("SCS", "Answer: <the chosen label>"),
-            ("MCS", "Answer: <the applicable labels, separated by commas>"),
-            ("BOV", "Answer: <YES or NO>"),
+            ("SCS", "Answer with only one of:"),
+            ("MCS", "separated by commas."),
+            ("BOV", "Answer with only YES or NO."),
         ):
             for prompt_mode in ("io", "cot"):
-                text = build_messages(
+                messages, _c = build_messages(
                     parts, TaskModes(prompt_mode=prompt_mode, selection_mode=selection)
-                )[0][-1].content
+                )
+                system, text = messages[0].content, messages[-1].content
                 assert expected in text, (pool, selection, prompt_mode)
+                # The example in the format block is a placeholder and names no
+                # label. A selection dataset reuses the same small pool on every
+                # sample, so a concrete example would be the same constant
+                # beside all 150 questions -- which is a prior, not an example.
+                assert "<answer>your answer</answer>" in system
                 for label in pool:
-                    assert f"Answer: {label}" not in text, (pool, selection, label)
-                assert "Answer: YES\n" not in text and not text.endswith("Answer: YES")
+                    assert f"<answer>{label}</answer>" not in system, (pool, selection, label)
+                assert "<answer>YES</answer>" not in system
 
 
 def test_no_shipped_selection_dataset_shows_a_concrete_example_answer():
@@ -921,16 +941,18 @@ def test_a_multi_line_answer_closes_with_a_block_not_a_last_line():
                     answer_is_block=True),
         TaskModes(prompt_mode="cot"),
     )[0][-1].content
-    assert "End your reply with the answer block" in block
+    assert "one item per line" in block
+    # No geography left to describe -- the answer has a block of its own.
     assert "On the last line" not in block
+    assert "Answer:" not in block
 
     # Every other dataset keeps the single-line closing.
     one_line = build_messages(
         PromptParts(system="s", observation="o", answer_format="a single diagnosis"),
         TaskModes(prompt_mode="cot"),
     )[0][-1].content
-    assert "On the last line" in one_line
-    assert "answer block" not in one_line
+    assert "one item per line" not in one_line
+    assert "Answer:" not in one_line
 
     # And the parser already handles the block -- it was never the obstacle.
     parsed = extract_answer_span(
@@ -977,35 +999,55 @@ def _closings_for(cls, selection_mode, prompt_mode):
 def test_an_io_prompt_never_describes_a_reply_with_text_before_the_answer():
     """Every shipped dataset, every selection mode, both prompt modes.
 
-    io must ask for the answer and nothing else; cot must keep "on the last
-    line", because there the answer genuinely is the last line and the marker is
-    what separates it from the reasoning above.
-    """
-    import re
+    The old version checked the closing in the user turn for "your entire
+    response must be" and "on the last line". Neither sentence exists now: the
+    answer has a block of its own, so there is no geography left to describe,
+    and the shape is stated once in the system prompt's format block.
 
+    What has to remain true is the same property in the new vocabulary -- an io
+    reply has no room for anything before the answer, and a cot reply has a
+    place for reasoning that is not the answer block.
+    """
     from abductionbench.core.modes import BOV, MCS, SCS
 
-    implies = re.compile(_IMPLIES_PRECEDING_TEXT, re.I)
     io_offenders, cot_offenders = [], []
     for dataset_id, cls in _shipped_adapters():
         for selection in (None, SCS, MCS, BOV):
-            io = _closings_for(cls, selection, "io")
-            found = implies.search(io)
-            if found:
-                io_offenders.append((dataset_id, selection, found.group(0)))
-            if _IO_CLOSING not in io:
-                io_offenders.append((dataset_id, selection, "no 'entire response' closing"))
+            io = _system_for(cls, selection, "io")
+            # Mentioning the tag to forbid it is the point; OFFERING one is not.
+            if "<think>your reasoning</think>" in io:
+                io_offenders.append((dataset_id, selection, "io offers a think block"))
+            if "Write nothing before it and nothing after it." not in io:
+                io_offenders.append((dataset_id, selection, "io lost its strict closing"))
+            if "Answer:" in io:
+                io_offenders.append((dataset_id, selection, "io still uses the old marker"))
 
-            # The other direction: cot must not have been flattened into io.
-            cot = _closings_for(cls, selection, "cot")
-            if not implies.search(cot):
-                cot_offenders.append((dataset_id, selection, "cot lost its last-line closing"))
-            if _IO_CLOSING in cot:
-                cot_offenders.append((dataset_id, selection, "cot took io's closing"))
+            cot = _system_for(cls, selection, "cot")
+            if "<think>your reasoning</think>" not in cot:
+                cot_offenders.append((dataset_id, selection, "cot lost its think block"))
+            if "Answer:" in cot:
+                cot_offenders.append((dataset_id, selection, "cot still uses the old marker"))
 
-    assert not io_offenders, f"io prompts implying a multi-line reply: {io_offenders[:6]}"
-    assert not cot_offenders, f"cot prompts damaged by the io fix: {cot_offenders[:6]}"
+    assert not io_offenders, f"io prompts in the wrong shape: {io_offenders[:6]}"
+    assert not cot_offenders, f"cot prompts in the wrong shape: {cot_offenders[:6]}"
 
+
+def _system_for(cls, selection, prompt_mode) -> str:
+    """The rendered system prompt for one adapter in one mode."""
+    from abductionbench.adapters._prompting import PromptParts, build_messages
+    from abductionbench.core.modes import TaskModes
+
+    parts = PromptParts(
+        system=getattr(cls, "system_prompt", "") or "",
+        observation="an observation",
+        options=["alpha", "beta"] if selection else None,
+        option_labels=["A", "B"] if selection else None,
+        answer_format=getattr(cls, "answer_format", None),
+    )
+    messages, _c = build_messages(
+        parts, TaskModes(prompt_mode=prompt_mode, selection_mode=selection)
+    )
+    return messages[0].content
 
 def test_neither_mode_can_be_mistaken_for_the_other():
     """The two modes must stay distinguishable at both ends of the prompt.
@@ -1065,7 +1107,9 @@ def test_the_parsing_contract_is_identical_in_both_modes():
                     parts, TaskModes(prompt_mode=mode, selection_mode=selection)
                 )
                 contracts[mode] = contract
-                assert ANSWER_PREFIX in messages[-1].content, (dataset_id, mode)
+                # The tags are in the system prompt now, in both modes.
+                assert "<answer>" in messages[0].content, (dataset_id, mode)
+                assert ANSWER_PREFIX not in messages[-1].content, (dataset_id, mode)
             assert contracts["io"] == contracts["cot"], (dataset_id, selection)
 
 

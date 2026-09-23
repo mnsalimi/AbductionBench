@@ -33,7 +33,7 @@ _OPTION_RE = re.compile(r"\(([a-z])\)\s*([^;]+)")
 class TrueDetectiveAdapter(PooledDatasetAdapter):
     """Select the correct culprit/explanation for a long mystery."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

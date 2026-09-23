@@ -36,7 +36,7 @@ _OPTION_LINE_RE = re.compile(r"^\s*([A-Z])\)\s*(.+?)\s*$", re.MULTILINE)
 class SciRAdapter(PooledDatasetAdapter):
     """Choose the hidden causal edge that explains the observed data."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

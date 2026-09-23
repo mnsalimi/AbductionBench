@@ -37,7 +37,7 @@ REPO_URL = (
 class EnwnEntailmentBankAdapter(PooledDatasetAdapter):
     """Recover the missing premise of an incomplete entailment step."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

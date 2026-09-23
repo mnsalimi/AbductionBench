@@ -46,7 +46,7 @@ def _numbered_references(references: Any) -> str:
 class HypoBenchAdapter(PooledDatasetAdapter):
     """State the hypothesis that explains a labelled sample of examples."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

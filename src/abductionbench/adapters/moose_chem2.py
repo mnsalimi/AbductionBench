@@ -33,7 +33,7 @@ REPO_URL = "https://github.com/ZonglinY/MOOSE-Chem2"
 class MooseChem2Adapter(PooledDatasetAdapter):
     """Propose the paper's hypothesis from its background and question."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

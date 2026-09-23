@@ -43,7 +43,7 @@ def _numbered_references(references: Any) -> str:
 class UncommonsenseAdapter(PooledDatasetAdapter):
     """Explain an uncommon outcome; scored against the human explanation set."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

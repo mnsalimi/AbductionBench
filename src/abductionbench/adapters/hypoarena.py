@@ -45,7 +45,7 @@ def _numbered_references(references: Any) -> str:
 class HypoArenaAdapter(PooledDatasetAdapter):
     """Propose a hypothesis for an observed situation; multi-reference scoring."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

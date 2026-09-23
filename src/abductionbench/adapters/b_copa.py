@@ -38,7 +38,7 @@ REPO_ID = "pkavumba/balanced-copa"
 class BalancedCOPAAdapter(PooledDatasetAdapter):
     """Balanced COPA: the same premises, with mirrored counterparts."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

@@ -41,7 +41,7 @@ OPTIONS = ("Yes, that cause would produce the phenomenon.",
 class CauseLogicsAdapter(PooledDatasetAdapter):
     """Validate a proposed cause against a set of premises and rules."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

@@ -2895,6 +2895,34 @@ class EvaluationEngine:
         metrics["n_scored"] = float(result.n_scored)
         metrics["n_error"] = float(result.n_error)
         metrics["n_skipped"] = float(result.n_skipped)
+        # FORMAT COMPLIANCE, BESIDE CORRECTNESS AND NEVER FOLDED INTO IT.
+        #
+        # The parser is lenient on purpose -- a reply that wraps its answer in
+        # prose is still scored rather than thrown away -- so nothing else in
+        # the sheet would show how often the shape asked for was actually
+        # produced. A model that answers correctly in the wrong shape and one
+        # that answers wrongly are different findings, and this is the column
+        # that separates them.
+        #
+        # Static deliveries only. An interactive episode answers in its own
+        # turn-by-turn protocol, which the tagged format deliberately does not
+        # touch, so there is no shape here to be compliant with.
+        if result.identity is not None and result.identity.data_delivery_mode == "static":
+            from ..adapters._prompting import format_compliance
+
+            modes = TaskModes(
+                prompt_mode=result.identity.prompt_mode,
+                selection_mode=(
+                    None if result.identity.selection_mode in ("n/a", "", None)
+                    else result.identity.selection_mode
+                ),
+            )
+            replies = [r for _s, r, _sc in fresh if r.text]
+            if replies:
+                obeyed = sum(1 for r in replies if format_compliance(r.text, modes))
+                metrics["format_compliance_rate"] = obeyed / len(replies)
+                metrics["n_format_violations"] = float(len(replies) - obeyed)
+
         failures = [s for s in all_scores if not s.parse_ok]
         answered = [s for s in all_scores if s.parse_ok]
         metrics["parse_failure_rate"] = (

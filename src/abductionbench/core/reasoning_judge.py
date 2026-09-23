@@ -45,6 +45,7 @@ from typing import Any
 
 import orjson
 
+from ..adapters._prompting import THINK_TAG_REGEX
 from .adapter import DatasetAdapter
 from .batching import iter_chunks
 from .client import ModelClient
@@ -1252,6 +1253,19 @@ class ReasoningJudgeStage:
             # and a judge that has been given the number can check itself
             # before replying.
             common[target.index]["step_count"] = len(segmented)
+            # THE ANSWER THE SEGMENTATION FOUND, not the raw response.
+            #
+            # `reasoning_steps_v3` pulls the model's concluding statement out of
+            # the chain and returns it as `final_answer`, precisely so it is not
+            # counted as an inferential step. That same string is what every
+            # downstream metric should be shown: it is the answer as the chain
+            # actually ended, already separated from the reasoning, and using it
+            # keeps one definition of "the model's answer" across the stage.
+            # The response's own parsed answer is the fallback for a
+            # segmentation that did not isolate one.
+            stated = (target.raw.get("steps") or {}).get("final_answer")
+            if isinstance(stated, str) and stated.strip():
+                common[target.index]["model_answer"] = stated.strip()
 
         ready = [t for t in targets if "steps" in common[t.index]]
 
@@ -1266,25 +1280,26 @@ class ReasoningJudgeStage:
         )
         inventoried = [t for t in ready if "observations" in common[t.index]]
         wave_two = [
-            run("observation_coverage", inventoried, ("question", "steps", "observations", "step_count")),
+            run("observation_coverage", inventoried,
+                ("question", "steps", "observations", "step_count", "model_answer")),
             run("directionality", targets, ("question", "reasoning_chain")),
-            run("step_directionality", ready, ("steps", "step_count")),
-            run("differential_elimination", ready, ("steps", "step_count")),
-            run("uncertainty", ready, ("steps", "step_count")),
-            run("prior_knowledge", ready, ("question", "steps", "step_count")),
-            run("unresolved_contradiction", ready, ("steps", "step_count")),
+            run("step_directionality", ready, ("steps", "step_count", "model_answer")),
+            run("differential_elimination", ready, ("steps", "step_count", "model_answer")),
+            run("uncertainty", ready, ("steps", "step_count", "model_answer")),
+            run("prior_knowledge", ready, ("question", "steps", "step_count", "model_answer")),
+            run("unresolved_contradiction", ready, ("steps", "step_count", "model_answer")),
             # Now needs the model's own answer as well as the gold: the
             # anchoring step is about where the MODEL settled, and the per-step
             # list is about whether the GOLD was still alive.
             run("anchoring_point", [t for t in ready if t.reference],
                 ("steps", "reference_answer", "model_answer", "step_count")),
-            run("proof_disproof", ready, ("question", "steps", "step_count")),
+            run("proof_disproof", ready, ("question", "steps", "step_count", "model_answer")),
             run("helpfulness", [t for t in ready if t.reference],
-                ("question", "steps", "reference_answer", "step_count")),
+                ("question", "steps", "reference_answer", "step_count", "model_answer")),
             run("branchiness_selection", [t for t in ready if id(t) in selection_ids],
-                ("steps", "question", "option_count", "step_count")),
+                ("steps", "question", "option_count", "step_count", "model_answer")),
             run("branchiness_generation", [t for t in ready if id(t) not in selection_ids],
-                ("steps", "step_count")),
+                ("steps", "step_count", "model_answer")),
         ]
         for target in ready:
             if not target.reference:
@@ -2022,5 +2037,23 @@ class ReasoningJudgeStage:
         # then what it actually said. Where only one is present it is used as
         # it is, with no separator and nothing implying the other was empty for
         # a reason.
-        parts = [part for part in (response.reasoning, response.content) if part and part.strip()]
+        # THE CHAIN, FROM WHEREVER THE MODEL PUT IT.
+        #
+        # Three places it can be, and they are not exclusive:
+        #   * a <think> block in the content -- what the cot format now asks for;
+        #   * the provider's separate `reasoning` field, which some return
+        #     whether or not the prompt asked for tags;
+        #   * the content itself, for a model that reasoned without tagging.
+        #
+        # The answer block is removed either way. It is the conclusion, not an
+        # inferential step, and leaving it in gave every per-step metric a final
+        # element about a sentence that reasons about nothing -- the same reason
+        # `reasoning_steps_v3` returns it separately.
+        content = response.content or ""
+        think = re.search(THINK_TAG_REGEX, content)
+        if think:
+            body = think.group("think").strip()
+        else:
+            body = re.sub(r"(?s)<answer>.*?</answer>", "", content).strip()
+        parts = [part for part in (response.reasoning, body) if part and part.strip()]
         return question, "\n\n".join(parts)

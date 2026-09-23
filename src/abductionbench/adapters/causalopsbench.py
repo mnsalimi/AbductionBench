@@ -33,7 +33,7 @@ REPO_URL = "https://github.com/pz1004/causalopsbench-public"
 class CausalOpsBenchAdapter(PooledDatasetAdapter):
     """Identify the faulty component and fault type from telemetry."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

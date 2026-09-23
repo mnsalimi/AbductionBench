@@ -37,7 +37,7 @@ SOURCE_URL = "https://www.kaggle.com/datasets/arshgupta23/housemd-data-for-rare-
 class HouseMDAdapter(PooledDatasetAdapter):
     """Diagnose a rare-disease vignette; reference is the episode's disease."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

@@ -51,7 +51,7 @@ REPO_ID = "PatrickAllenCooper/DeFAb"
 class DeFAbAdapter(PooledDatasetAdapter):
     """Pick the candidate rule/fact whose addition explains the target."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

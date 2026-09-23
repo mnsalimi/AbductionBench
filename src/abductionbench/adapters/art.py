@@ -40,7 +40,7 @@ LABELS = C.choice_labels(2)
 class ARTAdapter(PooledDatasetAdapter):
     """alphaNLI selection (default) or alphaNLG generation over ART."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

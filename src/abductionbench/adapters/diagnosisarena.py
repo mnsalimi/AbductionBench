@@ -34,7 +34,7 @@ GITHUB_URL = "https://github.com/SPIRAL-MED/DiagnosisArena"
 class DiagnosisArenaAdapter(PooledDatasetAdapter):
     """Free-text diagnosis (default) or the dataset's own four-way choice."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

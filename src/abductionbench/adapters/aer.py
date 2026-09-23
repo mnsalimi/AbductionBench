@@ -37,7 +37,7 @@ OPTION_KEYS = ("option_A", "option_B", "option_C", "option_D")
 class AERAdapter(PooledDatasetAdapter):
     """Multi-answer selection of the direct causes of a news event."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

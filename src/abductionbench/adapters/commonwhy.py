@@ -42,7 +42,7 @@ STRATA = ("Head", "Longtail")
 class CommonWhyAdapter(PooledDatasetAdapter):
     """Answer a why-question about an entity from a fact about it."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

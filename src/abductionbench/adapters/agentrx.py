@@ -36,7 +36,7 @@ REPO_URL = "https://github.com/microsoft/AgentRx"
 class AgentRxAdapter(PooledDatasetAdapter):
     """Select the failure category that explains an agent's failed run."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

@@ -15,7 +15,7 @@ import pytest
 from conftest import step
 
 from abductionbench.adapters._interactive import EvidenceStore, parse_action
-from abductionbench.adapters._prompting import PromptParts, build_messages
+from abductionbench.adapters._prompting import format_segment, PromptParts, build_messages
 from abductionbench.core.adapter import AdapterContext, DatasetAdapter
 from abductionbench.core.errors import ConfigError
 from abductionbench.core.modes import TaskModes, template_mode_of
@@ -210,7 +210,10 @@ def test_io_asks_for_the_answer_and_cot_asks_for_reasoning_first():
     # Same evidence, same answer contract: only the elicitation differs.
     for text in (io_user, cot_user):
         assert "the lawn is wet" in text
-        assert "Answer:" in text
+        # The answer contract is the same in both modes, and it is stated in
+        # the system prompt now rather than in this turn.
+        assert "Answer with only one of:" in text
+        assert "Answer:" not in text
 
 
 def test_self_consistency_asks_the_same_question_as_cot():
@@ -236,7 +239,7 @@ def test_the_system_prompt_comes_from_the_dataset():
     messages, _ = adapter.build_messages(adapter.build_samples()[0])
     assert messages[0].role == "system"
     assert messages[0].content.startswith("You pick the best explanation.")
-    assert messages[0].content.endswith(mode_instruction(TaskModes()))
+    assert messages[0].content.endswith(format_segment(TaskModes()))
 
 
 def test_no_universal_system_prompt_exists_in_the_core():
@@ -285,8 +288,9 @@ def test_bov_asks_one_question_per_hypothesis():
     for text, hypothesis in zip(texts, ["it rained", "the sprinkler ran", "a pipe burst"],
                                 strict=True):
         assert hypothesis in text
-        # A placeholder naming both options, not a standing "YES".
-        assert "Answer: <YES or NO>" in text
+        # Both options named, not one: an example showing only YES on every
+        # BOV prompt is a standing nudge toward it.
+        assert "Answer with only YES or NO." in text
         others = {"it rained", "the sprinkler ran", "a pipe burst"} - {hypothesis}
         assert not any(other in text for other in others)
 

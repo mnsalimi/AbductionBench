@@ -659,15 +659,25 @@ class ReasoningJudgeConfig(_Base):
     #: cost of ten short calls to buy headroom one of them needs.
     max_tokens: int = Field(4096, ge=1)
     max_tokens_by_family: dict[str, int] = Field(
-        default_factory=lambda: {"steps": 4096}
+        default_factory=lambda: {"steps": 10240}
     )
     #: Added to the chain's own estimated length to size the ``steps`` reply.
+    #:
+    #: 2048 -> 6144, alongside the family floor's 4096 -> 10240. Measured on one
+    #: run: 142 `steps` calls were truncated with `finish_reason: length`, and
+    #: their computed budgets were 8,371-9,612 tokens against replies that
+    #: wanted more -- the largest real steps reply in that run was 23,657. The
+    #: headroom covers the JSON the chain is re-emitted inside (a quoted string
+    #: per step, the commas, the field names), and that scaffolding grows with
+    #: the number of steps rather than staying constant, so a fixed 2048 was too
+    #: thin for exactly the long chains where it mattered. Unused output budget
+    #: is not billed; a truncated reply loses the call.
     #:
     #: That reply is the chain segmented into a JSON array, so it is about as
     #: long as the chain plus the quoting, the commas and the two count lists.
     #: The constant covers those and leaves room for a judge that is a little
     #: more verbose than the text it read.
-    steps_budget_headroom: int = Field(2048, ge=0)
+    steps_budget_headroom: int = Field(6144, ge=0)
     #: The most any one call may ask for, whatever the chain's length implies.
     #: A request still has to fit inside the judge's own context window with its
     #: prompt, and a chain long enough to exceed this was already clipped by

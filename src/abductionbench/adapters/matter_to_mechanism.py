@@ -31,7 +31,7 @@ REPO_ID = "matter2mech/matter-to-mechanism"
 class MatterToMechanismAdapter(PooledDatasetAdapter):
     """Propose the mechanism-level hypothesis for a materials research problem."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

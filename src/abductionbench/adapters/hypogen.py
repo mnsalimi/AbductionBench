@@ -27,7 +27,7 @@ REPO_ID = "UniverseTBD/hypogen-dr1"
 class HypoGenAdapter(PooledDatasetAdapter):
     """Given the conventional-wisdom 'bit', abduce the paper's 'flip'."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

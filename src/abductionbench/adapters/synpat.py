@@ -129,7 +129,7 @@ def _parse_list(line: str) -> list[str]:
 class SynPATAdapter(PooledDatasetAdapter):
     """Recover the equation of an axiom system that the data contradicts."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

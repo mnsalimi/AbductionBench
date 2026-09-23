@@ -29,7 +29,7 @@ GITHUB_URL = "https://github.com/kevinwu23/Stanford-MedCaseReasoning"
 class MedCaseReasoningAdapter(PooledDatasetAdapter):
     """Diagnose a case report; also measure recovery of the clinician's reasoning."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

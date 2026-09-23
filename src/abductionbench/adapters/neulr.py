@@ -26,7 +26,7 @@ REPO_URL = "https://github.com/DeepReasoning/NeuLR"
 class NeuLRAdapter(PooledDatasetAdapter):
     """The abductive third of NeuLR: name the missing premise."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

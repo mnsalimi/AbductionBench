@@ -34,7 +34,7 @@ REPO_URL = "https://github.com/andrewbouras/crosstrace"
 class CrossTraceAdapter(PooledDatasetAdapter):
     """Generate the hypothesis that challenges a field's conventional assumption."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

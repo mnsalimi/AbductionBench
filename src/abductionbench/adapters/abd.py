@@ -110,7 +110,7 @@ def _load_release(repo_root: Path) -> SimpleNamespace:
 class ABDAdapter(PooledDatasetAdapter):
     """Synthesize the abnormality rule that repairs a default theory."""
 
-    adapter_version = "2.0"
+    adapter_version = "3.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

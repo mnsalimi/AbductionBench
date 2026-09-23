@@ -32,7 +32,7 @@ REPO_URL = "https://github.com/Zayne-Sprague/MuSR"
 class MuSRAdapter(PooledDatasetAdapter):
     """Murder-mystery domain of MuSR: name the murderer."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

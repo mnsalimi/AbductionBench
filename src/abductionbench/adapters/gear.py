@@ -44,7 +44,7 @@ OUTCOMES = ["on", "off", "undetermined"]
 class GearAdapter(PooledDatasetAdapter):
     """ACRE blicket experiments: on / off / undetermined."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

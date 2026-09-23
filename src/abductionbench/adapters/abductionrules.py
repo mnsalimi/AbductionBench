@@ -34,7 +34,7 @@ SUBSETS = (
 class AbductionRulesAdapter(PooledDatasetAdapter):
     """One sample per (theory, observation) pair from the official test splits."""
 
-    adapter_version = "1.0"
+    adapter_version = "2.0"
 
     system_prompt = (
         "You are an expert at abductive reasoning: inferring the explanation that, if true, "

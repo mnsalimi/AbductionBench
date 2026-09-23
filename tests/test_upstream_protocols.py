@@ -696,7 +696,9 @@ def test_medups_asks_the_question_that_was_asked():
     adapter, samples = _medups()
     messages, _contract = adapter.build_messages(samples[0])
     prompt = messages[-1].content
-    assert "Answer: <the answer to the question asked>" in prompt
+    # The closing names what the answer is; where it goes is the system
+    # prompt's format block now.
+    assert "Give the answer to the question asked." in prompt
     assert "<a single diagnosis>" not in prompt
     # The question itself is in the prompt, or there is nothing to answer.
     assert samples[0].fields["question"][:40] in prompt

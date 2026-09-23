@@ -6,7 +6,7 @@ description: >-
   Split out of the segmentation prompt, which was being asked to cut the chain
   and judge it in the same call.
 task_kinds: [judge]
-required_fields: [question, steps, step_count]
+required_fields: [question, steps, step_count, model_answer]
 messages:
   - role: system
     content: |
@@ -27,6 +27,16 @@ messages:
       that's wrong", "I made an error above", "actually that contradicts what
       I said". A step that does none of this is 0.
 
+      THE MODEL'S OWN ANSWER IS SHOWN TO YOU, AND IT IS NOT THE RIGHT ANSWER.
+      It is what this model concluded at the end of the reasoning above --
+      nothing more. It may be correct or incorrect; you are not told which and
+      it is not your job here to decide. It is given so you can read the chain
+      as the argument that led to it, which is often the only way to tell what
+      an earlier step was for.
+
+      Do not treat it as a correct answer, do not grade the chain against it,
+      and do not let it change a count you would otherwise have made.
+
       OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
         * Reply with ONE JSON object and nothing else. No preamble, no
           markdown fence, no text after the closing brace.
@@ -39,6 +49,10 @@ messages:
     content: |
       QUESTION AS PRESENTED TO THE MODEL:
       {{ question }}
+
+      THE ANSWER THIS MODEL PRODUCED (its own conclusion, not the
+      correct answer):
+      {{ model_answer }}
 
       STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
       {{ steps }}
