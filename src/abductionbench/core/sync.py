@@ -13,7 +13,7 @@ Design constraints, in order of importance:
 2. **It must never break a run.** Every failure is caught, counted and logged;
    a network outage or a bad credential degrades the run to "not backed up",
    never to "crashed". Nothing in the engine awaits the uploader.
-3. **It must be incremental.** ``rclone copy --update`` transfers only files
+3. **It must be incremental.** ``rclone copy --checksum`` transfers only files
    that are new or newer locally, so each tick uploads the handful of
    ``records.jsonl``/log files that actually changed.
 4. **It must never delete remote data.** ``copy`` is used rather than ``sync``,
@@ -228,9 +228,30 @@ class ArtifactSync:
             "copy",
             str(source),
             self.destination,
-            # Only send what changed: skip files already on the remote whose
-            # modification time is not older than the local one.
-            "--update",
+            # Only send what changed -- decided by CONTENT, not by clock.
+            #
+            # This was `--update`, which skips a file whose remote modification
+            # time is not older than the local one. That is a cheap definition
+            # of "changed" and it has a failure mode with no exit: if the
+            # remote's timestamp ever runs AHEAD of the local file's, the file
+            # can never be sent again. Every later pass looks at the two times,
+            # decides the remote is current, and skips -- forever.
+            #
+            # Observed on this project rather than imagined. The results
+            # workbook sat on Drive holding 61,463,134 bytes stamped 11:41
+            # while the real file was 62,063,409 bytes stamped 00:36 -- a
+            # partial upload that had been given a later timestamp than the
+            # content it replaced. It was missing an entire night's results for
+            # two models, and a dry run confirmed rclone would transfer
+            # nothing, pass after pass. 278 files were stale the same way.
+            #
+            # `--checksum` compares hashes instead, so "changed" means what it
+            # says. It stays incremental -- a file whose hash matches is still
+            # skipped -- and it costs a local hash only for files whose size
+            # already matches, since a size mismatch transfers immediately.
+            # Against the rsync-to-staging step this pass already performs,
+            # that cost is small; being unable to repair a stale backup is not.
+            "--checksum",
             f"--transfers={self.config.transfers}",
             f"--checkers={self.config.checkers}",
             # A stuck transfer must not pile up behind the next tick.
@@ -584,7 +605,7 @@ class ArtifactSync:
                 logger.warning(
                     "artifact sync: the %s pass could not start -- an upload has been "
                     "running for over %.0fs. The remote is missing whatever changed "
-                    "since that upload began; re-send it with: rclone copy %s %s --update",
+                    "since that upload began; re-send it with: rclone copy %s %s --checksum",
                     reason, self._CLOSING_LOCK_WAIT_S, self.run_dir, self.destination,
                 )
             else:

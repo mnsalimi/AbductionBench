@@ -78,7 +78,9 @@ fi
 echo $$ >&9
 
 rsync_args=(-a --delete)
-rclone_args=(copy "$STAGE" "$DEST" --update --transfers=4 --checkers=8
+# --checksum, not --update: a remote timestamp that runs ahead of the local
+# file makes an --update pass skip it forever. See core/sync.py for the case.
+rclone_args=(copy "$STAGE" "$DEST" --checksum --transfers=4 --checkers=8
              --timeout=300s --retries=3 --low-level-retries=10 --fast-list --stats=0
              --tpslimit "$TPSLIMIT" --drive-pacer-min-sleep 100ms)
 [[ -n "$BWLIMIT" ]] && rclone_args+=("--bwlimit=$BWLIMIT")
