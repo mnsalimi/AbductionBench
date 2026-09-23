@@ -1327,7 +1327,12 @@ class EvaluationEngine:
             kinds = sorted({sample.task_kind for sample in bundle.samples})
             for model in self.config.evaluated_models():
                 if not model.only_tasks.admits(
-                    prompt_mode=modes.prompt_mode,
+                    # A model with no prompt mode is not given one. The
+                    # underlying task is still the io variant -- something has
+                    # to be picked, and picking both would run the identical
+                    # request twice -- but the row says "n/a" rather than
+                    # claiming a condition that was never applied.
+                    prompt_mode=(modes.prompt_mode if model.has_prompt_mode else "n/a"),
                     selection_mode=modes.selection_mode or "n/a",
                     task_kinds=kinds,
                 ):
@@ -2452,7 +2457,12 @@ class EvaluationEngine:
                     "request": {
                         "url": batch_result.endpoint_url,
                         "model": client.model.model_name,
-                        "sampling": batch.sampling.to_payload(),
+                        # A decision endpoint accepts no sampling parameters --
+                        # TypeSafe's API reference documents none -- so
+                        # recording temperature and seed against one would
+                        # describe a request that was never made.
+                        **({} if client.speaks_systemone
+                           else {"sampling": batch.sampling.to_payload()}),
                         "sample_ids": batch.sample_ids,
                         "messages": [
                             [m.to_dict() for m in prompt.messages] for prompt in batch.prompts

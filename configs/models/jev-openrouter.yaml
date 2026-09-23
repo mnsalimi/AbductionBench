@@ -49,9 +49,22 @@ model:
   # writing the same Drive folder -- which is how 95 duplicated remote paths
   # were created.
   only_tasks:
-    prompt_modes: [io]
+    # SCS ONLY -- never MCS. A choice question returns one option; an MCS task
+    # is graded as a SET, so answering it with a single choice scores a
+    # one-element set against a multi-label gold and reports the result as
+    # though the model had tried. That is what happened to aer before this
+    # filter existed: set_f1 0.6467 off precision 0.86 and recall 0.55, which
+    # is the arithmetic signature of one answer where several were wanted.
+    # aer offers only MCS, so under this filter it gets no jev task at all.
     selection_modes: [SCS]
     task_kinds: [selection]
+    # io, but the ROW WILL NOT SAY io -- `ModelConfig.has_prompt_mode` is false
+    # for a decision endpoint, so the task identity records "n/a". This entry
+    # only decides which underlying variant is run, and something has to be
+    # picked: jev never sees the rendered prompt, so the io and cot variants of
+    # one question produce a byte-identical request and running both would ask
+    # the same thing twice under two names.
+    prompt_modes: [io]
 
   endpoint:
     protocol: systemone
@@ -66,12 +79,17 @@ model:
       batch_base_url_command: null
 
   sampling:
-    # Carried for the record rather than sent: the decision API exposes no
-    # sampling knobs, and pretending otherwise in the resolved config would
-    # claim a determinism guarantee nothing here honours.
-    temperature: 0.0
-    top_p: 1.0
-    seed: 20260903
+    # NOT SENT AND NOT RECORDED. TypeSafe's API reference documents exactly
+    # three top-level fields -- model, state, questions -- and no sampling
+    # parameters at all. There is no temperature here to set: the model scores
+    # each option against its rubric in parallel rather than sampling tokens,
+    # so a temperature would have nothing to apply to.
+    #
+    # The values below exist because the engine's budget check reads
+    # `max_tokens_cap` and `context_window` before a request is planned. They
+    # never reach the wire, and `_run_batch` no longer writes a `sampling` block
+    # onto a decision endpoint's raw record either -- it described a request
+    # that was never made.
     max_tokens_default: 512
     max_tokens_cap: 512
     max_tokens_floor: 16

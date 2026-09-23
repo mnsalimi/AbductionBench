@@ -115,14 +115,7 @@ def test_the_criteria_are_keyed_by_the_datasets_own_labels():
     assert question["criteria"] == {
         "1": "Guardrails", "2": "Adherence", "3": "Intent", "4": "Underspecified",
     }
-    assert question["instructions"] == "Choose the cause, not a later symptom."
-
-
-def test_the_state_carries_the_evidence_and_the_question():
-    _, sent = _decide(_client(), [_prompt()])
-    state = sent[0]["payload"]["state"]
-    assert "The run failed." in state
-    assert "Question: Which category is the root cause?" in state
+    assert "Choose the cause, not a later symptom." in question["instructions"]
 
 
 def test_the_choice_becomes_the_answer_line_the_scorer_reads():
@@ -210,3 +203,114 @@ def test_the_shipped_model_config_declares_the_decision_protocol():
     assert endpoint["protocol"] == "systemone"
     assert endpoint["systemone_path"] == "/v1/systemone"
     assert endpoint["batch"]["enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# it is not a language model, and the request has to stop pretending it is
+# --------------------------------------------------------------------------- #
+
+
+def test_state_holds_the_evidence_and_not_the_question():
+    """TypeSafe's reference: state is "the content to evaluate", instructions
+    are "what the model should decide". The question in the state made it one
+    more piece of evidence rather than the thing being asked.
+    """
+    _, sent = _decide(_client(), [_prompt()])
+    state = sent[0]["payload"]["state"]
+    assert "The run failed." in state
+    assert "Which category" not in state, "the question does not belong in the state"
+
+
+def test_instructions_hold_the_question_and_the_datasets_framing():
+    _, sent = _decide(_client(), [_prompt()])
+    instructions = sent[0]["payload"]["questions"]["answer"]["instructions"]
+    assert instructions.startswith("Which category is the root cause?")
+    assert "Choose the cause, not a later symptom." in instructions
+
+
+def test_the_instructions_do_not_ask_it_to_reason():
+    """It scores each option against its rubric in parallel and in isolation.
+
+    A "think step by step" clause would be a sentence with nothing to act on
+    it, and would misdescribe the model in the audit log besides.
+    """
+    _, sent = _decide(_client(), [_prompt()])
+    instructions = sent[0]["payload"]["questions"]["answer"]["instructions"].lower()
+    for phrase in ("step by step", "reason", "think", "explain", "chain of thought"):
+        assert phrase not in instructions, phrase
+
+
+def test_no_sampling_parameter_is_sent():
+    """The API reference documents model, state and questions. Nothing else."""
+    _, sent = _decide(_client(), [_prompt()])
+    payload = sent[0]["payload"]
+    assert set(payload) == {"model", "state", "questions"}
+    for banned in ("temperature", "seed", "max_tokens", "top_p"):
+        assert banned not in payload
+
+
+def test_a_decision_endpoint_has_no_prompt_mode():
+    """So its column is not labelled io, which would claim a condition that was
+    never applied and invite comparison with a cot column that cannot exist.
+    """
+    from abductionbench.core.config import ModelConfig
+
+    jev = ModelConfig.model_validate(
+        {"id": "jev", "model_name": "typesafe/jev-1.13",
+         "endpoint": {"base_url": "https://openrouter.ai/api", "protocol": "systemone"}}
+    )
+    chat = ModelConfig.model_validate(
+        {"id": "m", "model_name": "x", "endpoint": {"base_url": "http://x"}}
+    )
+    assert jev.has_prompt_mode is False
+    assert chat.has_prompt_mode is True
+
+
+def test_the_planner_labels_a_decision_endpoints_task_n_a():
+    import inspect
+
+    from abductionbench.core.engine import EvaluationEngine
+
+    source = inspect.getsource(EvaluationEngine._plan_tasks)
+    assert 'if model.has_prompt_mode else "n/a"' in source
+
+
+def test_the_raw_record_carries_no_sampling_for_a_decision_endpoint():
+    """Recording temperature against a request that never had one describes a
+    call that was not made."""
+    import inspect
+
+    from abductionbench.core.engine import EvaluationEngine
+
+    source = inspect.getsource(EvaluationEngine._execute_batch)
+    assert 'if client.speaks_systemone' in source
+    assert '"sampling": batch.sampling.to_payload()' in source  # still there for chat models
+
+
+def test_jev_is_never_asked_an_mcs_task():
+    """An MCS task is graded as a SET; a choice question returns one option.
+
+    Answering MCS with a single choice scores a one-element set against a
+    multi-label gold -- which is what produced aer's set_f1 0.6467 off
+    precision 0.86 and recall 0.55 before this filter existed.
+    """
+    jev = _jev_only_tasks()
+    assert not jev.admits(prompt_mode="io", selection_mode="MCS", task_kinds=["selection"])
+    assert jev.admits(prompt_mode="io", selection_mode="SCS", task_kinds=["selection"])
+
+
+def _jev_only_tasks():
+    from abductionbench.core.config import ModelTaskFilter, load_layered
+
+    return ModelTaskFilter.model_validate(
+        load_layered("configs/models/jev-openrouter.yaml")["model"]["only_tasks"]
+    )
+
+
+def test_the_shipped_jev_config_sends_no_temperature_or_seed():
+    from abductionbench.core.config import load_layered
+
+    sampling = load_layered("configs/models/jev-openrouter.yaml")["model"]["sampling"]
+    assert "temperature" not in sampling
+    assert "seed" not in sampling
+    assert "top_p" not in sampling

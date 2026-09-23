@@ -1150,6 +1150,20 @@ class ModelConfig(_Base):
     only_tasks: ModelTaskFilter = Field(default_factory=ModelTaskFilter)
 
     @property
+    def has_prompt_mode(self) -> bool:
+        """Does ``io`` / ``cot`` mean anything for this model?
+
+        For a chat model, yes: the prompt mode IS the prompt, and the same
+        question asked two ways is two measurements. For a decision endpoint,
+        no. It is handed the evidence and the options as data and never sees a
+        rendered prompt, so the io and cot variants of one question produce a
+        byte-identical request -- and labelling its column ``io`` claims a
+        condition that was not applied and invites a comparison against a
+        ``cot`` column that cannot exist.
+        """
+        return self.endpoint.protocol != "systemone"
+
+    @property
     def slug(self) -> str:
         return re.sub(r"[^A-Za-z0-9._-]+", "-", self.id).strip("-")
 

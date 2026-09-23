@@ -288,11 +288,15 @@ class ModelClient:
                     f"label(s) and {len(options)} option(s); a decision endpoint needs "
                     f"one criterion per option"
                 )
+            # STATE IS THE CONTENT TO EVALUATE. The question does not belong
+            # here: TypeSafe's reference says state is "the content to
+            # evaluate" and instructions are "what the model should decide".
+            # Putting the question in the state made it one more piece of
+            # evidence rather than the thing being asked.
             state = "\n\n".join(
                 part for part in (
                     str(fields.get("observation") or "").strip(),
                     str(fields.get("context") or "").strip(),
-                    (f"Question: {fields['question']}" if fields.get("question") else ""),
                 ) if part
             )
             payload = {
@@ -301,8 +305,19 @@ class ModelClient:
                 "questions": {
                     "answer": {
                         "type": "choice",
-                        "instructions": str(fields.get("instructions") or "").strip()
-                        or "Choose the option that best explains the evidence.",
+                        # INSTRUCTIONS ARE WHAT TO DECIDE, so the question
+                        # lives here with the dataset's own framing after it.
+                        # Written as a decision and not as a reasoning
+                        # instruction: this is not a language model, it scores
+                        # each option against its rubric in parallel and in
+                        # isolation, so "think step by step" would be a
+                        # sentence with nothing to act on it.
+                        "instructions": "\n".join(
+                            part for part in (
+                                str(fields.get("question") or "").strip(),
+                                str(fields.get("instructions") or "").strip(),
+                            ) if part
+                        ) or "Choose the option that best explains the evidence.",
                         # Keyed by the dataset's own labels, so the chosen key
                         # IS the answer and nothing has to be matched back by
                         # text -- which would be ambiguous here anyway: agentrx
