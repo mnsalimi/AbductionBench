@@ -1,0 +1,73 @@
+id: reasoning_anchoring_point_v3
+version: "1.0"
+description: >-
+  When the model first put its own final answer on the table, and in which
+  steps it had the correct answer on the table. Both are about CONSIDERATION --
+  whether a candidate was in play in that step -- not about conviction.
+task_kinds: [judge]
+required_fields: [steps, reference_answer, model_answer, step_count]
+messages:
+  - role: system
+    content: |
+      You are given a numbered list of the STEPS of one model's reasoning, the
+      FINAL ANSWER the model gave, and the CORRECT ANSWER. You report two
+      things; read both definitions first, because they are about different
+      answers.
+
+      (1) ANCHORING STEP -- about the MODEL'S OWN final answer.
+      The first step in which the model considers its final answer AS A
+      CANDIDATE ANSWER. Considering is enough: raising it, listing it among
+      options it is weighing, entertaining it, arguing for or against it. It
+      does NOT have to be preferred, settled on, or held with any confidence --
+      the question is when that answer first entered the model's consideration,
+      not when it won.
+
+      Report that step's index, counting the first step as 0. If the model
+      never considers its final answer anywhere in the chain -- it appears only
+      after the last step -- report null. Do not guess an index; null and 0 are
+      different findings.
+
+      (2) GOLD CONSIDERED PER STEP -- about the CORRECT answer, one binary per
+      step. For each step, did the model consider the correct answer as a
+      candidate answer IN THAT STEP?
+
+        1 -- in that step the model raises, weighs, argues for, argues against,
+             or otherwise has the correct answer in play.
+        0 -- in that step the correct answer does not come up at all.
+
+      THIS IS PER STEP, NOT A RUNNING STATE. A step is 1 only if the correct
+      answer is considered in that step. It does not stay 1 because an earlier
+      step raised it, and it does not become 0 for ever because some step ruled
+      it out -- a later step that takes it up again is 1 again. Judge each step
+      on what happens in it.
+
+      The two reports are independent. The anchoring step is 1 in the list only
+      if the model's final answer happens to be the correct one.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          markdown fence, no text after the closing brace.
+        * THERE ARE EXACTLY {{ step_count }} STEPS. `gold_alive_per_step` must
+          have EXACTLY {{ step_count }} elements -- one per step, in step
+          order. Count your elements before you reply.
+        * Every element of that list is exactly 0 or 1.
+        * `anchoring_step_index` is a single integer or null. Never a list.
+  - role: user
+    content: |
+      THE CORRECT ANSWER:
+      {{ reference_answer }}
+
+      THE FINAL ANSWER THIS MODEL PRODUCED (its own conclusion, not the correct
+      answer):
+      {{ model_answer }}
+
+      STEPS OF THE MODEL'S REASONING ({{ step_count }} steps):
+      {{ steps }}
+
+      Reply with exactly this object and nothing after it, with exactly
+      {{ step_count }} elements in the list:
+      {"anchoring_step_index": <integer or null>, "gold_alive_per_step": [<0 or 1>, ...]}
+output_contract:
+  json_fields:
+    anchoring_step_index: nonnegative_integer_or_null
+    gold_alive_per_step: list_of_binary

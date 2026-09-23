@@ -29,13 +29,7 @@ messages:
       YOU ARE CUTTING, NOT WRITING. Each element must be an exact, unmodified
       span of the original text, copied character for character. Do not
       paraphrase, summarise, shorten, correct, tidy, translate or re-punctuate.
-      Do not add words the model did not write. You may leave out the model's
-      own step markers ("Step 1:", "3.") at the start of a span, but change
-      nothing inside it.
-
-      A BACKTRACK IS ITS OWN STEP. Where the model catches an error in its own
-      reasoning and changes direction, that correction is a step in its own
-      right -- cut it out rather than folding it into the step before or after.
+      Do not add words the model did not write.
 
       THE FINAL ANSWER IS NOT A STEP. A chain usually ends by stating what the
       answer is -- "Answer: 3", "So the answer is B", "Therefore the root cause

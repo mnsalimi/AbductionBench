@@ -110,8 +110,9 @@ def test_anchoring_reports_where_the_model_settled_and_where_the_gold_was_alive(
 
 
 def test_the_anchoring_prompt_asks_for_the_models_answer_too():
-    """It cannot find where the model settled without knowing on what."""
-    blob = yaml.safe_load((JUDGE / "reasoning_anchoring_point_v2.yaml").read_text())
+    """It cannot find where the model first considered its answer without
+    knowing what that answer was."""
+    blob = yaml.safe_load((JUDGE / "reasoning_anchoring_point_v3.yaml").read_text())
     assert "model_answer" in blob["required_fields"]
     assert "reference_answer" in blob["required_fields"]
     assert set(blob["output_contract"]["json_fields"]) == {

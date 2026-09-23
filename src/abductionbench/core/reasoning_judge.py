@@ -618,11 +618,14 @@ def derive_reasoning_metrics(
                 if total_steps:
                     metrics["reasoning_anchoring_point_normalized"] = index / total_steps
 
-    # Whether the CORRECT answer was still alive at each step -- a different
-    # question from the one above, which is about the model's own answer. A
-    # chain that reaches the right answer, disproves it, and never recovers is
-    # not the same as one that never reached it, and only this list can tell
-    # them apart.
+    # Whether the CORRECT answer was CONSIDERED IN EACH STEP -- a different
+    # question from the one above, which is about the model's own answer.
+    #
+    # Per step, not a running state: a step is 1 only if the correct answer is
+    # in play in that step, so the list shows where the model's attention
+    # actually was rather than how long ago it first mentioned it. The sum is
+    # how many steps engaged with the right answer, which is what
+    # `reasoning_gold_alive_rate` reports.
     alive = per_step("anchoring_point", "gold_alive_per_step",
                      "reasoning_gold_alive_per_step", kind=_binary_list)
     if alive is not None:
