@@ -1874,7 +1874,23 @@ class ReasoningJudgeStage:
         question = "\n\n".join(
             f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
         )
-        # Servers that expose a separate reasoning channel put the chain there;
-        # the rest put it in the content, ahead of the answer line.
-        reasoning = response.reasoning or response.content or ""
-        return question, reasoning
+        # BOTH CHANNELS, IN ORDER, WHEN BOTH ARE THERE.
+        #
+        # This used to be `reasoning or content`, which takes whichever channel
+        # is populated and silently drops the other when both are. That is only
+        # correct if a model puts its whole chain in exactly one of them, and
+        # gpt-5.6-luna does not: measured over one sample in six prompt/
+        # reasoning settings, it returned a trace in the reasoning channel for
+        # one of them, nothing there but 58-293 tokens of explanation in the
+        # content for two more, and eight tokens of bare answer for the rest.
+        # So `reasoning or content` fed the metrics the trace alone where both
+        # existed -- losing the conclusion the trace was building toward -- and
+        # the content alone everywhere else, which reads as two different
+        # measurements sharing a column.
+        #
+        # Concatenated the way the model produced them: the hidden chain first,
+        # then what it actually said. Where only one is present it is used as
+        # it is, with no separator and nothing implying the other was empty for
+        # a reason.
+        parts = [part for part in (response.reasoning, response.content) if part and part.strip()]
+        return question, "\n\n".join(parts)
