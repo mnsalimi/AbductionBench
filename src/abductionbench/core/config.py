@@ -697,6 +697,24 @@ class ReasoningJudgeConfig(_Base):
     #: replies were exactly that.  Counting steps in a chain is a reading task;
     #: it does not need a research budget.  ``None`` leaves the server default.
     reasoning_effort: str | None = "low"
+    #: THE KILL SWITCH: stop paying for a judge that is not producing metrics.
+    #: A sample FAILS when at least one of its judge replies could not be used
+    #: -- unparseable, not a span of the chain, cut off, or a call that failed
+    #: outright -- i.e. a metric it was asked for could not be computed. A
+    #: metric that simply does not apply is not a failure. Once at least
+    #: ``kill_switch_min_samples`` samples have had a real judge call, the
+    #: stage stops sending requests for the rest of the run if more than
+    #: ``kill_switch_max_failure_rate`` of them failed; what is left is marked
+    #: ``not_applicable:reasoning_judge_stopped``, never a zero. The minimum
+    #: is there so a bad first handful cannot trip it.
+    #:
+    #: OFF BY DEFAULT (the user's decision, 2026-09-24): no reasoning-judge
+    #: request is ever withheld unless a run config turns it on. ``remote``
+    #: arms it only for a judge not served on this box -- where every call is
+    #: billed -- ``always`` for any judge.
+    kill_switch: Literal["remote", "always", "off"] = "off"
+    kill_switch_max_failure_rate: float = Field(0.02, ge=0, le=1)
+    kill_switch_min_samples: int = Field(400, ge=1)
     #: The judge's context window, if not its model's ``limits.context_window``.
     #: A sample is judged only if its largest call fits it in the judge's own
     #: tokens (core/judge_budget.py): question, chain, answer, reference and

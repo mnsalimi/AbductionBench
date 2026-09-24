@@ -166,6 +166,34 @@ REASONING_LIST_COLUMNS: tuple[str, ...] = (
 #: Written as MISSING_METRIC when a sample has no anchoring point.
 ANCHORING_COLUMNS = ("reasoning_anchoring_point", "reasoning_anchoring_point_normalized")
 
+#: What the reasoning judge writes into a sample's `details`.
+REASONING_DETAIL_KEYS = (
+    "reasoning_metrics_status",
+    "reasoning_judge_errors",
+    "reasoning_metrics_inapplicable",
+    "reasoning_lists",
+    "reasoning_source",
+)
+
+
+def _without_reasoning(score: SampleScore) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A sample's metrics and details with everything this judge owns removed.
+
+    RE-JUDGING REPLACES, IT DOES NOT MERGE. New metrics used to be written over
+    the old ones (`{**old, **new}`), so a metric the new judgement did not
+    produce -- inapplicable now, or lost to an unusable reply -- kept the old
+    judgement's value: 1,619 of openrouter-trio's 15,171 cot samples showed a
+    number the latest judging had withdrawn. Every judgement now starts from
+    a sample with none of this judge's output, as if never judged.
+
+    "Owns" is exact: the REASONING_METRIC_COLUMNS and REASONING_DETAIL_KEYS,
+    not every name starting "reasoning_" -- medcasereasoning scores its own
+    answers as reasoning_recall and reasoning_overlap, and those stay.
+    """
+    metrics = {k: v for k, v in score.metrics.items() if k not in _REASONING_METRIC_SET}
+    details = {k: v for k, v in score.details.items() if k not in REASONING_DETAIL_KEYS}
+    return metrics, details
+
 REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     # 1. observation (evidence) coverage
     "reasoning_observations_total",
@@ -220,6 +248,7 @@ REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     "reasoning_neutral_fraction",
     "reasoning_harmful_fraction",
 )
+_REASONING_METRIC_SET = frozenset(REASONING_METRIC_COLUMNS)
 
 
 @dataclass(slots=True)
@@ -888,6 +917,13 @@ class ReasoningJudgeStage:
         self.run_dir = Path(run_dir) if run_dir else None
         #: Counters for the stage's own log line.
         self.stats: dict[str, int] = {"judged": 0, "cached": 0, "calls": 0, "failed": 0}
+        #: The kill switch (ReasoningJudgeConfig.kill_switch): the samples that
+        #: had a real judge call, the ones with an unusable reply, and whether
+        #: it has tripped. Run-wide -- one stage serves every task.
+        self._ks_armed = self._kill_switch_armed()
+        self._ks_sent: set[tuple[str, str]] = set()
+        self._ks_failed: set[tuple[str, str]] = set()
+        self.kill_switch_tripped = False
         if config.cache and self._cache_path.exists():
             try:
                 payload = orjson.loads(self._cache_path.read_bytes())
@@ -897,6 +933,43 @@ class ReasoningJudgeStage:
                 logger.warning(
                     "reasoning judge cache %s is corrupt; starting fresh", self._cache_path
                 )
+
+    # -- the kill switch ------------------------------------------------------ #
+
+    def _kill_switch_armed(self) -> bool:
+        mode = self.config.kill_switch
+        if mode == "off":
+            return False
+        if mode == "always":
+            return True
+        base_url = str(getattr(getattr(getattr(self.client, "model", None), "endpoint", None), "base_url", "") or "")
+        host = re.sub(r"^[a-z]+://", "", base_url).split("/")[0].split(":")[0].lower()
+        return bool(host) and host not in ("127.0.0.1", "localhost", "0.0.0.0", "::1")
+
+    @staticmethod
+    def _ks_key(identity: TaskIdentity, context: dict[str, Any]) -> tuple[str, str]:
+        return identity.slug, str(context.get("sample_id", ""))
+
+    def _ks_check(self) -> bool:
+        """Trip if the failure rate is over the limit; True once tripped."""
+        if self.kill_switch_tripped or not self._ks_armed:
+            return self.kill_switch_tripped
+        sent = len(self._ks_sent)
+        if sent < self.config.kill_switch_min_samples:
+            return False
+        rate = len(self._ks_failed) / sent
+        if rate > self.config.kill_switch_max_failure_rate:
+            self.kill_switch_tripped = True
+            logger.error(
+                "REASONING JUDGE KILL SWITCH: %d of %d samples (%.1f%%) had a judge reply "
+                "that could not be used, over the %.1f%% limit -- no further reasoning-judge "
+                "request will be sent in this run. Samples not yet judged are marked "
+                "not_applicable:reasoning_judge_stopped. Read the failures in each task's "
+                "reasoning_judge_calls.jsonl before resuming.",
+                len(self._ks_failed), sent, 100 * rate,
+                100 * self.config.kill_switch_max_failure_rate,
+            )
+        return self.kill_switch_tripped
 
     # -- entry point --------------------------------------------------------- #
 
@@ -1008,6 +1081,12 @@ class ReasoningJudgeStage:
         if not targets:
             return updated
 
+        if self.kill_switch_tripped:
+            for target in targets:
+                self._mark(updated, target.index, "not_applicable:reasoning_judge_stopped")
+            self.stats["kill_switch_skipped"] = self.stats.get("kill_switch_skipped", 0) + len(targets)
+            return updated
+
         await self._evaluate(targets, identity)
         async with self._lock:
             self._save_cache()
@@ -1032,7 +1111,7 @@ class ReasoningJudgeStage:
             # record. Means skip it (metrics.MISSING_METRIC).
             for name in ANCHORING_COLUMNS:
                 metrics.setdefault(name, MISSING_METRIC)
-            details = dict(target.score.details)
+            kept_metrics, details = _without_reasoning(target.score)
             details["reasoning_metrics_status"] = "ok" if not errors else "partial"
             details["reasoning_source"] = target.reasoning_source
             if errors:
@@ -1049,7 +1128,7 @@ class ReasoningJudgeStage:
                 target.sample,
                 target.response,
                 SampleScore(
-                    metrics={**target.score.metrics, **metrics},
+                    metrics={**kept_metrics, **metrics},
                     prediction=target.score.prediction,
                     parse_ok=target.score.parse_ok,
                     details=details,
@@ -1206,16 +1285,18 @@ class ReasoningJudgeStage:
     ) -> None:
         """Record why an output got no reasoning metrics, without inventing any."""
         sample, response, score = updated[index]
+        # Judged for no reasoning metric at all: nothing an earlier judgement
+        # wrote survives, and the anchoring point is "None" like any other
+        # missing one.
+        kept_metrics, kept_details = _without_reasoning(score)
         updated[index] = (
             sample,
             response,
             SampleScore(
-                # Judged for no reasoning metric at all: its anchoring point is
-                # "None" like any other missing one, not an earlier value.
-                metrics={**score.metrics, **{name: MISSING_METRIC for name in ANCHORING_COLUMNS}},
+                metrics={**kept_metrics, **{name: MISSING_METRIC for name in ANCHORING_COLUMNS}},
                 prediction=score.prediction,
                 parse_ok=score.parse_ok,
-                details={**score.details, "reasoning_metrics_status": status},
+                details={**kept_details, "reasoning_metrics_status": status},
             ),
         )
 
@@ -1685,6 +1766,20 @@ class ReasoningJudgeStage:
         if audit:
             self._append_audit(identity, audit)
 
+        if keyed and self._ks_check():
+            # Tripped: nothing more is bought. Each request reads as unjudged.
+            for request_id, _fields, _key in keyed:
+                out[request_id] = None
+            self.stats["kill_switch_skipped"] = self.stats.get("kill_switch_skipped", 0) + len(keyed)
+            return out
+        if self._ks_armed:
+            for request_id, _fields, _key in keyed:
+                self._ks_sent.add(self._ks_key(identity, ctx.get(request_id, {})))
+
+        def ks_failed(request_id: str) -> None:
+            if self._ks_armed:
+                self._ks_failed.add(self._ks_key(identity, ctx.get(request_id, {})))
+
         # A group is always ``group_size`` requests, whether or not the server
         # has a batch route, so in-flight judge sequences stay at
         # ``group_size x max_parallel_calls`` either way. A server without one
@@ -1766,6 +1861,7 @@ class ReasoningJudgeStage:
                         "reasoning judge %s: unparseable reply %r", family, raw[:200]
                     )
                 self.stats["failed"] += 1
+                ks_failed(request_id)
             out[request_id] = values
             # Written whether or not it parsed: an unparseable reply is exactly
             # the one worth being able to read back.
@@ -1792,6 +1888,10 @@ class ReasoningJudgeStage:
             )
 
         async def run_chunk(chunk: list[tuple[str, dict[str, Any], str]]) -> None:
+            if self._ks_check():
+                for request_id, _fields, _key in chunk:
+                    out[request_id] = None
+                return
             conversations = []
             # The exact bytes sent, kept per request so the audit can record the
             # prompt that produced each answer rather than a re-render of it.
@@ -1826,6 +1926,7 @@ class ReasoningJudgeStage:
                         for request_id, _fields, _key in chunk:
                             out[request_id] = None
                             self.stats["failed"] += 1
+                            ks_failed(request_id)
                         self._append_audit(
                             identity,
                             [
@@ -1858,6 +1959,7 @@ class ReasoningJudgeStage:
                         for request_id, _fields, _key in chunk:
                             out[request_id] = None
                             self.stats["failed"] += 1
+                            ks_failed(request_id)
                         self._append_audit(
                             identity,
                             [
@@ -1904,6 +2006,7 @@ class ReasoningJudgeStage:
                         logger.warning("reasoning judge %s failed permanently: %s", family, exc)
                         out[request_id] = None
                         self.stats["failed"] += 1
+                        ks_failed(request_id)
                         self._append_audit(
                             identity,
                             [
@@ -1925,6 +2028,7 @@ class ReasoningJudgeStage:
                     if choice is None:
                         out[request_id] = None
                         self.stats["failed"] += 1
+                        ks_failed(request_id)
                         self._append_audit(
                             identity,
                             [

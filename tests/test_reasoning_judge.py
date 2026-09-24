@@ -755,7 +755,7 @@ def test_the_judge_is_told_how_hard_to_think(tmp_path):
     assert stage(reasoning_effort=None)._sampling_extra() == ()
 
 
-def _targets_sent(tmp_path, *, reference: str, answer: str, **limits):
+def _targets_sent(tmp_path, *, reference: str, answer: str, score=None, **limits):
     """The targets the reasoning judge would query, without querying anything."""
     from abductionbench.core.config import ReasoningJudgeConfig
     from abductionbench.core.types import (
@@ -799,7 +799,9 @@ def _targets_sent(tmp_path, *, reference: str, answer: str, **limits):
         prompt_mode="cot", selection_mode="n/a", data_delivery_mode="static",
         task_kind="generation",
     )
-    scored = [(sample, response, SampleScore(metrics={}, prediction=answer))]
+    if score is not None:
+        score.prediction = answer
+    scored = [(sample, response, score or SampleScore(metrics={}, prediction=answer))]
     out = asyncio.run(stage.apply(_FakeAdapter(), identity, [prompt], scored))
     return sent, out
 
@@ -1488,3 +1490,54 @@ def test_reports_build_from_records_holding_none(tmp_path):
     frame = build_coverage_frame(result)
     row = frame[frame.metric == "reasoning_anchoring_point"].iloc[0]
     assert row["kept"] == 1, "'None' is not a computed value"
+
+
+def test_rejudging_replaces_every_reasoning_metric_instead_of_merging(tmp_path):
+    """What an earlier judgement wrote does not survive a later one.
+
+    Merged, a metric the new judgement did not produce kept the old value --
+    1,619 of openrouter-trio's 15,171 cot samples showed numbers the latest
+    judging had withdrawn. A dataset's own metric that happens to be named
+    reasoning_* (medcasereasoning's reasoning_recall) is not the judge's and stays.
+    """
+    from abductionbench.core.metrics import MISSING_METRIC
+    from abductionbench.core.types import SampleScore
+
+    stale = SampleScore(
+        metrics={
+            "accuracy": 1.0,
+            "reasoning_recall": 0.8,                 # the dataset's, not the judge's
+            "reasoning_anchoring_point": 3.0,        # an earlier judgement's
+            "reasoning_helpfulness_mean": 0.9,
+            "reasoning_uncertainty_rate": 0.5,
+        },
+        details={"reasoning_metrics_status": "ok", "reasoning_lists": {"reasoning_steps": ["old"]},
+                 "reasoning_source": "native_reasoning", "gold": "keep me"},
+    )
+    # The new judgement produces nothing (every call unusable here).
+    _sent, out = _targets_sent(tmp_path, reference="R", answer="A", context_window=65_536,
+                               score=stale)
+    metrics, details = out[0][2].metrics, out[0][2].details
+    assert metrics["accuracy"] == 1.0 and metrics["reasoning_recall"] == 0.8
+    assert "reasoning_helpfulness_mean" not in metrics
+    assert "reasoning_uncertainty_rate" not in metrics
+    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
+    assert details["gold"] == "keep me"
+    assert "reasoning_lists" not in details, "the old per-step lists are gone too"
+    assert details["reasoning_source"] == "visible_cot", "the new judgement's source, not the old one"
+
+
+def test_a_skipped_sample_keeps_none_of_an_earlier_judgement():
+    from abductionbench.core.metrics import MISSING_METRIC
+    from abductionbench.core.types import ModelResponse, ResponseStatus, SampleScore, SampleSpec
+
+    sample = SampleSpec(sample_id="s", fields={})
+    response = ModelResponse(sample_id="s", model_id="m", status=ResponseStatus.OK, content="x")
+    score = SampleScore(metrics={"accuracy": 0.0, "reasoning_total_steps": 7.0},
+                        details={"reasoning_lists": {"reasoning_steps": ["old"]}})
+    updated = [(sample, response, score)]
+    ReasoningJudgeStage._mark(updated, 0, "not_applicable:no_reasoning_chain")
+    metrics, details = updated[0][2].metrics, updated[0][2].details
+    assert "reasoning_total_steps" not in metrics and metrics["accuracy"] == 0.0
+    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
+    assert details == {"reasoning_metrics_status": "not_applicable:no_reasoning_chain"}
