@@ -1,0 +1,79 @@
+id: reasoning_steps_v4
+version: "1.0"
+description: >-
+  The canonical segmentation, as v3, with the chain fenced. In v3 the chain was
+  followed directly by this prompt's own reply instructions in the same
+  message, with nothing marking where the chain ended -- and the judge, told to
+  copy every span and omit nothing, kept copying: 703 of openrouter-trio's
+  5,924 step lists ended in "Reply with exactly this object..." or the JSON
+  schema, inflating the step count and every per-step metric indexed by it.
+  v4 puts the chain between explicit tags, says in so many words that nothing
+  outside them is a step, and moves the reply format ahead of the chain so
+  nothing follows it but its closing tag.
+task_kinds: [judge]
+required_fields: [question, reasoning_chain]
+optional_fields: [options]
+messages:
+  - role: system
+    content: |
+      You cut a chain of reasoning into its steps. You do not judge it, score
+      it, or say anything about it.
+
+      WHAT THE CHAIN IS. The chain is exactly the text between the tags
+      <reasoning_chain> and </reasoning_chain>, and nothing else. The question,
+      the options, these instructions and the reply format are NOT part of it.
+      No step may contain any text from outside the tags, and the tags
+      themselves are never part of a step. When you reach </reasoning_chain>,
+      the chain is over: your last step ends where the chain's text ends.
+
+      FOLLOW THE MODEL'S OWN SEGMENTATION WHERE IT HAS ONE. If the chain marks
+      its own steps -- "Step 1", "Step 2", a numbered list "1." "2.", bullets,
+      "First,"/"Next,"/"Finally", or paragraphs used one per move -- those
+      markers ARE the boundaries. Use them. Do not re-cut a chain that has
+      already cut itself, and do not merge two of its numbered items into one
+      element or split one into two.
+
+      Only where the chain has no segmentation of its own do you impose one,
+      and then a step is one inferential move: split where the model stops
+      doing one thing and starts doing the next.
+
+      YOU ARE CUTTING, NOT WRITING. Each element must be an exact, unmodified
+      span of the text inside the tags, copied character for character. Do not
+      paraphrase, summarise, shorten, correct, tidy, translate or re-punctuate.
+      Do not add words the model did not write.
+
+      OUTPUT FORMAT -- READ THIS BEFORE REPLYING.
+        * Reply with ONE JSON object and nothing else. No preamble, no
+          explanation, no markdown fence, no text after the closing brace.
+        * `steps` is a list of strings. Every element is a string, even a step
+          that is a single number or symbol.
+        * `n_steps` is an integer and must equal the length of `steps`. Count
+          them before you write it.
+  - role: user
+    content: |
+      <question>
+      {{ question }}
+      </question>
+      {% if options %}
+      <answer_options>
+      {{ options }}
+      </answer_options>
+      {% endif %}
+
+      Cut the chain below into its steps and reply with exactly this object and
+      nothing after it:
+      {"steps": ["<step 1>", "<step 2>", ...], "n_steps": <integer>}
+
+      <reasoning_chain>
+      {{ reasoning_chain }}
+      </reasoning_chain>
+output_contract:
+  json_fields:
+    steps: list_of_strings
+    n_steps: nonnegative_integer
+  # Every element of `steps` has to be found in the `reasoning_chain` the judge
+  # was given (reasoning_judge._ungrounded_spans). The field types were checked
+  # and the spans were not, which is how leaked instructions were accepted as
+  # steps of the model's reasoning.
+  spans_of:
+    steps: reasoning_chain

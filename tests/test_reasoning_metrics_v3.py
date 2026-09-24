@@ -155,7 +155,7 @@ def test_backtracking_is_per_step_and_the_rate_is_a_proportion_of_steps():
 
 
 def test_the_segmentation_prompt_only_segments():
-    blob = yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())
+    blob = yaml.safe_load((JUDGE / "reasoning_steps_v4.yaml").read_text())
     body = "\n".join(m["content"] for m in blob["messages"]).lower()
     assert "proof" not in body
     assert "backtracking steps:" not in body
@@ -206,7 +206,7 @@ def test_every_live_per_step_prompt_requires_and_states_the_step_count():
 def test_the_segmentation_follows_the_models_own_markers():
     body = "\n".join(
         m["content"] for m in
-        yaml.safe_load((JUDGE / "reasoning_steps_v3.yaml").read_text())["messages"]
+        yaml.safe_load((JUDGE / "reasoning_steps_v4.yaml").read_text())["messages"]
     )
     assert "FOLLOW THE MODEL'S OWN SEGMENTATION WHERE IT HAS ONE" in body
 

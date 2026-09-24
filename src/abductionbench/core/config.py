@@ -590,7 +590,9 @@ def _reasoning_judge_templates() -> dict[str, str]:
         # become the other's.
         #
         # The canonical segmentation. Everything per-step is indexed by it.
-        "steps": "reasoning_steps_v3",
+        # v4 fences the chain: v3 let the judge copy its own reply
+        # instructions into the step list as if the model had written them.
+        "steps": "reasoning_steps_v4",
         # The question's observations, listed once each. The denominator of
         # coverage, so it is taken once and reused rather than re-read.
         "observation_inventory": "reasoning_observation_inventory_v1",

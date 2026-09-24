@@ -323,7 +323,7 @@ def test_the_segmentation_and_its_counts_come_from_one_call():
     """One reading of the chain, or the lists could not be aligned to it."""
     import yaml
 
-    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_steps_v3.yaml").read_text())
+    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_steps_v4.yaml").read_text())
     declared = set(blob["output_contract"]["json_fields"])
     # The segmentation only segments. What each step proves, disproves or
     # corrects is its own call now: one prompt asked to cut the chain AND judge
@@ -488,6 +488,8 @@ def _reasoning_responder(conversation, max_tokens):
     """
     body = " ".join(str(message.get("content", "")) for message in conversation)
     if '"n_steps"' in body:
+        # Cut from the chain the model below wrote -- a segmentation that is
+        # not a span of its chain is rejected (test_steps_are_spans_of_the_chain).
         return '{"steps": ["one", "two", "three", "four"], "n_steps": 4}'
     if '"proof_disproof_per_step"' in body:
         return '{"proof_disproof_per_step": [0, 1, 1, 2]}'
@@ -525,7 +527,7 @@ def _reasoning_responder(conversation, max_tokens):
         return '{"anchoring_step_index": 2}'
     if '"unresolved_per_step"' in body:
         return '{"unresolved_per_step": [0, 0, 0, 0]}'
-    return "Answer: something"
+    return "one two three four\n\nAnswer: something"
 
 
 def test_the_engine_adds_the_columns_to_cot_and_leaves_io_alone(

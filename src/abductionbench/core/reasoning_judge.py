@@ -37,6 +37,7 @@ import json
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -351,6 +352,61 @@ _CONTRACT_VALIDATORS: dict[str, Any] = {
     "string_or_null": lambda value: value is None or isinstance(value, str),
     "directionality": lambda value: _nonnegative_number(value) in (0.0, 0.5, 1.0),
 }
+
+
+_SPAN_FOLD = str.maketrans(
+    {c: "-" for c in "‐‑‒–—―−"}
+    | {"‘": "'", "’": "'", "“": '"', "”": '"', " ": " "}
+)
+#: A step of this many words or more is matched by its word n-grams.
+_SPAN_NGRAM = 4
+#: The share of a step's n-grams that must occur in the source text.
+_SPAN_MIN_SHARED = 0.8
+
+
+def _span_key(text: str) -> str:
+    """Text as compared for containment: what a faithful copy may change.
+
+    A judge told to copy character for character still swaps a dash, a curly
+    quote or a non-breaking space, drops markdown emphasis and re-flows
+    whitespace -- none of which makes the span someone else's words. Folding
+    exactly those, and nothing that changes a word, is what lets the check be
+    strict about provenance without failing honest cuts.
+    """
+    text = unicodedata.normalize("NFKC", text).translate(_SPAN_FOLD)
+    text = re.sub(r"[*_`#]", "", text)
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _ungrounded_spans(items: list[str], source: str) -> list[int]:
+    """Indices of ``items`` that are not spans of ``source``.
+
+    A step is found in the chain if its folded text is a substring of the
+    chain's, or -- for a step of `_SPAN_NGRAM` words or more -- if at least
+    `_SPAN_MIN_SHARED` of its word n-grams occur there, which absorbs a dropped
+    or doubled word in a long copy. A shorter step has to have every word in
+    the chain. Measured on openrouter-trio's 51,828 steps: 641 leaked
+    instructions and 726 other foreign spans fail; 50,317 pass.
+    """
+    source_key = _span_key(source)
+    source_words = re.findall(r"\w+", source_key)
+    n = _SPAN_NGRAM
+    source_grams = {tuple(source_words[i : i + n]) for i in range(len(source_words) - n + 1)}
+    vocabulary = set(source_words)
+    bad: list[int] = []
+    for index, item in enumerate(items):
+        key = _span_key(item)
+        if key in source_key:
+            continue
+        words = re.findall(r"\w+", key)
+        if len(words) < n:
+            if not words or any(word not in vocabulary for word in words):
+                bad.append(index)
+            continue
+        grams = [tuple(words[i : i + n]) for i in range(len(words) - n + 1)]
+        if sum(gram in source_grams for gram in grams) / len(grams) < _SPAN_MIN_SHARED:
+            bad.append(index)
+    return bad
 
 
 def _satisfies_contract(value: Any, declared: str) -> bool | None:
@@ -1603,6 +1659,36 @@ class ReasoningJudgeStage:
                     self.stats["recovered_from_reasoning"] = (
                         self.stats.get("recovered_from_reasoning", 0) + 1
                     )
+            outcome = "ok" if values is not None else "unparseable"
+            rejected: dict[str, Any] | None = None
+            ungrounded = (
+                self._ungrounded(values, requests.get(request_id) or {}, template)
+                if values is not None
+                else {}
+            )
+            if ungrounded:
+                # WELL-FORMED AND NOT THE MODEL'S. Every field has the declared
+                # type, but some element is not a span of the text it had to be
+                # cut from -- in practice this prompt's own reply instructions,
+                # copied on past the end of the chain. Accepted, it inflated the
+                # step count and shifted every per-step metric indexed by it;
+                # treated as unparseable it is not cached, so a later pass asks
+                # again. Kept in the audit, under `parsed`, to be read back.
+                logger.warning(
+                    "reasoning judge %s: reply rejected -- %s not found in the %s it "
+                    "was cut from: %r",
+                    family,
+                    ", ".join(
+                        f"{name}[{','.join(map(str, where))}]"
+                        for name, where in ungrounded.items()
+                    ),
+                    "/".join(
+                        sorted(set((template.output_contract.get("spans_of") or {}).values()))
+                    ),
+                    str(values.get(next(iter(ungrounded)), ""))[-200:],
+                )
+                self.stats["ungrounded"] = self.stats.get("ungrounded", 0) + 1
+                rejected, values, outcome = values, None, "ungrounded"
             if values is not None:
                 self._cache[key] = {
                     "template": template.ref,
@@ -1615,7 +1701,10 @@ class ReasoningJudgeStage:
                 # would make one bad sample permanent for every later
                 # continuation of the run, which is the opposite of what the
                 # cache is for.
-                logger.warning("reasoning judge %s: unparseable reply %r", family, raw[:200])
+                if outcome == "unparseable":
+                    logger.warning(
+                        "reasoning judge %s: unparseable reply %r", family, raw[:200]
+                    )
                 self.stats["failed"] += 1
             out[request_id] = values
             # Written whether or not it parsed: an unparseable reply is exactly
@@ -1631,10 +1720,10 @@ class ReasoningJudgeStage:
                         cache_key=key,
                         context=ctx.get(request_id, {}),
                         messages=messages,
-                        outcome="ok" if values is not None else "unparseable",
+                        outcome=outcome,
                         content=raw,
                         reasoning=reasoning,
-                        parsed=values,
+                        parsed=values if rejected is None else rejected,
                         parsed_from=parsed_from,
                         finish_reason=finish_reason,
                         usage=usage,
@@ -1900,6 +1989,27 @@ class ReasoningJudgeStage:
                 if depth == 0 and start >= 0:
                     spans.append(raw[start : position + 1])
         return spans
+
+    @staticmethod
+    def _ungrounded(
+        values: dict[str, Any], fields: dict[str, Any], template: PromptTemplate
+    ) -> dict[str, list[int]]:
+        """Which elements of a span field are not found in their source field.
+
+        Declared by the template as ``output_contract.spans_of: {field: source}``
+        -- the steps prompt says every step is a span of ``reasoning_chain``,
+        and this is where that is held to. Empty when every span is found or
+        the template declares none.
+        """
+        found: dict[str, list[int]] = {}
+        for name, source in (template.output_contract.get("spans_of") or {}).items():
+            items = values.get(name)
+            if not isinstance(items, list) or not items:
+                continue
+            bad = _ungrounded_spans([str(item) for item in items], str(fields.get(source) or ""))
+            if bad:
+                found[name] = bad
+        return found
 
     @classmethod
     def _parse_json(cls, text: str, template: PromptTemplate) -> dict[str, Any] | None:
