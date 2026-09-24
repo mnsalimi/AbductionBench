@@ -24,9 +24,11 @@ name: openrouter-trio
 
 engine:
   concurrency:
-    max_parallel_tasks: 48
-    # 32 + 32 model batches; above it, so the per-model limits bind.
-    max_parallel_batches_global: 72
+    # Every task at once: 2 models x 72 tasks. The per-model limits below are
+    # what bound the load, so this only lets every task compete to fill them.
+    max_parallel_tasks: 144
+    # 64 + 64 model batches; above it, so the per-model limits bind.
+    max_parallel_batches_global: 160
 
   judge:
     enabled: false
@@ -36,22 +38,25 @@ engine:
     enabled: false
 
 models:
-  # 32 batches x group 8 = 256 in flight each, the servers' MAX_NUM_SEQS.
-  # Windows 32,768 (the script starts the servers with that); ABENCH_*_WINDOW
-  # says so if a server had to fall back to 16,384.
+  # MAXIMUM THROUGHPUT, NOTHING CUT. 64 batches x group 8 = 512 in flight per
+  # model, the servers' MAX_NUM_SEQS; the KV pool decides how many decode at
+  # once. Windows 65,536 -- not 32,768 -- so EVERY dataset gets the suite's
+  # full 32,000-token answer budget, as the trio did: at 32,768 scir's
+  # 8,259-token prompts would have left only 23,390. The script starts the
+  # servers with exactly this and refuses to fall back to anything smaller.
   - file: ../models/gemma-4-e4b-local.yaml
     sampling:
       extra:
         chat_template_kwargs: {enable_thinking: false}
     limits:
-      max_parallel_batches: 32
-      max_connections: 96
-      context_window: ${env:ABENCH_E4B_WINDOW|32768}
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
   - file: ../models/gemma-4-e2b-local.yaml
     sampling:
       extra:
         chat_template_kwargs: {enable_thinking: false}
     limits:
-      max_parallel_batches: 32
-      max_connections: 96
-      context_window: ${env:ABENCH_E2B_WINDOW|32768}
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536

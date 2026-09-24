@@ -2,9 +2,11 @@
 # gemma-4-E4B + gemma-4-E2B, GENERATION ONLY, into 20260924-002252_openrouter-trio.
 #
 #   1. stops every vLLM server on this box (the gpt-oss-120b judge included)
-#   2. serves gemma-4-E4B (:18000) and gemma-4-E2B (:18005) side by side:
-#      0.45 + 0.35 of the card, 256 sequences each, 32,768-token windows
-#      (falling back to 16,384 if a server will not start that way)
+#   2. serves gemma-4-E4B (:18000) and gemma-4-E2B (:18005) side by side at
+#      maximum throughput: 0.48 + 0.40 of the card, 512 sequences each,
+#      16,384-token scheduler steps, 65,536-token windows -- so every dataset
+#      gets the full 32,000-token answer budget. No fallback to anything
+#      smaller: if a server will not start this way, the script stops.
 #   3. checks each answers io without thinking
 #   4. runs configs/runs/trio_gemma_small_generate.yaml --resume: io and cot on
 #      every dataset, no judge, synced to Drive
@@ -99,22 +101,20 @@ for _ in $(seq 1 30); do [ "$(gpu_used)" -lt 4000 ] && break; sleep 10; done
 say "GPU memory in use: $(gpu_used) MiB"
 
 # -- 2. serve the two gemmas ---------------------------------------------------
-# 0.45 + 0.35 = 0.80 of 95.6 GiB, ~19 GiB left for cuBLAS workspace outside
-# vLLM's reservation (0.78 beside another model once died in service for want
-# of it). 256 sequences each; the KV pool decides how many actually run.
-set_env gemma-4-e4b GPU_MEMORY_UTILIZATION 0.45; set_env gemma-4-e4b MAX_MODEL_LEN 32768; set_env gemma-4-e4b MAX_NUM_SEQS 256
-set_env gemma-4-e2b GPU_MEMORY_UTILIZATION 0.35; set_env gemma-4-e2b MAX_MODEL_LEN 32768; set_env gemma-4-e2b MAX_NUM_SEQS 256
-export ABENCH_E4B_WINDOW=32768 ABENCH_E2B_WINDOW=32768
-if ! start_service gemma-4-e4b-vllm 18000; then
-    say "retrying gemma-4-E4B with its old 16,384 window"
-    set_env gemma-4-e4b MAX_MODEL_LEN 16384; export ABENCH_E4B_WINDOW=16384
-    start_service gemma-4-e4b-vllm 18000 || { say "gemma-4-E4B will not start -- stopping"; exit 1; }
-fi
-if ! start_service gemma-4-e2b-vllm 18005; then
-    say "retrying gemma-4-E2B with its old 16,384 window"
-    set_env gemma-4-e2b MAX_MODEL_LEN 16384; export ABENCH_E2B_WINDOW=16384
-    start_service gemma-4-e2b-vllm 18005 || { say "gemma-4-E2B will not start -- stopping"; supervisorctl stop gemma-4-e4b-vllm; exit 1; }
-fi
+# 0.48 + 0.40 = 0.88 of 95.6 GiB, ~11 GiB left for cuBLAS workspace outside
+# vLLM's reservation (0.98 in total once died in service for want of it).
+# 512 sequences each -- the KV pool, not the cap, decides how many decode at
+# once -- and 16,384-token scheduler steps, so long prompts prefill in one.
+for m in gemma-4-e4b gemma-4-e2b; do
+    set_env $m MAX_MODEL_LEN 65536
+    set_env $m MAX_NUM_SEQS 512
+    set_env $m MAX_NUM_BATCHED_TOKENS 16384
+    set_env $m ENFORCE_EAGER 0
+done
+set_env gemma-4-e4b GPU_MEMORY_UTILIZATION 0.48
+set_env gemma-4-e2b GPU_MEMORY_UTILIZATION 0.40
+start_service gemma-4-e4b-vllm 18000 || { say "gemma-4-E4B will not start with these settings -- stopping, nothing generated"; exit 1; }
+start_service gemma-4-e2b-vllm 18005 || { say "gemma-4-E2B will not start with these settings -- stopping, nothing generated"; supervisorctl stop gemma-4-e4b-vllm >>"$LOG" 2>&1; exit 1; }
 
 # -- 3. io must not think ------------------------------------------------------
 for probe in "18000 google/gemma-4-E4B-it" "18005 google/gemma-4-E2B-it"; do
@@ -129,7 +129,7 @@ for probe in "18000 google/gemma-4-E4B-it" "18005 google/gemma-4-E2B-it"; do
 done
 
 # -- 4. generate ---------------------------------------------------------------
-say "generating: abench run $CONFIG --resume $RUN (windows: E4B $ABENCH_E4B_WINDOW, E2B $ABENCH_E2B_WINDOW)"
+say "generating: abench run $CONFIG --resume $RUN (65,536-token windows, 512 in flight per model)"
 .venv/bin/abench run "$CONFIG" --resume "$RUN" >>"$LOG" 2>&1
 rc=$?
 say "generation exited with $rc"
