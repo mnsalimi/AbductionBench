@@ -14,6 +14,9 @@
 #              each, and the first that returns NO reasoning is run. If none
 #              does, io is NOT run with reasoning on -- it is skipped and said.
 #       cot -- native reasoning ON, probed the same way first.
+#   Out of OpenRouter credit (HTTP 402) -> the backup key in /workspace/.env
+#     (OPENROUTER_API_KEY_BACKUP) takes over and the pass is resumed; only the
+#     answers that failed are asked again.
 #   END -- the workbook rebuilt from every record on disk (abench report), then
 #     the Drive sidecar is stopped: it makes its final VERIFIED upload, and
 #     this script waits for it.
@@ -40,6 +43,9 @@ if [ -z "${OPENROUTER_API_KEY:-}" ]; then set -a; . /workspace/.env; set +a; fi
 ABENCH_API_KEY=$(set -a; . "$SERVING/qwen3.5-2b/.env"; echo "${VLLM_API_KEY:-}")
 export ABENCH_API_KEY OPENROUTER_API_KEY
 [ -n "$ABENCH_API_KEY" ] || { say "no VLLM_API_KEY in $SERVING/qwen3.5-2b/.env"; exit 1; }
+# The second OpenRouter key, used only once the first runs out of credit (402).
+OPENROUTER_API_KEY_BACKUP=$(set -a; . /workspace/.env; echo "${OPENROUTER_API_KEY_BACKUP:-}")
+KEY_SWITCHED=0
 
 restore_envs() {
     for backup in "$SERVING"/*/"$BACKUP_SUFFIX"; do
@@ -126,11 +132,38 @@ run_pass() {  # run_pass <label> <config>
     return $rc
 }
 
+switch_key() {  # to the backup OpenRouter key, once; false if there is none left
+    if [ $KEY_SWITCHED = 1 ] || [ -z "$OPENROUTER_API_KEY_BACKUP" ]; then return 1; fi
+    OPENROUTER_API_KEY=$OPENROUTER_API_KEY_BACKUP; export OPENROUTER_API_KEY; KEY_SWITCHED=1
+    say "OpenRouter key out of credit (HTTP 402): switched to the backup key"
+}
+
 probe_thinking() {  # probe_thinking <config> on|off
-    local out rc
-    out=$(.venv/bin/python tools/probe_openrouter_thinking.py "$1" "$2" 2>&1 | tail -1); rc=$?
+    local out
+    out=$(.venv/bin/python tools/probe_openrouter_thinking.py "$1" "$2" 2>&1 | tail -1)
+    if [[ "$out" == *"402"* ]] && switch_key; then
+        out=$(.venv/bin/python tools/probe_openrouter_thinking.py "$1" "$2" 2>&1 | tail -1)
+    fi
     say "probe $(basename "$1") (want $2): $out"
     [[ "$out" == "$2 ("* ]]
+}
+
+paid_pass() {  # paid_pass <label> <config> -- an OpenRouter pass; on 402, again with the backup key
+    local start n402
+    start=$(stat -c %s "$LOG")
+    run_pass "$1" "$2"
+    n402=$(tail -c +$((start + 1)) "$LOG" | grep -c "HTTP 402")
+    if [ "$n402" -gt 0 ]; then
+        say "$1: $n402 log line(s) with HTTP 402 (out of credit)"
+        if switch_key; then
+            start=$(stat -c %s "$LOG")
+            run_pass "$1 -- again with the backup key (only the failed answers are asked)" "$2"
+            n402=$(tail -c +$((start + 1)) "$LOG" | grep -c "HTTP 402")
+            [ "$n402" -gt 0 ] && say "$1: the backup key ran out of credit too ($n402 x HTTP 402) -- top one up and resume"
+        else
+            say "$1: no backup key left -- top up and resume"
+        fi
+    fi
 }
 
 # -- 0. never two runs in one folder ------------------------------------------
@@ -188,12 +221,12 @@ for round in 1 2; do
     [ $round = 1 ] && sleep 60
 done
 if [ -n "$io_config" ]; then
-    run_pass "phase 2 io pass (27B via OpenRouter, thinking off, $(basename "$io_config"))" "$io_config"
+    paid_pass "phase 2 io pass (27B via OpenRouter, thinking off, $(basename "$io_config"))" "$io_config"
 else
     say "PHASE 2 IO NOT RUN: no variant turned the 27B's native reasoning off on OpenRouter -- nothing generated with reasoning on"
 fi
 if probe_thinking "$COT27_CONFIG" on || { sleep 60; probe_thinking "$COT27_CONFIG" on; }; then
-    run_pass "phase 2 cot pass (27B via OpenRouter, thinking on)" "$COT27_CONFIG"
+    paid_pass "phase 2 cot pass (27B via OpenRouter, thinking on)" "$COT27_CONFIG"
 else
     say "PHASE 2 COT NOT RUN: the 27B did not return native reasoning with thinking on"
 fi
