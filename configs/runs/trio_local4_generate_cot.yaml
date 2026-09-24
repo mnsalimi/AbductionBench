@@ -1,0 +1,80 @@
+# gemma-4-E4B, gemma-4-E2B, Qwen3.5-2B and Qwen3.5-4B, served side by side on
+# this box -- the COT pass, native reasoning ON (enable_thinking: true) for
+# all four, GENERATING ONLY, into the same run folder as openrouter-trio.
+#
+# The servers run vLLM's reasoning parsers (gemma4 / qwen3), so the native
+# reasoning comes back in the reply's own `reasoning` field -- the workbook's
+# reasoning column beside the response, as for gpt-5.6-luna and
+# gemini-3.8-flash -- and `content` keeps the prompt's <think>/<answer>.
+#
+# Judges deferred: every model in the run is to be graded later by the one
+# local gpt-oss-120b. Until then judge-only datasets carry a placeholder 0.0.
+# Run by tools/local4_generate.sh after trio_local4_generate_io.yaml.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+modes:
+  prompt_modes: [cot]
+
+engine:
+  concurrency:
+    # Every task at once: 4 models x 36 tasks per mode.
+    max_parallel_tasks: 144
+    max_parallel_batches_global: 256
+
+  judge:
+    enabled: false
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+models:
+  # 512 in flight per model (gemma 64 x 8, qwen 32 x 16); windows 65,536, so
+  # every dataset keeps the suite's full 32,000-token answer budget.
+  - file: ../models/gemma-4-e4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/gemma-4-e2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 160
+      context_window: 65536

@@ -1,0 +1,69 @@
+# The IO pass for the same four models: native reasoning OFF
+# (enable_thinking: false) for all four. Otherwise identical to
+# trio_local4_generate_cot.yaml.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+modes:
+  prompt_modes: [io]
+
+engine:
+  concurrency:
+    # Every task at once: 4 models x 36 tasks per mode.
+    max_parallel_tasks: 144
+    max_parallel_batches_global: 256
+
+  judge:
+    enabled: false
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+models:
+  - file: ../models/gemma-4-e4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/gemma-4-e2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 160
+      context_window: 65536
