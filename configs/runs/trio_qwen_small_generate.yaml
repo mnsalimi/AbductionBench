@@ -1,0 +1,54 @@
+# Qwen3.5-2B and Qwen3.5-4B served side by side on this box, GENERATING ONLY,
+# into the same run folder as openrouter-trio
+# (`--resume 20260924-002252_openrouter-trio`) -- the cot pass.
+#
+# No judge runs: both are deferred so every model in the run can later be
+# graded by the one local gpt-oss-120b judge. Until then the datasets scored by
+# the judge alone carry a placeholder 0.0 and cot has no reasoning metrics.
+#
+# cot keeps each model's DEFAULT template, which is not the same for the two:
+# Qwen3.5-4B thinks unless enable_thinking is false; Qwen3.5-2B thinks only if
+# it is true. trio_qwen_small_generate_io.yaml is the io pass, thinking off
+# for both. Run by tools/qwen_small_generate.sh.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+# cot only, in the file itself: running this by mistake must not be able to
+# do io without the thinking switch.
+modes:
+  prompt_modes: [cot]
+
+engine:
+  concurrency:
+    max_parallel_tasks: 144
+    max_parallel_batches_global: 96
+
+  judge:
+    enabled: false
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+models:
+  # MAXIMUM THROUGHPUT, NOTHING CUT: 32 batches x group 16 = 512 in flight per
+  # model, the servers' MAX_NUM_SEQS. Windows 65,536, so every dataset gets the
+  # suite's full 32,000-token answer budget.
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: 65536

@@ -1,0 +1,77 @@
+# Qwen/Qwen3.5-4B served by vLLM on this instance (127.0.0.1:18001), reached
+# without a tunnel.
+#
+# The serving model on this box changes; this file records what is actually up:
+#   vllm serve Qwen/Qwen3.5-4B --host 127.0.0.1 --port 18001
+#     --max-model-len 65536 --max-num-seqs 64 --enable-prefix-caching
+# Both of those flags are load-bearing below -- the context window and the batch
+# group size are read straight off them.
+#
+# No tunnel, so no discovery: a fixed local address never rotates. Cloudflare
+# quick tunnels cut every request off at ~100 s (HTTP 524), which a batch that
+# generates for longer cannot survive, so local is the right path when the
+# engine runs on the GPU host.
+model:
+  id: qwen3-5-4b-local
+  model_name: Qwen/Qwen3.5-4B
+  description: >-
+    Qwen3.5-4B served by vLLM with MAX_MODEL_LEN=65536,
+    prefix caching on and CUDA graphs enabled.
+  # Returns content directly and leaves `reasoning` null.
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_4B_URL|http://127.0.0.1:18002}
+    api_key: ${env:ABENCH_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: true
+      base_url: ${env:ABENCH_4B_URL|http://127.0.0.1:18002}
+      path: /v1/chat/completions/batch
+      # A batch should fill the server's scheduler exactly: larger and the
+      # surplus only queues inside vLLM, smaller and the GPU idles. So this
+      # tracks --max-num-seqs, and both come from one place:
+      #
+      #   vllm serve ... --max-num-seqs 64
+      #   export ABENCH_GROUP_SIZE=64
+      #
+      # Raising them is the main throughput lever for this suite, which is
+      # decode-bound (measured: 37M output tokens against 8.7M input).
+      # 8 -> 16 (2026-09-14). In-flight sequences on this model are
+      # max_parallel_batches x group_size; at 2 x 8 the client was asking for
+      # 16 of the server's 64 --num-max-seqs, so three quarters of a GPU that
+      # was already paid for sat idle. 4 x 16 = 64 matches it exactly.
+      group_size: ${env:ABENCH_GROUP_SIZE|16}
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    # The budget is not guessed per task: every request asks for
+    # min(max_tokens_cap, context_window - input_tokens_est). Against a
+    # 32,768-token window the window is still usually what binds.
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    extra: {}
+
+  limits:
+    # 2 -> 4, with group_size 16, to drive exactly MAX_NUM_SEQS=64. This costs
+    # no GPU memory: vLLM preallocates its KV cache at startup, so more
+    # in-flight requests fill slots that already exist. Overshooting would
+    # queue (or preempt), not OOM -- but it is matched, not overshot.
+    max_parallel_batches: 4
+    requests_per_minute: null
+    tokens_per_minute: null
+    # MAX_MODEL_LEN: prompt + generation must fit inside this. 32,768 is what
+    # gives interactive episodes room to run their transcripts to the end --
+    # see engine.limits.input_token_budget_by_delivery.
+    # 65,536 -- what the server is actually serving (MAX_MODEL_LEN=65536 in
+    # /workspace/vllm_serving/qwen3.5-2b/.env). Raised from 32,768 so the
+    # datasets that ask for a 64,000-token answer can get one; the model
+    # supports 262,144 positions natively.
+    context_window: 65536

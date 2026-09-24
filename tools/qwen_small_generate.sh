@@ -1,39 +1,38 @@
 #!/usr/bin/env bash
-# gemma-4-E4B + gemma-4-E2B, GENERATION ONLY, into 20260924-002252_openrouter-trio.
+# Qwen3.5-2B + Qwen3.5-4B, GENERATION ONLY, into 20260924-002252_openrouter-trio.
 #
-#   1. stops every vLLM server on this box (the gpt-oss-120b judge included)
-#   2. serves gemma-4-E4B (:18000) and gemma-4-E2B (:18005) side by side at
-#      maximum throughput: 0.48 + 0.40 of the card, 512 sequences each,
-#      16,384-token scheduler steps, 65,536-token windows -- so every dataset
-#      gets the full 32,000-token answer budget. No fallback to anything
-#      smaller: if a server will not start this way, the script stops.
-#   3. checks each answers io without thinking
-#   4. runs configs/runs/trio_gemma_small_generate.yaml --resume: io and cot on
-#      every dataset, no judge, synced to Drive
+#   1. waits for any other abench run in this folder to end, then stops every
+#      vLLM server on this box
+#   2. serves Qwen3.5-2B (:18001) and Qwen3.5-4B (:18002) side by side at
+#      maximum throughput: 0.36 + 0.52 of the card, 512 sequences each,
+#      16,384-token scheduler steps, 65,536-token windows -- every dataset gets
+#      the full 32,000-token answer budget. No fallback to anything smaller.
+#   3. checks both answer without thinking when enable_thinking is false
+#   4. io pass (thinking off for both), then cot pass (each model's default:
+#      the 4B thinks, the 2B does not) -- every dataset, no judge, synced to Drive
 #   5. stops both servers and puts their .env files back
 #
-# Nothing is restarted afterwards: bring the judge back when you choose.
-#
-# Start:  cd /workspace/AbductionBench && nohup bash tools/gemma_small_generate.sh > /dev/null 2>&1 &
-# Watch:  tail -f /workspace/abench_trio.log      (steps tagged [gemma-gen])
-# Stop:   pkill -f gemma_small_generate.sh; pkill -INT -f 'bin/abench run'
+# Start:  cd /workspace/AbductionBench && nohup bash tools/qwen_small_generate.sh > /dev/null 2>&1 &
+# Watch:  tail -f /workspace/abench_trio.log      (steps tagged [qwen-gen])
+# Stop:   pkill -f qwen_small_generate.sh; pkill -INT -f 'bin/abench run'
 set -uo pipefail
 
 RUN=20260924-002252_openrouter-trio
 REPO=/workspace/AbductionBench
 SERVING=/workspace/vllm_serving
 LOG=/workspace/abench_trio.log
-CONFIG=configs/runs/trio_gemma_small_generate.yaml
-BACKUP_SUFFIX=.env.gemma-gen-backup
+CONFIG_IO=configs/runs/trio_qwen_small_generate_io.yaml
+CONFIG_COT=configs/runs/trio_qwen_small_generate.yaml
+BACKUP_SUFFIX=.env.qwen-gen-backup
 
-say() { echo "$(date '+%F %T') [gemma-gen] $*" | tee -a "$LOG"; }
+say() { echo "$(date '+%F %T') [qwen-gen] $*" | tee -a "$LOG"; }
 
 cd "$REPO" || exit 1
 [ -d "runs/$RUN/datasets" ] || { say "no run folder runs/$RUN"; exit 1; }
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then set -a; . /workspace/.env; set +a; fi
-ABENCH_API_KEY=$(set -a; . "$SERVING/gemma-4-e4b/.env"; echo "${VLLM_API_KEY:-}")
+ABENCH_API_KEY=$(set -a; . "$SERVING/qwen3.5-2b/.env"; echo "${VLLM_API_KEY:-}")
 export ABENCH_API_KEY OPENROUTER_API_KEY
-[ -n "$ABENCH_API_KEY" ] || { say "no VLLM_API_KEY in $SERVING/gemma-4-e4b/.env"; exit 1; }
+[ -n "$ABENCH_API_KEY" ] || { say "no VLLM_API_KEY in $SERVING/qwen3.5-2b/.env"; exit 1; }
 
 restore_envs() {
     for backup in "$SERVING"/*/"$BACKUP_SUFFIX"; do
@@ -103,41 +102,53 @@ say "stopped: ${running:-nothing was running}"
 for _ in $(seq 1 30); do [ "$(gpu_used)" -lt 4000 ] && break; sleep 10; done
 say "GPU memory in use: $(gpu_used) MiB"
 
-# -- 2. serve the two gemmas ---------------------------------------------------
-# 0.48 + 0.40 = 0.88 of 95.6 GiB, ~11 GiB left for cuBLAS workspace outside
-# vLLM's reservation (0.98 in total once died in service for want of it).
-# 512 sequences each -- the KV pool, not the cap, decides how many decode at
-# once -- and 16,384-token scheduler steps, so long prompts prefill in one.
-for m in gemma-4-e4b gemma-4-e2b; do
+# -- 2. serve the two qwens ----------------------------------------------------
+# The 4B's service was restored on 2026-09-24; supervisor has to be told.
+supervisorctl reread >>"$LOG" 2>&1; supervisorctl update qwen3.5-4b-vllm >>"$LOG" 2>&1
+# 0.36 + 0.52 = 0.88 of 95.6 GiB, ~11 GiB left for cuBLAS workspace outside
+# vLLM's reservation. Both are hybrid linear-attention models, so their KV is
+# cheap; 512 sequences each, 16,384-token scheduler steps, prefix caching on
+# (every prompt is asked three times, as repeats).
+for m in qwen3.5-2b qwen3.5-4b; do
     set_env $m MAX_MODEL_LEN 65536
     set_env $m MAX_NUM_SEQS 512
     set_env $m MAX_NUM_BATCHED_TOKENS 16384
+    set_env $m ENABLE_PREFIX_CACHING 1
     set_env $m ENFORCE_EAGER 0
 done
-set_env gemma-4-e4b GPU_MEMORY_UTILIZATION 0.48
-set_env gemma-4-e2b GPU_MEMORY_UTILIZATION 0.40
-start_service gemma-4-e4b-vllm 18000 || { say "gemma-4-E4B will not start with these settings -- stopping, nothing generated"; exit 1; }
-start_service gemma-4-e2b-vllm 18005 || { say "gemma-4-E2B will not start with these settings -- stopping, nothing generated"; supervisorctl stop gemma-4-e4b-vllm >>"$LOG" 2>&1; exit 1; }
+set_env qwen3.5-2b GPU_MEMORY_UTILIZATION 0.36
+set_env qwen3.5-4b GPU_MEMORY_UTILIZATION 0.52
+start_service qwen3.5-4b-vllm 18002 || { say "Qwen3.5-4B will not start with these settings -- stopping, nothing generated"; exit 1; }
+start_service qwen3.5-2b-vllm 18001 || { say "Qwen3.5-2B will not start with these settings -- stopping, nothing generated"; supervisorctl stop qwen3.5-4b-vllm >>"$LOG" 2>&1; exit 1; }
 
 # -- 3. io must not think ------------------------------------------------------
-for probe in "18000 google/gemma-4-E4B-it" "18005 google/gemma-4-E2B-it"; do
+for probe in "18001 Qwen/Qwen3.5-2B" "18002 Qwen/Qwen3.5-4B"; do
     # shellcheck disable=SC2086
     if thinking_is_off $probe >>"$LOG" 2>&1; then
         say "probe ${probe#* }: answers without thinking -- ok"
     else
         say "probe ${probe#* }: THINKING IS ON -- stopping before any generation"
-        supervisorctl stop gemma-4-e4b-vllm gemma-4-e2b-vllm >>"$LOG" 2>&1
+        supervisorctl stop qwen3.5-2b-vllm qwen3.5-4b-vllm >>"$LOG" 2>&1
         exit 1
     fi
 done
 
-# -- 4. generate ---------------------------------------------------------------
-say "generating: abench run $CONFIG --resume $RUN (65,536-token windows, 512 in flight per model)"
-.venv/bin/abench run "$CONFIG" --resume "$RUN" >>"$LOG" 2>&1
+# -- 4. generate: io (thinking off), then cot (each model's default) ------------
+say "io pass: abench run $CONFIG_IO --resume $RUN"
+.venv/bin/abench run "$CONFIG_IO" --resume "$RUN" >>"$LOG" 2>&1
 rc=$?
-say "generation exited with $rc"
+say "io pass exited with $rc"
+if [ $rc -eq 0 ] || [ $rc -eq 3 ]; then
+    while pgrep -f 'bin/abench run' >/dev/null; do sleep 30; done
+    say "cot pass: abench run $CONFIG_COT --resume $RUN"
+    .venv/bin/abench run "$CONFIG_COT" --resume "$RUN" >>"$LOG" 2>&1
+    rc=$?
+    say "cot pass exited with $rc"
+else
+    say "not starting the cot pass"
+fi
 
 # -- 5. free the GPU again -----------------------------------------------------
-supervisorctl stop gemma-4-e4b-vllm gemma-4-e2b-vllm >>"$LOG" 2>&1
-say "stopped both gemma servers; nothing is running on the GPU"
+supervisorctl stop qwen3.5-2b-vllm qwen3.5-4b-vllm >>"$LOG" 2>&1
+say "stopped both qwen servers; nothing is running on the GPU"
 exit $rc

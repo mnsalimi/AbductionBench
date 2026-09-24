@@ -1,0 +1,32 @@
+# The io pass of trio_qwen_small_generate.yaml: thinking explicitly OFF for
+# both. Qwen3.5-4B's template thinks by default, so without this its io
+# answers would come after a chain -- which is not io.
+extends:
+  - trio_qwen_small_generate.yaml
+
+modes:
+  prompt_modes: [io]
+
+models:
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 16
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: 65536
