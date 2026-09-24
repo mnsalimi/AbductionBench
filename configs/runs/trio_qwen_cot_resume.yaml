@@ -1,0 +1,45 @@
+# The rest of Qwen3.5-2B's and Qwen3.5-4B's COT pass (native reasoning ON) in
+# openrouter-trio, with the GPU to themselves. The four-model pass stopped them
+# at 612 and 858 of 5,400: batches of 16 answers shared one 30-minute timeout,
+# and one answer thinking to the 32,000-token cap sank the other fifteen --
+# 163 timeouts and 32 batches lost. Now every answer is its own request (group
+# 1) under a 60-minute timeout. Nothing else changes: same thinking switch,
+# window and sampling, so every saved answer matches its fingerprint and is
+# reused. Judges deferred; no built-in Drive sync (tools/sync_run.sh does it).
+# Run by tools/qwen_cot_resume.sh.
+extends:
+  - trio_local4_generate_cot.yaml
+
+name: openrouter-trio
+
+engine:
+  concurrency:
+    max_parallel_tasks: 72
+    # 512 + 512 single-answer requests; above it, so the per-model limits bind.
+    max_parallel_batches_global: 1100
+  timeouts:
+    read_s: 3600
+
+models:
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 512
+      max_connections: 600
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 512
+      max_connections: 600
+      context_window: 65536
