@@ -1,0 +1,28 @@
+# Qwen3.5-27B, the COT pass, native reasoning ON (enable_thinking: true) --
+# treated exactly as Qwen3.5-2B/4B were (trio_local4_generate_cot.yaml, then
+# trio_qwen_cot_resume_v2.yaml): vLLM's qwen3 parser puts the native thinking
+# in the reply's `reasoning` field, one answer per request, a short queue and
+# a 2-hour timeout, since a long native-reasoning answer can run for many
+# minutes. GENERATING ONLY: judges deferred, no engine sync.
+extends:
+  - trio_qwen27b_generate_io.yaml
+
+modes:
+  prompt_modes: [cot]
+
+models:
+  # 96 in flight against MAX_NUM_SEQS 128: 27B's linear-attention state is
+  # ~144 MiB per sequence, so long thinking answers fill the cache well before
+  # 128 of them run; more would only wait in vLLM's queue, on the clock.
+  - file: ../models/qwen3-5-27b-local.yaml
+    endpoint:
+      api_key: ${env:ABENCH_API_KEY}
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 96
+      max_connections: 128
+      context_window: 65536
