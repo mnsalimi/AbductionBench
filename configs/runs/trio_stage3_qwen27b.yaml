@@ -1,0 +1,46 @@
+# STAGE 3 of tools/overnight_openrouter_trio.sh: Qwen3.5-27B alone on this
+# box, into the SAME run folder as openrouter-trio, both judges
+# openai/gpt-oss-120b on OpenRouter.
+#
+# This file is the cot pass: the model's default template, which THINKS
+# (Qwen3.5-27B's template disables thinking only when enable_thinking is
+# false). trio_stage3_qwen27b_io.yaml is the io pass with thinking off -- an
+# earlier run's io replies from this model opened with "Thinking Process:" in
+# 121 of 123, which is not io.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+# cot only, in the file itself: io needs the thinking switch in the _io file,
+# and running this one by mistake must not be able to do io without it.
+modes:
+  prompt_modes: [cot]
+
+engine:
+  concurrency:
+    max_parallel_tasks: 48
+    max_parallel_batches_global: 32
+
+  judge:
+    enabled: true
+    defer: false
+    model: gpt-oss-120b-openrouter
+    group_size: 8
+    max_parallel_calls: 24
+
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-openrouter
+    group_size: 8
+    max_parallel_calls: 24
+
+models:
+  - file: ../models/qwen3-5-27b-local.yaml
+    limits:
+      # group 8 x 16 = 128 = the server's MAX_NUM_SEQS (the overnight script
+      # raises it from 32; ABENCH_27B_BATCHES says so if it had to fall back).
+      max_parallel_batches: ${env:ABENCH_27B_BATCHES|16}
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    limits:
+      max_connections: 256

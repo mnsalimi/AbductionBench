@@ -1,0 +1,68 @@
+# STAGE 2 of tools/overnight_openrouter_trio.sh: gemma-4-E4B, gemma-4-E2B and
+# Qwen3.5-2B served side by side on this box, into the SAME run folder as
+# openrouter-trio (`--resume 20260924-002252_openrouter-trio`), so every model
+# is measured on the identical samples and lands in one workbook.
+#
+# The GPU holds the three models under test, so both judges are
+# openai/gpt-oss-120b rented from OpenRouter -- the same weights stage 1 served
+# locally, not the same server; the judge column says which.
+#
+# This file is the cot pass (the models' default templates, which do not think
+# unless asked). trio_stage2_small_local_io.yaml is the io pass and adds
+# enable_thinking: false, stated rather than assumed.
+#
+# The trio's models are deliberately NOT listed: a model not listed is not
+# planned, so its records are carried into the reports untouched rather than
+# re-judged by a different judge.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+# cot only, in the file itself: io needs the thinking switch in the _io file,
+# and running this one by mistake must not be able to do io without it.
+modes:
+  prompt_modes: [cot]
+
+engine:
+  concurrency:
+    max_parallel_tasks: 48
+    # 16 + 16 + 8 model batches; above it, so the per-model limits bind.
+    max_parallel_batches_global: 64
+
+  judge:
+    enabled: true
+    defer: false
+    model: gpt-oss-120b-openrouter
+    group_size: 8
+    # 24 x 8 = 192 requests in flight, shared with the reasoning judge (the
+    # budget is the larger of the two, not the sum). OpenRouter has no batch
+    # route, so a group goes as 8 concurrent single calls.
+    max_parallel_calls: 24
+
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-openrouter
+    group_size: 8
+    max_parallel_calls: 24
+
+models:
+  # Windows raised 16,384 -> 32,768 (the servers are started with that by the
+  # overnight script); 16,384 clamped the output budget of every static task
+  # on gemma-4-E4B in an earlier run. ABENCH_*_WINDOW is how the script says
+  # so if a server had to fall back to its old window.
+  - file: ../models/gemma-4-e4b-local.yaml
+    limits:
+      max_parallel_batches: 16
+      context_window: ${env:ABENCH_E4B_WINDOW|32768}
+  - file: ../models/gemma-4-e2b-local.yaml
+    limits:
+      max_parallel_batches: 16
+      context_window: ${env:ABENCH_E2B_WINDOW|32768}
+  - file: ../models/qwen3-5-2b-local.yaml
+    limits:
+      # group 16 x 8 = 128 = the server's MAX_NUM_SEQS.
+      max_parallel_batches: 8
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    limits:
+      max_connections: 256

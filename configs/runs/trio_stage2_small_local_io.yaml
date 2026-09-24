@@ -1,0 +1,35 @@
+# STAGE 2, io pass: as trio_stage2_small_local.yaml with thinking explicitly
+# off. All three chat templates default to no thinking (gemma-4:
+# `enable_thinking | default(false)`; Qwen3.5-2B: thinks only if it is true),
+# and an earlier run's io replies showed none -- so this changes nothing today
+# and makes "io did not reason" a setting rather than a default.
+extends:
+  - trio_stage2_small_local.yaml
+
+modes:
+  prompt_modes: [io]
+
+models:
+  - file: ../models/gemma-4-e4b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 16
+      context_window: ${env:ABENCH_E4B_WINDOW|32768}
+  - file: ../models/gemma-4-e2b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 16
+      context_window: ${env:ABENCH_E2B_WINDOW|32768}
+  - file: ../models/qwen3-5-2b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 8
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    limits:
+      max_connections: 256

@@ -1,0 +1,19 @@
+# STAGE 3, io pass: Qwen3.5-27B with thinking OFF. Its template thinks unless
+# told not to, and in an earlier run 121 of its 123 io replies began with
+# "Thinking Process:". vLLM's batch route forwards chat_template_kwargs.
+extends:
+  - trio_stage3_qwen27b.yaml
+
+modes:
+  prompt_modes: [io]
+
+models:
+  - file: ../models/qwen3-5-27b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: ${env:ABENCH_27B_BATCHES|16}
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    limits:
+      max_connections: 256
