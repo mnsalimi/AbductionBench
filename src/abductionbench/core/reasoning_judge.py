@@ -166,33 +166,109 @@ REASONING_LIST_COLUMNS: tuple[str, ...] = (
 #: Written as MISSING_METRIC when a sample has no anchoring point.
 ANCHORING_COLUMNS = ("reasoning_anchoring_point", "reasoning_anchoring_point_normalized")
 
-#: What the reasoning judge writes into a sample's `details`.
-REASONING_DETAIL_KEYS = (
-    "reasoning_metrics_status",
-    "reasoning_judge_errors",
-    "reasoning_metrics_inapplicable",
-    "reasoning_lists",
-    "reasoning_source",
-)
+#: WHICH METRICS EACH JUDGE IS RESPONSIBLE FOR -- what a re-run of that judge
+#: replaces, and nothing else. Read off derive_reasoning_metrics: a metric
+#: belongs to the judge whose reply it is computed from (a normalization by the
+#: step count still belongs to the judge being normalized, not to `steps`).
+FAMILY_METRICS: dict[str, tuple[str, ...]] = {
+    "steps": ("reasoning_total_steps",),
+    "observation_inventory": ("reasoning_observations_total",),
+    "observation_coverage": ("reasoning_observations_used", "reasoning_observation_coverage"),
+    "branchiness_selection": (
+        "reasoning_branchiness_total", "reasoning_mentions_total", "reasoning_mention_ratio",
+    ),
+    "branchiness_generation": (
+        "reasoning_branchiness_total", "reasoning_mentions_total", "reasoning_mention_ratio",
+        "reasoning_diversity",
+    ),
+    "option_count": ("reasoning_option_count",),
+    "directionality": ("reasoning_directionality",),
+    "step_directionality": ("reasoning_step_directionality_mean",),
+    "differential_elimination": (
+        "reasoning_differential_elimination", "reasoning_differential_elimination_normalized",
+        "reasoning_comparison_exhaustiveness",
+    ),
+    "uncertainty": ("reasoning_uncertainty_steps", "reasoning_uncertainty_rate"),
+    "prior_knowledge": ("reasoning_prior_knowledge", "reasoning_prior_knowledge_normalized"),
+    "anchoring_point": (
+        "reasoning_anchoring_point", "reasoning_anchoring_point_normalized",
+        "reasoning_gold_alive_steps", "reasoning_gold_alive_rate",
+    ),
+    "unresolved_contradiction": (
+        "reasoning_unresolved_contradictions", "reasoning_unresolved_contradiction_normalized",
+        "reasoning_backtracking_steps", "reasoning_backtracking_rate",
+    ),
+    "proof_disproof": (
+        "reasoning_proof_disproof_total", "reasoning_useful_steps", "reasoning_useless_steps",
+        "reasoning_useful_step_fraction", "reasoning_useless_step_fraction",
+    ),
+    "helpfulness": (
+        "reasoning_helpful_steps", "reasoning_neutral_steps", "reasoning_harmful_steps",
+        "reasoning_helpfulness_mean", "reasoning_helpful_fraction", "reasoning_neutral_fraction",
+        "reasoning_harmful_fraction",
+    ),
+}
+#: The per-step lists each judge's reply becomes, kept in details.reasoning_lists.
+FAMILY_LISTS: dict[str, tuple[str, ...]] = {
+    "steps": ("reasoning_steps",),
+    "observation_inventory": ("reasoning_observations",),
+    "observation_coverage": ("reasoning_observations_per_step",),
+    "branchiness_selection": ("reasoning_branchiness_per_step", "reasoning_mentions_per_step",
+                              "reasoning_mention_ratio_per_step"),
+    "branchiness_generation": ("reasoning_branchiness_per_step", "reasoning_mentions_per_step",
+                               "reasoning_mention_ratio_per_step"),
+    "step_directionality": ("reasoning_step_directionality_per_step",),
+    "differential_elimination": ("reasoning_comparisons_per_step",),
+    "uncertainty": ("reasoning_uncertainty_per_step",),
+    "prior_knowledge": ("reasoning_prior_knowledge_per_step",),
+    "anchoring_point": ("reasoning_gold_alive_per_step",),
+    "unresolved_contradiction": ("reasoning_unresolved_per_step", "reasoning_backtracking_per_step"),
+    "proof_disproof": ("reasoning_proof_disproof_per_step",),
+    "helpfulness": ("reasoning_helpfulness_per_step",),
+}
 
 
-def _without_reasoning(score: SampleScore) -> tuple[dict[str, Any], dict[str, Any]]:
-    """A sample's metrics and details with everything this judge owns removed.
+def _replace_what_ran(
+    old_metrics: dict[str, Any],
+    old_lists: dict[str, Any],
+    new_metrics: dict[str, Any],
+    new_lists: dict[str, Any],
+    ran: set[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A sample's metrics and lists after a judging pass, judge by judge.
 
-    RE-JUDGING REPLACES, IT DOES NOT MERGE. New metrics used to be written over
-    the old ones (`{**old, **new}`), so a metric the new judgement did not
-    produce -- inapplicable now, or lost to an unusable reply -- kept the old
-    judgement's value: 1,619 of openrouter-trio's 15,171 cot samples showed a
-    number the latest judging had withdrawn. Every judgement now starts from
-    a sample with none of this judge's output, as if never judged.
+    RE-JUDGING REPLACES, JUDGE BY JUDGE. The new metrics used to be merged
+    over the old (`{**old, **new}`), so a metric the new judgement did not
+    produce kept the old judgement's value: 1,619 of openrouter-trio's 15,171
+    cot samples showed numbers the latest judging had withdrawn. Now:
 
-    "Owns" is exact: the REASONING_METRIC_COLUMNS and REASONING_DETAIL_KEYS,
-    not every name starting "reasoning_" -- medcasereasoning scores its own
-    answers as reasoning_recall and reasoning_overlap, and those stay.
+    * every judge that RAN on this sample in this pass -- a request was sent,
+      or answered from the cache, whether or not its reply was usable -- has
+      its own metrics and lists (FAMILY_METRICS / FAMILY_LISTS) cleared and
+      replaced by what this pass derived; a metric it no longer produces is
+      gone, not kept;
+    * every judge that did NOT run -- not applicable, a dependency missing,
+      the sample skipped, the kill switch -- leaves its values exactly as they
+      were;
+    * anything no judge owns (the dataset's own metrics) is never touched.
     """
-    metrics = {k: v for k, v in score.metrics.items() if k not in _REASONING_METRIC_SET}
-    details = {k: v for k, v in score.details.items() if k not in REASONING_DETAIL_KEYS}
-    return metrics, details
+    metrics = dict(old_metrics)
+    lists = dict(old_lists)
+    for family in ran:
+        for name in FAMILY_METRICS.get(family, ()):
+            metrics.pop(name, None)
+            if name in new_metrics:
+                metrics[name] = new_metrics[name]
+        for name in FAMILY_LISTS.get(family, ()):
+            lists.pop(name, None)
+            if name in new_lists:
+                lists[name] = new_lists[name]
+    if "anchoring_point" in ran:
+        # The anchoring judge ran and gave no usable point: "None", not blank.
+        for name in ANCHORING_COLUMNS:
+            metrics.setdefault(name, MISSING_METRIC)
+    return metrics, lists
+
 
 REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     # 1. observation (evidence) coverage
@@ -273,6 +349,8 @@ class _Target:
     raw: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     inapplicable: list[str] = field(default_factory=list)
+    #: The judges that ran on this sample in this pass (see _replace_what_ran).
+    ran: set[str] = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------- #
@@ -1106,12 +1184,15 @@ class ReasoningJudgeStage:
             )
             errors = [*target.errors, *errors]
             inapplicable = [*target.inapplicable, *inapplicable]
-            # A missing anchoring point is written as "None", not left blank --
-            # which also replaces whatever an earlier judgement left in the
-            # record. Means skip it (metrics.MISSING_METRIC).
-            for name in ANCHORING_COLUMNS:
-                metrics.setdefault(name, MISSING_METRIC)
-            kept_metrics, details = _without_reasoning(target.score)
+            details = dict(target.score.details)
+            kept_metrics, replaced_lists = _replace_what_ran(
+                target.score.metrics,
+                details.get("reasoning_lists") or {},
+                metrics,
+                raw_lists,
+                target.ran,
+            )
+            raw_lists = replaced_lists
             details["reasoning_metrics_status"] = "ok" if not errors else "partial"
             details["reasoning_source"] = target.reasoning_source
             if errors:
@@ -1128,7 +1209,7 @@ class ReasoningJudgeStage:
                 target.sample,
                 target.response,
                 SampleScore(
-                    metrics={**kept_metrics, **metrics},
+                    metrics=kept_metrics,
                     prediction=target.score.prediction,
                     parse_ok=target.score.parse_ok,
                     details=details,
@@ -1285,18 +1366,17 @@ class ReasoningJudgeStage:
     ) -> None:
         """Record why an output got no reasoning metrics, without inventing any."""
         sample, response, score = updated[index]
-        # Judged for no reasoning metric at all: nothing an earlier judgement
-        # wrote survives, and the anchoring point is "None" like any other
-        # missing one.
-        kept_metrics, kept_details = _without_reasoning(score)
+        # No judge ran on this sample: its reasoning metrics -- including any an
+        # earlier judgement wrote -- stay exactly as they are. Only the status
+        # says why nothing changed.
         updated[index] = (
             sample,
             response,
             SampleScore(
-                metrics={**kept_metrics, **{name: MISSING_METRIC for name in ANCHORING_COLUMNS}},
+                metrics=dict(score.metrics),
                 prediction=score.prediction,
                 parse_ok=score.parse_ok,
-                details={**kept_details, "reasoning_metrics_status": status},
+                details={**score.details, "reasoning_metrics_status": status},
             ),
         )
 
@@ -1329,10 +1409,12 @@ class ReasoningJudgeStage:
             for key, fields in requests.items()
             if all(required in fields for required in template.required_fields)
         }
+        withheld: set[str] = set()
         results = await self._judge_many(
             family,
             callable_requests,
             identity=identity,
+            withheld=withheld,
             context={
                 str(target.index): {
                     "sample_id": self._sample_id(target),
@@ -1348,8 +1430,13 @@ class ReasoningJudgeStage:
         )
         for target in selected:
             key = str(target.index)
+            if key in callable_requests and key not in withheld:
+                target.ran.add(family)
             if key not in callable_requests:
                 target.errors.append(f"{family}:missing_required_dependency")
+                target.raw[family] = {}
+            elif key in withheld:
+                target.errors.append(f"{family}:reasoning_judge_stopped")
                 target.raw[family] = {}
             elif results.get(key) is None:
                 target.errors.append(f"{family}:judge_failed_or_unparseable")
@@ -1721,9 +1808,12 @@ class ReasoningJudgeStage:
         *,
         identity: TaskIdentity | None = None,
         context: dict[str, dict[str, Any]] | None = None,
+        withheld: set[str] | None = None,
     ) -> dict[str, dict[str, Any] | None]:
+        """Judge ``requests``; ids never sent (the kill switch) go into ``withheld``."""
         template = self.templates[family]
         ctx = context or {}
+        withheld = withheld if withheld is not None else set()
         keyed: list[tuple[str, dict[str, Any], str]] = []
         out: dict[str, dict[str, Any] | None] = {}
         audit: list[dict[str, Any]] = []
@@ -1770,6 +1860,7 @@ class ReasoningJudgeStage:
             # Tripped: nothing more is bought. Each request reads as unjudged.
             for request_id, _fields, _key in keyed:
                 out[request_id] = None
+                withheld.add(request_id)
             self.stats["kill_switch_skipped"] = self.stats.get("kill_switch_skipped", 0) + len(keyed)
             return out
         if self._ks_armed:
@@ -1891,6 +1982,7 @@ class ReasoningJudgeStage:
             if self._ks_check():
                 for request_id, _fields, _key in chunk:
                     out[request_id] = None
+                    withheld.add(request_id)
                 return
             conversations = []
             # The exact bytes sent, kept per request so the audit can record the

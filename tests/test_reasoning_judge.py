@@ -1458,13 +1458,14 @@ def test_the_inventory_is_kept_so_the_ratio_can_be_audited():
 
 
 def test_a_judged_sample_without_an_anchoring_point_records_none(tmp_path):
-    """Written through the stage, the way it reaches records.jsonl and the sheet."""
+    """The anchoring judge ran and the answer was never considered: "None" in both."""
     from abductionbench.core.metrics import MISSING_METRIC
 
-    _sent, out = _targets_sent(tmp_path, reference="R", answer="A", context_window=65_536)
-    metrics = out[0][2].metrics
-    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
-    assert metrics["reasoning_anchoring_point_normalized"] == MISSING_METRIC
+    score = _rejudge(tmp_path, {}, ran={"anchoring_point"},
+                     raw={"anchoring_point": {"anchoring_step_index": None,
+                                              "gold_alive_per_step": [0, 0]}})
+    assert score.metrics["reasoning_anchoring_point"] == MISSING_METRIC
+    assert score.metrics["reasoning_anchoring_point_normalized"] == MISSING_METRIC
 
 
 def test_reports_build_from_records_holding_none(tmp_path):
@@ -1492,52 +1493,112 @@ def test_reports_build_from_records_holding_none(tmp_path):
     assert row["kept"] == 1, "'None' is not a computed value"
 
 
-def test_rejudging_replaces_every_reasoning_metric_instead_of_merging(tmp_path):
-    """What an earlier judgement wrote does not survive a later one.
-
-    Merged, a metric the new judgement did not produce kept the old value --
-    1,619 of openrouter-trio's 15,171 cot samples showed numbers the latest
-    judging had withdrawn. A dataset's own metric that happens to be named
-    reasoning_* (medcasereasoning's reasoning_recall) is not the judge's and stays.
-    """
-    from abductionbench.core.metrics import MISSING_METRIC
-    from abductionbench.core.types import SampleScore
-
-    stale = SampleScore(
-        metrics={
-            "accuracy": 1.0,
-            "reasoning_recall": 0.8,                 # the dataset's, not the judge's
-            "reasoning_anchoring_point": 3.0,        # an earlier judgement's
-            "reasoning_helpfulness_mean": 0.9,
-            "reasoning_uncertainty_rate": 0.5,
-        },
-        details={"reasoning_metrics_status": "ok", "reasoning_lists": {"reasoning_steps": ["old"]},
-                 "reasoning_source": "native_reasoning", "gold": "keep me"},
+def _rejudge(tmp_path, old_metrics, *, ran, raw, old_lists=None):
+    """Run the stage's write-back with a chosen set of judges having run."""
+    from abductionbench.core.config import ReasoningJudgeConfig
+    from abductionbench.core.types import (
+        ChatMessage, ModelResponse, RenderedPrompt, ResponseStatus, SampleScore, SampleSpec,
+        SamplingParams, TaskIdentity,
     )
-    # The new judgement produces nothing (every call unusable here).
-    _sent, out = _targets_sent(tmp_path, reference="R", answer="A", context_window=65_536,
-                               score=stale)
-    metrics, details = out[0][2].metrics, out[0][2].details
-    assert metrics["accuracy"] == 1.0 and metrics["reasoning_recall"] == 0.8
-    assert "reasoning_helpfulness_mean" not in metrics
-    assert "reasoning_uncertainty_rate" not in metrics
-    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
-    assert details["gold"] == "keep me"
-    assert "reasoning_lists" not in details, "the old per-step lists are gone too"
-    assert details["reasoning_source"] == "visible_cot", "the new judgement's source, not the old one"
+
+    stage = ReasoningJudgeStage(
+        config=ReasoningJudgeConfig(enabled=True, model="m", context_window=65_536),
+        registry=_FakeRegistry(), renderer=None, clients={"m": object()},
+        retry_policy=None, cache_dir=tmp_path,
+    )
+
+    async def evaluate(targets, identity):
+        for target in targets:
+            target.raw = dict(raw)
+            target.ran = set(ran)
+
+    stage._evaluate = evaluate
+    sample = SampleSpec(sample_id="s1", fields={"observation": "x"},
+                        reference={"gold": "g"}, task_kind="generation")
+    prompt = RenderedPrompt(sample=sample, messages=[ChatMessage(role="user", content="q?")],
+                            template_id="t", template_version="1.0",
+                            sampling=SamplingParams(max_tokens=64), input_tokens_est=1)
+    response = ModelResponse(sample_id="s1", model_id="m", status=ResponseStatus.OK,
+                             content="<think>step one. step two.</think><answer>A</answer>")
+    identity = TaskIdentity(run_id="r", dataset_id="d", model_id="m", template_id="t",
+                            template_version="1.0", prompt_mode="cot", selection_mode="n/a",
+                            data_delivery_mode="static", task_kind="generation")
+    score = SampleScore(metrics=dict(old_metrics), prediction="A",
+                        details={"reasoning_lists": dict(old_lists or {}), "gold": "keep"})
+    out = asyncio.run(stage.apply(_FakeAdapter(), identity, [prompt], [(sample, response, score)]))
+    return out[0][2]
 
 
-def test_a_skipped_sample_keeps_none_of_an_earlier_judgement():
-    from abductionbench.core.metrics import MISSING_METRIC
+OLD = {
+    "accuracy": 1.0,
+    "reasoning_recall": 0.8,                     # the dataset's own, never the judge's
+    "reasoning_total_steps": 4.0,                # steps
+    "reasoning_directionality": 0.5,             # directionality
+    "reasoning_helpfulness_mean": 0.9,           # helpfulness
+    "reasoning_helpful_steps": 3.0,
+    "reasoning_uncertainty_rate": 0.25,          # uncertainty
+    "reasoning_anchoring_point": 3.0,            # anchoring_point
+    "reasoning_anchoring_point_normalized": 0.75,
+}
+
+
+def test_a_rerun_judge_replaces_only_its_own_metrics(tmp_path):
+    """Only `directionality` ran: only its metric changes; every other stays."""
+    score = _rejudge(tmp_path, OLD, ran={"directionality"},
+                     raw={"directionality": {"directionality": 1}})
+    m = score.metrics
+    assert m["reasoning_directionality"] == 1.0                     # replaced
+    for name in ("reasoning_total_steps", "reasoning_helpfulness_mean", "reasoning_helpful_steps",
+                 "reasoning_uncertainty_rate", "reasoning_anchoring_point",
+                 "reasoning_anchoring_point_normalized"):
+        assert m[name] == OLD[name], f"{name} belongs to a judge that did not run"
+    assert m["accuracy"] == 1.0 and m["reasoning_recall"] == 0.8
+    assert score.details["gold"] == "keep"
+
+
+def test_a_judge_that_ran_and_produced_nothing_clears_only_its_own(tmp_path):
+    """helpfulness ran with an unusable reply: its old values do not survive."""
+    score = _rejudge(tmp_path, OLD, ran={"helpfulness", "anchoring_point"},
+                     raw={"helpfulness": {}, "anchoring_point": {}})
+    m = score.metrics
+    assert "reasoning_helpfulness_mean" not in m and "reasoning_helpful_steps" not in m
+    # anchoring ran too and gave no point: "None", not the old 3.
+    assert m["reasoning_anchoring_point"] == "None"
+    assert m["reasoning_anchoring_point_normalized"] == "None"
+    # untouched: judges that did not run
+    assert m["reasoning_directionality"] == 0.5 and m["reasoning_uncertainty_rate"] == 0.25
+
+
+def test_a_rerun_judge_replaces_only_its_own_per_step_lists(tmp_path):
+    lists = {"reasoning_uncertainty_per_step": [1, 0], "reasoning_helpfulness_per_step": [1, 1]}
+    score = _rejudge(tmp_path, OLD, ran={"helpfulness"}, raw={"helpfulness": {}}, old_lists=lists)
+    kept = score.details.get("reasoning_lists") or {}
+    assert kept.get("reasoning_uncertainty_per_step") == [1, 0]
+    assert "reasoning_helpfulness_per_step" not in kept
+
+
+def test_a_sample_no_judge_ran_on_is_not_touched(tmp_path):
+    """Skipped for whatever reason: not one reasoning value changes."""
+    score = _rejudge(tmp_path, OLD, ran=set(), raw={})
+    for name, value in OLD.items():
+        assert score.metrics[name] == value
+
+
+def test_a_skipped_sample_keeps_every_metric_it_had():
     from abductionbench.core.types import ModelResponse, ResponseStatus, SampleScore, SampleSpec
 
     sample = SampleSpec(sample_id="s", fields={})
     response = ModelResponse(sample_id="s", model_id="m", status=ResponseStatus.OK, content="x")
-    score = SampleScore(metrics={"accuracy": 0.0, "reasoning_total_steps": 7.0},
-                        details={"reasoning_lists": {"reasoning_steps": ["old"]}})
+    score = SampleScore(metrics=dict(OLD), details={"reasoning_lists": {"reasoning_steps": ["a"]}})
     updated = [(sample, response, score)]
     ReasoningJudgeStage._mark(updated, 0, "not_applicable:no_reasoning_chain")
-    metrics, details = updated[0][2].metrics, updated[0][2].details
-    assert "reasoning_total_steps" not in metrics and metrics["accuracy"] == 0.0
-    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
-    assert details == {"reasoning_metrics_status": "not_applicable:no_reasoning_chain"}
+    assert updated[0][2].metrics == OLD
+    assert updated[0][2].details["reasoning_lists"] == {"reasoning_steps": ["a"]}
+    assert updated[0][2].details["reasoning_metrics_status"] == "not_applicable:no_reasoning_chain"
+
+
+def test_every_reasoning_metric_has_exactly_the_judges_the_code_derives_it_from():
+    from abductionbench.core.reasoning_judge import FAMILY_METRICS, REASONING_METRIC_COLUMNS
+
+    owned = {c for cols in FAMILY_METRICS.values() for c in cols}
+    assert owned == set(REASONING_METRIC_COLUMNS)
