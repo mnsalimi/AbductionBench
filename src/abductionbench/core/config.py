@@ -848,9 +848,12 @@ class SyncConfig(_Base):
     remote_path: str = ""
     #: Upload into ``<remote_path>/<run-id>/`` so runs never overwrite each other.
     per_run_subdir: bool = True
-    #: Seconds between incremental uploads.  60s keeps the remote within a
-    #: minute of the local state while adding negligible load.
-    interval_s: float = Field(60.0, gt=0)
+    #: Seconds between incremental uploads. 900: every pass also lists the
+    #: remote, which spends the same Drive API quota that throttles uploads
+    #: (rclone's shared OAuth client), and the workbook is dirty again after
+    #: every dataset -- so passes more often than this bought more throttling,
+    #: not a fresher backup. The final pass is unaffected: it always runs.
+    interval_s: float = Field(900.0, gt=0)
     rclone_binary: str = "rclone"
     transfers: int = Field(4, ge=1)
     checkers: int = Field(8, ge=1)

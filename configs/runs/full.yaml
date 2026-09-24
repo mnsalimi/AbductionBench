@@ -65,7 +65,9 @@ engine:
     # minutes and then failed with rateLimitExceeded, and the mirror sat 45
     # minutes stale while each pass chased a file changing faster than it
     # could upload. Five minutes gives a pass time to finish.
-    interval_s: 300
+    # 300 -> 900 (2026-09-24): each pass also lists the remote, and on rclone's
+    # shared OAuth quota that listing is what got the uploads throttled.
+    interval_s: 900
     # NOT excluding `raw/` here, deliberately. `checkpoint.max_raw_payloads: 3`
     # already caps it where it is written -- 67 MB across the whole run -- so
     # it is not what makes a pass slow, and `exclude` is applied to the *final*

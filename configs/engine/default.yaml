@@ -171,7 +171,7 @@ engine:
     # or a plain local/mounted path.
     remote_path: ""
     per_run_subdir: true      # upload into <remote_path>/<run-id>/
-    interval_s: 60
+    interval_s: 900        # 15 min: each pass also lists the remote (spends the Drive API quota)
     rclone_binary: rclone
     transfers: 4
     checkers: 8

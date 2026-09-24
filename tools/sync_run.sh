@@ -33,7 +33,8 @@
 #
 # Environment:
 #   SYNC_REMOTE    rclone destination        (default: gdrive:AbductionBench)
-#   SYNC_INTERVAL  seconds between passes    (default: 60)
+#   SYNC_INTERVAL  seconds between passes    (default: 900 -- every pass also lists
+#                  the remote, which spends the same Drive API quota that throttles uploads)
 #   SYNC_EXCLUDE   comma-separated globs     (default: "raw/"; set to "" for all)
 #   SYNC_TPSLIMIT  API calls per second      (default: 8; Drive's shared client is strict)
 #   SYNC_BWLIMIT   e.g. 8M                   (default: unlimited)
@@ -43,7 +44,7 @@ set -uo pipefail   # deliberately not -e: a failed pass must not end the loop
 
 RUN_DIR="${1:-}"
 REMOTE="${SYNC_REMOTE:-gdrive:AbductionBench}"
-INTERVAL="${SYNC_INTERVAL:-60}"
+INTERVAL="${SYNC_INTERVAL:-900}"
 BWLIMIT="${SYNC_BWLIMIT:-}"
 TPSLIMIT="${SYNC_TPSLIMIT:-8}"
 EXCLUDES="${SYNC_EXCLUDE-raw/}"
