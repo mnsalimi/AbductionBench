@@ -215,10 +215,11 @@ def test_the_answer_block_is_never_part_of_the_chain():
 def test_a_providers_separate_reasoning_field_is_still_used():
     """Some providers return the chain in their own field whether or not the
     prompt asked for tags. Dropping it would make cot extraction depend on the
-    vendor rather than on the model."""
-    chain = _chain("hidden trace", "<think>visible</think><answer>3</answer>")
-    assert "hidden trace" in chain and "visible" in chain
-    assert chain.index("hidden trace") < chain.index("visible")
+    vendor rather than on the model -- so with no visible CoT it is the chain.
+    With visible CoT as well it is not: the two are one process read twice
+    (tests/test_reasoning_chain_channels.py)."""
+    assert _chain("hidden trace", "<answer>3</answer>") == "hidden trace"
+    assert _chain("hidden trace", "<think>visible</think><answer>3</answer>") == "visible"
 
 
 def test_an_untagged_reply_still_yields_a_chain():
@@ -233,9 +234,10 @@ def test_an_untagged_reply_still_yields_a_chain():
 from abductionbench.adapters._prompting import cot_chain  # noqa: E402
 
 #: The five shapes gpt-5.6-luna returned on agentrx under cot with its
-#: provider's reasoning mode on, and what each one's chain is.
+#: provider's reasoning mode on, and what each one's chain is: visible CoT if
+#: there is any, else the reasoning field, never both.
 _LUNA_SHAPES = [
-    ("R1. R2.", "<think>T1. T2.</think> <answer>3</answer>", "R1. R2.\n\nT1. T2."),
+    ("R1. R2.", "<think>T1. T2.</think> <answer>3</answer>", "T1. T2."),
     (None, "<think>T1. T2.</think> <answer>3</answer>", "T1. T2."),
     (None, "<think>.</think> <answer>3</answer>", ""),
     ("R1. R2.", "<answer>3</answer>", "R1. R2."),
@@ -244,7 +246,7 @@ _LUNA_SHAPES = [
 
 
 @pytest.mark.parametrize(("reasoning", "content", "chain"), _LUNA_SHAPES)
-def test_the_chain_is_the_reasoning_field_then_the_think_block(reasoning, content, chain):
+def test_the_chain_is_the_think_block_else_the_reasoning_field(reasoning, content, chain):
     assert cot_chain(content, reasoning) == chain
 
 

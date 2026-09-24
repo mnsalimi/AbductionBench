@@ -655,6 +655,17 @@ class ReasonedAdapter(DatasetAdapter):
     # And the new families landed.
     assert lines[0]["metrics"]["reasoning_helpfulness_mean"] == 0.25
     assert lines[0]["metrics"]["reasoning_harmful_steps"] == 1.0
+    # Which channel the chain came from is on the log line and on the record;
+    # the fake model writes untagged prose and no native field.
+    assert lines[0]["reasoning_source"] == "untagged_prose"
+    records = [
+        json.loads(line)
+        for line in (by_mode["cot"].output_dir / "records.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert any((r.get("details") or {}).get("reasoning_source") == "untagged_prose" for r in records)
+    audit = (by_mode["cot"].output_dir / ReasoningJudgeStage.AUDIT_FILENAME).read_text().splitlines()
+    assert all(json.loads(line)["reasoning_source"] == "untagged_prose" for line in audit if line.strip())
 
 
 # --------------------------------------------------------------------------- #

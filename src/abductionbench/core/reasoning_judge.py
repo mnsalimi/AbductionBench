@@ -46,7 +46,14 @@ from typing import Any
 
 import orjson
 
-from ..adapters._prompting import cot_chain
+from ..adapters._prompting import (
+    _HARNESS_TAG_REGEX,
+    THINK_OPEN,
+    TRACE_NATIVE,
+    TRACE_NONE,
+    TRACE_VISIBLE,
+    reasoning_trace,
+)
 from .adapter import DatasetAdapter
 from .batching import iter_chunks
 from .client import ModelClient
@@ -220,6 +227,8 @@ class _Target:
     score: SampleScore
     question: str
     reasoning: str
+    #: Which channel `reasoning` was taken from (adapters._prompting.reasoning_trace).
+    reasoning_source: str
     answer: str
     reference: str
     options: list[str]
@@ -395,6 +404,15 @@ def _ungrounded_spans(items: list[str], source: str) -> list[int]:
     vocabulary = set(source_words)
     bad: list[int] = []
     for index, item in enumerate(items):
+        # A container or channel tag the source does not itself contain is
+        # the harness's markup, not the model's words -- and "</think>" would
+        # otherwise pass the word check wherever the model wrote "think".
+        if any(
+            tag.lower() not in source.lower()
+            for tag in re.findall(_HARNESS_TAG_REGEX, item, flags=re.IGNORECASE)
+        ):
+            bad.append(index)
+            continue
         key = _span_key(item)
         if key in source_key:
             continue
@@ -898,7 +916,7 @@ class ReasoningJudgeStage:
             if prompt is None:
                 self._mark(updated, index, "not_applicable:prompt_unavailable")
                 continue
-            question, reasoning = self._question_and_reasoning(prompt, response)
+            question, reasoning, reasoning_source = self._question_and_reasoning(prompt, response)
             too_big = exceeds_budget(
                 {"question": question, "reasoning_chain": reasoning},
                 {
@@ -945,6 +963,7 @@ class ReasoningJudgeStage:
                     score=score,
                     question=question,
                     reasoning=reasoning,
+                    reasoning_source=reasoning_source,
                     # Whole, never clipped: the size check above skips a sample
                     # that cannot fit rather than showing the judge part of it.
                     answer=answer,
@@ -981,6 +1000,7 @@ class ReasoningJudgeStage:
             inapplicable = [*target.inapplicable, *inapplicable]
             details = dict(target.score.details)
             details["reasoning_metrics_status"] = "ok" if not errors else "partial"
+            details["reasoning_source"] = target.reasoning_source
             if errors:
                 details["reasoning_judge_errors"] = errors
             if inapplicable:
@@ -1012,6 +1032,7 @@ class ReasoningJudgeStage:
                     "task_kind": target.sample.task_kind,
                     "sample_id": target.sample.sample_id,
                     "status": details["reasoning_metrics_status"],
+                    "reasoning_source": target.reasoning_source,
                     "option_count": len(target.options),
                     # Exactly what each judge returned, beside what was derived
                     # from it, so a number in the sheet can always be traced
@@ -1201,6 +1222,9 @@ class ReasoningJudgeStage:
                     "group_id": getattr(target.sample, "group_id", None),
                     "repeat_of": (getattr(target.sample, "metadata", {}) or {}).get("repeat_of"),
                     "target_index": target.index,
+                    # Which channel the chain came from; the reply's content
+                    # and native field themselves stay on the sample record.
+                    "reasoning_source": target.reasoning_source,
                 }
                 for target in selected
             },
@@ -2090,12 +2114,14 @@ class ReasoningJudgeStage:
     @staticmethod
     def _question_and_reasoning(
         prompt: RenderedPrompt, response: ModelResponse
-    ) -> tuple[str, str]:
-        """What the model was asked, and the chain it produced.
+    ) -> tuple[str, str, str]:
+        """What the model was asked, the ONE chain it produced, and its source.
 
         An interactive benchmark is a conversation rather than a prompt, so its
         question is every non-assistant turn and its chain is everything the
-        model said across the episode.
+        model said across the episode -- with the native field added only when
+        no turn carried visible reasoning of its own, by the same precedence
+        as a single reply.
         """
         transcript = prompt.sample.metadata.get("_transcript")
         if isinstance(transcript, list) and transcript:
@@ -2111,16 +2137,23 @@ class ReasoningJudgeStage:
                         reasoning_parts.append(content)
                 else:
                     question_parts.append(f"[{role.upper()}]\n{content}")
-            if response.reasoning:
+            visible = any(
+                reasoning_trace(part, None).source == TRACE_VISIBLE
+                for part in reasoning_parts
+                if THINK_OPEN in part
+            )
+            source = TRACE_VISIBLE if visible else "transcript"
+            if response.reasoning and not visible:
                 reasoning_parts.append(response.reasoning)
-            return "\n\n".join(question_parts), "\n\n".join(reasoning_parts)
+                source = TRACE_NATIVE
+            chain = "\n\n".join(reasoning_parts)
+            return "\n\n".join(question_parts), chain, source if chain.strip() else TRACE_NONE
 
         question = "\n\n".join(
             f"[{message.role.upper()}]\n{message.content}" for message in prompt.messages
         )
-        # THE CHAIN, FROM WHEREVER THE MODEL PUT IT: the provider's reasoning
-        # field and the <think> block, in that order, with a placeholder like
-        # "<think>.</think>" counted as empty. One definition, in cot_chain,
-        # shared with format_compliance so the two cannot disagree about where
-        # a reasoning model's chain is.
-        return question, cot_chain(response.content, response.reasoning)
+        # ONE SOURCE, NEVER BOTH: visible <think> CoT if there is any, else the
+        # provider's native field, else nothing. See reasoning_trace for why
+        # concatenating them was wrong.
+        trace = reasoning_trace(response.content, response.reasoning)
+        return question, trace.text, trace.source

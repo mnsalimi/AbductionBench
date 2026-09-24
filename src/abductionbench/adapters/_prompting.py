@@ -93,37 +93,90 @@ def _meaningful(text: str | None) -> str:
     return body if re.search(r"\w", body) else ""
 
 
-def cot_chain(content: str | None, reasoning: str | None) -> str:
-    """The chain of thought of a reply, from both places a model can put it.
+#: A think block, closed or not. A reply cut off by its token budget opens the
+#: block and never closes it, and what it did write is still visible reasoning.
+_VISIBLE_COT_REGEX = r"(?s)<think>\s*(?P<think>.*?)\s*(?:</think>|\Z)"
 
-    The provider's separate reasoning field and the ``<think>`` block are the
-    same thing arriving by two routes: a provider that supports reasoning mode
-    moves the chain out of the content, one that does not leaves it in the
-    tags. Both count, in the order the model produced them, so a reasoning
-    model's chain is measured exactly like any other model's:
+#: Tags that only mean something to this harness: the reply's own channels and
+#: the container the step judge reads the trace from. None of them is a word
+#: the model reasoned with, so none may reach the judge as text it could cut a
+#: step from.
+_HARNESS_TAG_REGEX = r"</?\s*(?:think|answer|reasoning_chain|reasoning_trace)\s*>"
 
-    ======================  ===================================  ==================
-    reasoning field         content                              chain
-    ======================  ===================================  ==================
-    "R"                     ``<think>T</think><answer>…``        "R" then "T"
-    empty                   ``<think>T</think><answer>…``        "T"
-    empty                   ``<think>.</think><answer>…``        empty
-    "R"                     ``<answer>…``                        "R"
-    empty                   ``<answer>…``                        empty
-    ======================  ===================================  ==================
+#: Where a trace came from, as recorded beside every reasoning metric.
+TRACE_VISIBLE, TRACE_NATIVE, TRACE_UNTAGGED, TRACE_NONE = (
+    "visible_cot",
+    "native_reasoning",
+    "untagged_prose",
+    "none",
+)
 
-    An empty chain is an empty chain whichever row produced it. The answer
-    block is never part of it: it is the conclusion, not a step. A reply with
-    no tags at all (one written before the tagged format) contributes its
-    prose instead, since that is where its reasoning was.
+
+@dataclass(frozen=True)
+class ReasoningTrace:
+    """The one chain a reply's reasoning metrics are measured on, and its source."""
+
+    text: str
+    source: str
+
+
+def _clean_trace(text: str) -> str:
+    """The trace without answer blocks or harness tags, placeholders counted empty."""
+    text = re.sub(r"(?s)<answer>.*?</answer>", "", text)
+    text = re.sub(_HARNESS_TAG_REGEX, "", text, flags=re.IGNORECASE)
+    return _meaningful(text)
+
+
+def reasoning_trace(content: str | None, reasoning: str | None) -> ReasoningTrace:
+    """Pick ONE source for a reply's chain of thought -- never both.
+
+    A model can reason in the visible ``<think>`` block, the provider can
+    return reasoning in its own field (``message.reasoning`` /
+    ``reasoning_content``), a reply can carry both, or neither. They used to be
+    concatenated, and where a reply carried both that was usually the same
+    inferential process twice -- gemini-3.8-flash's native field is a
+    provider-written summary of the thinking the visible block then spells out
+    -- so the step judge segmented it twice and every step-based metric was
+    inflated. Precedence:
+
+    ===================  =====================================  ================
+    native field         content                                trace
+    ===================  =====================================  ================
+    "R"                  ``<think>T</think><answer>…``          "T" (visible)
+    empty                ``<think>T</think><answer>…``          "T" (visible)
+    "R"                  ``<answer>…``                          "R" (native)
+    empty                ``<answer>…``                          "" (none)
+    ===================  =====================================  ================
+
+    Visible CoT wins whenever there is any: it is what the model wrote where it
+    was asked to, and the native field is at best a second route to the same
+    chain and at worst a summary of it. A placeholder (``<think>.</think>``,
+    which gpt-5.6-luna writes when its chain went to the native field) is no
+    visible CoT. A reply with no tags at all and no native field -- one written
+    before the tagged format -- contributes its prose as a last resort.
+
+    The trace never carries the answer block or any harness tag, so neither
+    can come back from the step judge as a step. The reply's content and its
+    native field are untouched on the record; this only chooses what is read.
     """
     content = content or ""
-    think = re.search(THINK_TAG_REGEX, content)
-    if think:
-        body = think.group("think")
-    else:
-        body = re.sub(r"(?s)<answer>.*?</answer>", "", content)
-    return "\n\n".join(part for part in (_meaningful(reasoning), _meaningful(body)) if part)
+    think = re.search(_VISIBLE_COT_REGEX, content)
+    visible = _clean_trace(think.group("think")) if think else ""
+    if visible:
+        return ReasoningTrace(visible, TRACE_VISIBLE)
+    native = _clean_trace(reasoning or "")
+    if native:
+        return ReasoningTrace(native, TRACE_NATIVE)
+    if not think:
+        prose = _clean_trace(content)
+        if prose:
+            return ReasoningTrace(prose, TRACE_UNTAGGED)
+    return ReasoningTrace("", TRACE_NONE)
+
+
+def cot_chain(content: str | None, reasoning: str | None) -> str:
+    """The chain of thought of a reply -- :func:`reasoning_trace`'s text."""
+    return reasoning_trace(content, reasoning).text
 
 _COT_INSTRUCTION = (
     "Reason and explain explicitly by working through the evidence step by step "
