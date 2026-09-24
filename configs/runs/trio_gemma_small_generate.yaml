@@ -1,0 +1,57 @@
+# gemma-4-E4B and gemma-4-E2B, served side by side on this box, GENERATING
+# ONLY -- into the same run folder as openrouter-trio
+# (`--resume 20260924-002252_openrouter-trio`), so they answer the identical
+# samples and land in the same workbook.
+#
+# No judge runs in this pass. Both judges are deferred so every model in the
+# run can later be graded by the one judge -- gpt-oss-120b served on this box,
+# which judged the trio -- instead of mixing a local judge with a rented one.
+# Until that pass, the datasets scored by the judge alone carry a placeholder
+# 0.0 (engine.judge.defer says so in the log and the result), and cot samples
+# have no reasoning metrics yet.
+#
+# Both modes in one pass with thinking explicitly off: gemma-4's template
+# thinks only when enable_thinking is true, so for cot this is its default
+# (it reasons in the visible <think> block the prompt asks for) and for io it
+# guarantees no hidden chain.
+#
+# Judged later by a resume of the same folder with both judges enabled and
+# gpt-oss-120b back on the GPU; the answers stored here are reused, not re-asked.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+engine:
+  concurrency:
+    max_parallel_tasks: 48
+    # 32 + 32 model batches; above it, so the per-model limits bind.
+    max_parallel_batches_global: 72
+
+  judge:
+    enabled: false
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+models:
+  # 32 batches x group 8 = 256 in flight each, the servers' MAX_NUM_SEQS.
+  # Windows 32,768 (the script starts the servers with that); ABENCH_*_WINDOW
+  # says so if a server had to fall back to 16,384.
+  - file: ../models/gemma-4-e4b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: ${env:ABENCH_E4B_WINDOW|32768}
+  - file: ../models/gemma-4-e2b-local.yaml
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: false}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 96
+      context_window: ${env:ABENCH_E2B_WINDOW|32768}
