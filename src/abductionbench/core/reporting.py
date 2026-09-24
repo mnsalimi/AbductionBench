@@ -37,6 +37,7 @@ import pandas as pd
 
 from .checkpoint import dedupe_records, load_records
 from .engine import RunResult, TaskResult
+from .metrics import MISSING_METRIC
 from .reasoning_judge import REASONING_LIST_COLUMNS, REASONING_METRIC_COLUMNS
 from .types import AdapterDocumentation
 
@@ -413,7 +414,7 @@ def build_coverage_frame(result: RunResult) -> pd.DataFrame:
         counts: dict[str, int] = {}
         for record in records:
             for name, value in (record.get("metrics") or {}).items():
-                if value is not None:
+                if value is not None and value != MISSING_METRIC:
                     counts[name] = counts.get(name, 0) + 1
         for name in sorted(counts):
             kept = counts[name]

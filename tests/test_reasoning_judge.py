@@ -78,21 +78,56 @@ def _derive(raw=None, **kwargs):
 
 
 def test_the_normalized_anchoring_point_spans_the_whole_chain():
-    """(index + 1) / total_steps: the last step is 1.0, the first is 1 / n.
+    """1-based (reasoning_anchoring_point_v3@1.1): the last step is 1.0, the first 1/n.
 
-    The index is 0-based, so index / total_steps topped out at (n - 1) / n --
-    a model that settled on the last of 4 steps read 0.75, and no chain could
-    ever reach 1.
+    The prompt counted from 0, so anchoring_point / total_steps topped out at
+    (n - 1) / n and no chain could ever reach 1. It now counts from 1, like
+    the numbered step list the judge reads.
     """
     n = len(STEPS)
     gold = [0] * (n - 1) + [1]
-    last, _l, _e, _i = _derive(_raw(anchoring_point={"anchoring_step_index": n - 1,
-                                                     "gold_alive_per_step": gold}))
-    first, _l, _e, _i = _derive(_raw(anchoring_point={"anchoring_step_index": 0,
-                                                      "gold_alive_per_step": gold}))
+
+    def derive(index):
+        return _derive(_raw(anchoring_point={"anchoring_step_index": index,
+                                             "gold_alive_per_step": gold}))
+
+    last, _l, _e, _i = derive(n)
+    first, _l, _e, _i = derive(1)
+    assert last["reasoning_anchoring_point"] == float(n)
     assert last["reasoning_anchoring_point_normalized"] == 1.0
     assert first["reasoning_anchoring_point_normalized"] == 1 / n
-    assert last["reasoning_anchoring_point"] == float(n - 1), "the raw index is unchanged"
+    # 0 is no step under 1-based counting, and n + 1 is past the end.
+    for bad in (0, n + 1):
+        metrics, _l, errors, _i = derive(bad)
+        assert "reasoning_anchoring_point" not in metrics
+        assert "anchoring_point:not_an_index_into_the_step_list" in errors
+
+
+def test_the_anchoring_prompt_counts_from_one():
+    import yaml
+
+    blob = yaml.safe_load((JUDGE_PROMPTS / "reasoning_anchoring_point_v3.yaml").read_text())
+    body = blob["messages"][0]["content"]
+    assert "counting the first step as 1" in body
+    assert "counting the first step as 0" not in body
+    # A new version, so no verdict cached under the 0-based wording is reused.
+    assert blob["version"] == "1.1"
+
+
+def test_a_missing_anchoring_point_is_written_as_none_and_left_out_of_means():
+    from abductionbench.core.metrics import MISSING_METRIC, aggregate_mean_metrics, stored_metrics
+
+    samples = [
+        {"reasoning_anchoring_point": 2.0, "reasoning_anchoring_point_normalized": 0.5},
+        {"reasoning_anchoring_point": MISSING_METRIC, "reasoning_anchoring_point_normalized": MISSING_METRIC},
+        {"reasoning_anchoring_point": 4.0, "reasoning_anchoring_point_normalized": 1.0},
+    ]
+    means = aggregate_mean_metrics(samples)
+    assert means["reasoning_anchoring_point"] == 3.0          # (2 + 4) / 2, not / 3
+    assert means["reasoning_anchoring_point_normalized"] == 0.75
+    # Carried through a resume as the marker, not dropped and not a crash.
+    assert stored_metrics({"a": 1, "b": MISSING_METRIC, "c": None, "d": "x"}) == {"a": 1.0, "b": MISSING_METRIC}
+
 
 
 # --------------------------------------------------------------------------- #
@@ -138,8 +173,8 @@ def test_every_derived_value_follows_from_the_lists():
 
     # Metric 10 -- an index into the step list, and where it falls in the chain.
     assert metrics["reasoning_anchoring_point"] == 1.0
-    # 0-based index 1 of 4 steps: (1 + 1) / 4.
-    assert metrics["reasoning_anchoring_point_normalized"] == 0.5
+    # 1-based: step 1 of 4.
+    assert metrics["reasoning_anchoring_point_normalized"] == 0.25
 
 
 def test_the_step_count_is_reported_but_always_read_off_the_list():
@@ -1418,3 +1453,38 @@ def test_the_inventory_is_kept_so_the_ratio_can_be_audited():
         "the lawn is wet", "the sky is clear", "it is 6am",
     ]
     assert len(lists["reasoning_observations"]) == metrics["reasoning_observations_total"]
+
+
+def test_a_judged_sample_without_an_anchoring_point_records_none(tmp_path):
+    """Written through the stage, the way it reaches records.jsonl and the sheet."""
+    from abductionbench.core.metrics import MISSING_METRIC
+
+    _sent, out = _targets_sent(tmp_path, reference="R", answer="A", context_window=65_536)
+    metrics = out[0][2].metrics
+    assert metrics["reasoning_anchoring_point"] == MISSING_METRIC
+    assert metrics["reasoning_anchoring_point_normalized"] == MISSING_METRIC
+
+
+def test_reports_build_from_records_holding_none(tmp_path):
+    import json
+
+    from abductionbench.core.engine import RunResult, TaskResult
+    from abductionbench.core.metrics import MISSING_METRIC
+    from abductionbench.core.reporting import build_coverage_frame
+    from abductionbench.core.types import TaskIdentity
+
+    task_dir = tmp_path / "datasets" / "d" / "m" / "cot"
+    task_dir.mkdir(parents=True)
+    rows = [
+        {"sample_id": "a", "prompt_fingerprint": "1", "metrics": {"reasoning_anchoring_point": 2.0}},
+        {"sample_id": "b", "prompt_fingerprint": "1", "metrics": {"reasoning_anchoring_point": MISSING_METRIC}},
+    ]
+    (task_dir / "records.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    identity = TaskIdentity(run_id="r", dataset_id="d", model_id="m", template_id="t",
+                            template_version="1", prompt_mode="cot", selection_mode="n/a",
+                            data_delivery_mode="static", task_kind="generation")
+    result = RunResult(run_id="r", run_dir=tmp_path, config=None)
+    result.tasks.append(TaskResult(identity=identity, output_dir=task_dir))
+    frame = build_coverage_frame(result)
+    row = frame[frame.metric == "reasoning_anchoring_point"].iloc[0]
+    assert row["kept"] == 1, "'None' is not a computed value"

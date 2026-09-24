@@ -1,5 +1,5 @@
 id: reasoning_anchoring_point_v3
-version: "1.0"
+version: "1.1"
 description: >-
   When the model first put its own final answer on the table, and in which
   steps it had the correct answer on the table. Both are about CONSIDERATION --
@@ -22,9 +22,9 @@ messages:
       the question is when that answer first entered the model's consideration,
       not when it won.
 
-      Report that step's index, counting the first step as 0. If the model
+      Report that step's index, counting the first step as 1. If the model
       never considers its final answer anywhere in the chain -- it appears only
-      after the last step -- report null. Do not guess an index; null and 0 are
+      after the last step -- report null. Do not guess an index; null and 1 are
       different findings.
 
       (2) GOLD CONSIDERED PER STEP -- about the CORRECT answer, one binary per

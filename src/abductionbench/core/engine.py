@@ -69,7 +69,7 @@ from .errors import (
     TemplateError,
 )
 from .judge import JudgeStage
-from .metrics import aggregate_mean_metrics, mean
+from .metrics import aggregate_mean_metrics, mean, stored_metrics
 from .modes import BOV, COT, SELF_CONSISTENCY, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
@@ -1994,10 +1994,7 @@ class EvaluationEngine:
                         completion_tokens_est=payload.get("completion_tokens_est"),
                     ),
                     SampleScore(
-                        metrics={
-                            key: float(value)
-                            for key, value in (record.get("metrics") or {}).items()
-                        },
+                        metrics=stored_metrics(record.get("metrics")),
                         prediction=record.get("prediction"),
                         parse_ok=bool(record.get("parse_ok", True)),
                         details=record.get("details") or {},
@@ -3100,7 +3097,7 @@ class EvaluationEngine:
             if repeat_of is None:
                 continue
             score = SampleScore(
-                metrics={k: float(v) for k, v in (rec.get("metrics") or {}).items()},
+                metrics=stored_metrics(rec.get("metrics")),
                 prediction=rec.get("prediction"),
                 parse_ok=bool(rec.get("parse_ok", True)),
                 details=rec.get("details") or {},

@@ -36,6 +36,7 @@ from .client import ModelClient
 from .config import RunConfig, load_run_config, load_yaml
 from .engine import EvaluationEngine
 from .errors import ConfigError
+from .metrics import stored_metrics
 from .modes import COT, INTERACTIVE, SELF_CONSISTENCY
 from .reasoning_judge import ReasoningJudgeStage
 from .types import (
@@ -137,7 +138,7 @@ def _triplet(record: dict[str, Any], prompt: RenderedPrompt, model_id: str):
         completion_tokens_est=payload.get("completion_tokens_est"),
     )
     score = SampleScore(
-        metrics={k: float(v) for k, v in (record.get("metrics") or {}).items()},
+        metrics=stored_metrics(record.get("metrics")),
         prediction=record.get("prediction"),
         parse_ok=bool(record.get("parse_ok", True)),
         details=record.get("details") or {},

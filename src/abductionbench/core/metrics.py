@@ -545,6 +545,25 @@ def macro_average(per_group: dict[str, Iterable[float]]) -> float:
     return mean(group_means)
 
 
+#: What a per-sample metric that has no value is written as, where a blank
+#: would read as "not computed" -- reasoning_anchoring_point when the model
+#: never considered its answer, or the index was unusable. It is not a number,
+#: so every mean skips it (see _is_nan), and it is carried through a resume
+#: unchanged by stored_metrics().
+MISSING_METRIC = "None"
+
+
+def stored_metrics(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """A record's metrics as numbers, keeping MISSING_METRIC and dropping the rest."""
+    out: dict[str, Any] = {}
+    for key, value in (raw or {}).items():
+        if value == MISSING_METRIC:
+            out[key] = MISSING_METRIC
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = float(value)
+    return out
+
+
 def _is_nan(value: Any) -> bool:
     try:
         return math.isnan(float(value))

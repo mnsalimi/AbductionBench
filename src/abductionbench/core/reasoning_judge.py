@@ -63,6 +63,7 @@ from .errors import ConfigError, EndpointError
 from .judge_budget import JudgeWindow, template_tokens
 from .modes import BOV, COT, SELF_CONSISTENCY
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
+from .metrics import MISSING_METRIC
 from .retry import RetryPolicy, with_retry
 from .types import (
     ModelResponse,
@@ -161,6 +162,9 @@ REASONING_LIST_COLUMNS: tuple[str, ...] = (
     # One verdict per ACTION of an interactive episode, not per reasoning step.
     "interaction_step_relevance_per_step",
 )
+
+#: Written as MISSING_METRIC when a sample has no anchoring point.
+ANCHORING_COLUMNS = ("reasoning_anchoring_point", "reasoning_anchoring_point_normalized")
 
 REASONING_METRIC_COLUMNS: tuple[str, ...] = (
     # 1. observation (evidence) coverage
@@ -683,18 +687,18 @@ def derive_reasoning_metrics(
             # than becoming a number.
             inapplicable.append("anchoring_point:correct_answer_never_considered")
         else:
+            # 1-BASED (reasoning_anchoring_point_v3@1.1): the step list the
+            # judge reads is numbered from 1, and so is its answer -- 1..n, so
+            # index / total_steps is 1.0 when the model first considered its
+            # answer at its last step. The 0-based index it replaced ran
+            # 0..n-1 and that ratio could never reach 1.
             index = _nonnegative_int(anchor)
-            if index is None or (steps is not None and index >= total_steps):
+            if index is None or index < 1 or (steps is not None and index > total_steps):
                 errors.append("anchoring_point:not_an_index_into_the_step_list")
             else:
                 metrics["reasoning_anchoring_point"] = float(index)
                 if total_steps:
-                    # The index is 0-based, so it runs 0..total_steps-1 and
-                    # index / total_steps could never reach 1: settling on the
-                    # last step of a 4-step chain read 0.75. Counting the
-                    # anchoring step itself puts the scale on (0, 1], with 1.0
-                    # meaning the model settled at its final step.
-                    metrics["reasoning_anchoring_point_normalized"] = (index + 1) / total_steps
+                    metrics["reasoning_anchoring_point_normalized"] = index / total_steps
 
     # Whether the CORRECT answer was CONSIDERED IN EACH STEP -- a different
     # question from the one above, which is about the model's own answer.
@@ -1023,6 +1027,11 @@ class ReasoningJudgeStage:
             )
             errors = [*target.errors, *errors]
             inapplicable = [*target.inapplicable, *inapplicable]
+            # A missing anchoring point is written as "None", not left blank --
+            # which also replaces whatever an earlier judgement left in the
+            # record. Means skip it (metrics.MISSING_METRIC).
+            for name in ANCHORING_COLUMNS:
+                metrics.setdefault(name, MISSING_METRIC)
             details = dict(target.score.details)
             details["reasoning_metrics_status"] = "ok" if not errors else "partial"
             details["reasoning_source"] = target.reasoning_source
@@ -1201,7 +1210,9 @@ class ReasoningJudgeStage:
             sample,
             response,
             SampleScore(
-                metrics=dict(score.metrics),
+                # Judged for no reasoning metric at all: its anchoring point is
+                # "None" like any other missing one, not an earlier value.
+                metrics={**score.metrics, **{name: MISSING_METRIC for name in ANCHORING_COLUMNS}},
                 prediction=score.prediction,
                 parse_ok=score.parse_ok,
                 details={**score.details, "reasoning_metrics_status": status},
