@@ -689,7 +689,12 @@ def derive_reasoning_metrics(
             else:
                 metrics["reasoning_anchoring_point"] = float(index)
                 if total_steps:
-                    metrics["reasoning_anchoring_point_normalized"] = index / total_steps
+                    # The index is 0-based, so it runs 0..total_steps-1 and
+                    # index / total_steps could never reach 1: settling on the
+                    # last step of a 4-step chain read 0.75. Counting the
+                    # anchoring step itself puts the scale on (0, 1], with 1.0
+                    # meaning the model settled at its final step.
+                    metrics["reasoning_anchoring_point_normalized"] = (index + 1) / total_steps
 
     # Whether the CORRECT answer was CONSIDERED IN EACH STEP -- a different
     # question from the one above, which is about the model's own answer.

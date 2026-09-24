@@ -77,6 +77,24 @@ def _derive(raw=None, **kwargs):
     return derive_reasoning_metrics(raw if raw is not None else _raw(), **kwargs)
 
 
+def test_the_normalized_anchoring_point_spans_the_whole_chain():
+    """(index + 1) / total_steps: the last step is 1.0, the first is 1 / n.
+
+    The index is 0-based, so index / total_steps topped out at (n - 1) / n --
+    a model that settled on the last of 4 steps read 0.75, and no chain could
+    ever reach 1.
+    """
+    n = len(STEPS)
+    gold = [0] * (n - 1) + [1]
+    last, _l, _e, _i = _derive(_raw(anchoring_point={"anchoring_step_index": n - 1,
+                                                     "gold_alive_per_step": gold}))
+    first, _l, _e, _i = _derive(_raw(anchoring_point={"anchoring_step_index": 0,
+                                                      "gold_alive_per_step": gold}))
+    assert last["reasoning_anchoring_point_normalized"] == 1.0
+    assert first["reasoning_anchoring_point_normalized"] == 1 / n
+    assert last["reasoning_anchoring_point"] == float(n - 1), "the raw index is unchanged"
+
+
 # --------------------------------------------------------------------------- #
 # the numbers themselves
 # --------------------------------------------------------------------------- #
@@ -120,7 +138,8 @@ def test_every_derived_value_follows_from_the_lists():
 
     # Metric 10 -- an index into the step list, and where it falls in the chain.
     assert metrics["reasoning_anchoring_point"] == 1.0
-    assert metrics["reasoning_anchoring_point_normalized"] == 0.25
+    # 0-based index 1 of 4 steps: (1 + 1) / 4.
+    assert metrics["reasoning_anchoring_point_normalized"] == 0.5
 
 
 def test_the_step_count_is_reported_but_always_read_off_the_list():
