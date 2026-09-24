@@ -31,6 +31,15 @@ engine:
   reasoning_judge:
     enabled: false
 
+  # UPLOADING IS NOT THIS PASS'S JOB. The engine's own sync ends every pass
+  # with a complete, verified upload, so a throttled Drive (rclone's shared
+  # OAuth quota) held the whole pipeline behind it -- the io pass sat 25+
+  # minutes finished and uploading. The run folder is backed up instead by
+  # tools/sync_run.sh, a separate process that cannot block or slow
+  # generation. Never both at once: two uploaders make Drive store duplicates.
+  sync:
+    enabled: false
+
 models:
   # 512 in flight per model (gemma 64 x 8, qwen 32 x 16); windows 65,536, so
   # every dataset keeps the suite's full 32,000-token answer budget.
