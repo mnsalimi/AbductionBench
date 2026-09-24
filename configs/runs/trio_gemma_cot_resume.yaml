@@ -1,0 +1,41 @@
+# The rest of gemma-4-E4B's and gemma-4-E2B's COT pass, native reasoning ON,
+# with the GPU to themselves -- the four-model pass (trio_local4_generate_cot)
+# was stopped at 2,700 / 5,400 each, sharing the card with two Qwens whose
+# 30-minute batch timeouts were wasting it. Same settings as that pass for
+# these two models, so every saved answer matches its fingerprint and is
+# reused; only the missing ones are asked. Judges deferred, and no built-in
+# Drive sync: tools/sync_run.sh backs the folder up from its own process.
+# Run by tools/gemma_cot_resume.sh.
+extends:
+  - trio_local4_generate_cot.yaml
+
+name: openrouter-trio
+
+engine:
+  concurrency:
+    max_parallel_tasks: 72
+    max_parallel_batches_global: 160
+
+models:
+  - file: ../models/gemma-4-e4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
+  - file: ../models/gemma-4-e2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 8
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 160
+      context_window: 65536
