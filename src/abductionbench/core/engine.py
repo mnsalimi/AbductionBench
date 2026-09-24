@@ -35,6 +35,7 @@ Failure handling worth knowing about
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import logging
 import time
@@ -2008,6 +2009,18 @@ class EvaluationEngine:
             adapter, identity, prompt_by_id, reused_triplets
         )
 
+        # Records scored before the no-answer rule read a runaway reply's
+        # chain as its answer. Re-scored now, and written back with the rest
+        # of `restored`, so a resume corrects them rather than carrying them.
+        for position, (sample, response, score) in enumerate(reused_triplets):
+            prompt = prompt_by_id.get(sample.sample_id)
+            if prompt is None or (score.details or {}).get("no_answer"):
+                continue
+            if self._unanswered(prompt, response):
+                rescored = await self._score(adapter, prompt, response)
+                reused_triplets[position] = (sample, response, rescored)
+                restored.add(sample.sample_id)
+
         # Structural reasoning metrics. The stage itself refuses anything that
         # is not cot/self-consistency, so an io output can never enter it; it is
         # shared across tasks so an observation inventory is bought once.
@@ -2058,6 +2071,12 @@ class EvaluationEngine:
                     logger.info(
                         "task %s: %d sample record(s) updated with the judge's verdict",
                         identity.slug, rewritten,
+                    )
+                if judge.skipped_no_answer:
+                    checkpoint.notes["judge_skipped_no_answer"] = judge.skipped_no_answer
+                    logger.info(
+                        "task %s: %d sample(s) never answered; scored as unreadable, not judged",
+                        identity.slug, judge.skipped_no_answer,
                     )
                 if judge.skipped_oversize:
                     # ASKED FOR, NOT ANSWERED, AND NOT BECAUSE THE MODEL WAS
@@ -2950,12 +2969,37 @@ class EvaluationEngine:
             )
         return restored
 
+    @staticmethod
+    def _unanswered(prompt: RenderedPrompt, response: ModelResponse) -> str | None:
+        """Why a static reply never gave an answer (``missing_answer``), else None.
+
+        Interactive episodes answer in their own protocol and are not judged
+        by this rule.
+        """
+        if prompt.sample.metadata.get("_transcript"):
+            return None
+        if response.status in (ResponseStatus.ERROR, ResponseStatus.SKIPPED):
+            return None
+        from ..adapters._prompting import missing_answer  # lazily, as format_compliance is
+
+        return missing_answer(response.content, response.finish_reason)
+
     async def _score(
         self, adapter: DatasetAdapter, prompt: RenderedPrompt, response: ModelResponse
     ) -> SampleScore:
         """Run the adapter's scorer off the event loop, never letting it crash a run."""
         if response.status in (ResponseStatus.ERROR, ResponseStatus.SKIPPED):
             return SampleScore(metrics={}, parse_ok=False, details={"unscored": response.status.value})
+        unanswered = self._unanswered(prompt, response)
+        if unanswered:
+            # NO ANSWER IS NOT AN ANSWER. A reply cut off by its token budget
+            # before it answered used to be read whole by the lenient parser,
+            # so a label or entity mentioned anywhere in the loop scored --
+            # gemma-4-31b took credit on 8 of 8 such aer replies. It is scored
+            # as the empty reply it effectively is, by the adapter's own rule
+            # for no output: unreadable, never a verdict. The stored reply is
+            # untouched; only what the scorer is shown changes.
+            response = dataclasses.replace(response, content="")
         async with self._scoring_sem:
             try:
                 # Watched, not bounded: a thread cannot be interrupted, so the
@@ -2969,6 +3013,9 @@ class EvaluationEngine:
                         )
 
                 scored = await asyncio.to_thread(_scored)
+                if unanswered:
+                    scored.parse_ok = False
+                    scored.details = {**(scored.details or {}), "no_answer": unanswered}
                 return self._with_interaction_steps(adapter, prompt, scored)
             except Exception as exc:  # noqa: BLE001 - a bad scorer must not kill the run
                 logger.exception(

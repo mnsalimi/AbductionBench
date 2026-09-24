@@ -163,3 +163,85 @@ def test_the_no_answer_sheet_counts_per_task(tmp_path):
     assert row["cut_off_before_answering"] == 1
     assert row["empty_reply"] == 1
     assert row["failed_calls_not_counted"] == 1
+
+
+# -- scoring and the answer judge ------------------------------------------- #
+
+
+def _engine_score(content, finish, *, transcript=None):
+    from abductionbench.core.engine import EvaluationEngine
+
+    class _Scorer:
+        dataset_id = "d"
+
+        def score_request(self, sample, response, *, output_contract=None):
+            # A lenient scorer: finds the label anywhere, as the real ones do.
+            text = response.content or ""
+            hit = "3" in text
+            return SampleScore(metrics={"accuracy": 1.0 if hit else 0.0},
+                               prediction=text[:20] or None, parse_ok=bool(text))
+
+    engine = object.__new__(EvaluationEngine)
+    engine._scoring_sem = asyncio.Semaphore(1)
+
+    class _Watch:
+        def watch(self, *_a):
+            import contextlib
+            return contextlib.nullcontext()
+
+    engine._scorer_watchdog = _Watch()
+    engine._with_interaction_steps = lambda adapter, prompt, score: score
+    metadata = {"_transcript": transcript} if transcript else {}
+    sample = SampleSpec(sample_id="s", fields={}, metadata=metadata)
+    prompt = RenderedPrompt(sample=sample, messages=[ChatMessage(role="user", content="q")],
+                            template_id="t", template_version="1",
+                            sampling=SamplingParams(max_tokens=8), input_tokens_est=1)
+    response = ModelResponse(sample_id="s", model_id="m", status=ResponseStatus.TRUNCATED,
+                             content=content, finish_reason=finish)
+    return asyncio.run(engine._score(_Scorer(), prompt, response)), response
+
+
+def test_a_reply_cut_off_before_answering_gets_no_credit_from_its_chain():
+    """The lenient parser used to find the label in the loop and score it."""
+    score, response = _engine_score("<think>maybe 3... maybe 3... (Sigh)", "length")
+    assert score.metrics["accuracy"] == 0.0
+    assert score.parse_ok is False
+    assert score.details["no_answer"] == NO_ANSWER_CUT_OFF
+    # The stored reply is not rewritten -- only what the scorer was shown.
+    assert response.content.startswith("<think>maybe 3")
+
+
+def test_a_reply_that_answered_before_the_cut_keeps_its_score():
+    score, _ = _engine_score("<think>t</think><answer>3</answer> trailing", "length")
+    assert score.metrics["accuracy"] == 1.0
+    assert "no_answer" not in score.details
+
+
+def test_an_interactive_episode_is_not_judged_by_this_rule():
+    score, _ = _engine_score("ask about 3", "length", transcript=[{"role": "user", "content": "c"}])
+    assert "no_answer" not in score.details
+
+
+def test_the_answer_judge_does_not_grade_a_reply_that_never_answered(tmp_path):
+    from abductionbench.core.judge import JudgeStage
+
+    class _Adapter:
+        dataset_id = "d"
+
+        def judge_request(self, sample, response, score):  # pragma: no cover - must not run
+            raise AssertionError("a no-answer sample reached the judge")
+
+    stage = object.__new__(JudgeStage)
+    stage.skipped_no_answer = 0
+    stage.skipped_oversize = 0
+    stage.unavailable = 0
+    stage._template_for = lambda adapter: None
+    sample = SampleSpec(sample_id="s", fields={})
+    response = ModelResponse(sample_id="s", model_id="m", status=ResponseStatus.TRUNCATED,
+                             content="<think>loop", finish_reason="length")
+    score = SampleScore(metrics={"judged": 0.0}, parse_ok=False,
+                        details={"no_answer": NO_ANSWER_CUT_OFF})
+    out = asyncio.run(stage.apply(_Adapter(), [(sample, response, score)], []))
+    assert stage.skipped_no_answer == 1
+    assert stage.skipped_oversize == 0 and stage.unavailable == 0
+    assert out[0][2] is score

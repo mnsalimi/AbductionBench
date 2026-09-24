@@ -133,6 +133,8 @@ class JudgeStage:
         #: Samples not judged because the exchange was too big for the judge's
         #: window. Reported, never averaged in as a zero.
         self.skipped_oversize: int = 0
+        #: Samples not judged because the model never gave an answer.
+        self.skipped_no_answer: int = 0
         self.last_error: str = ""
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_path = self.cache_dir / "verdicts.json"
@@ -185,6 +187,13 @@ class JudgeStage:
         by_id = {p.sample_id: p for p in (prompts or [])}
         pending: list[tuple[int, dict[str, Any], str]] = []
         for index, (sample, response, score) in enumerate(scored):
+            if (score.details or {}).get("no_answer"):
+                # The model never answered (engine._score): there is nothing
+                # to grade, and the scorer has already recorded it as
+                # unreadable. Not a skip for size and not a missing verdict --
+                # so it neither fails the task nor stands in for a zero.
+                self.skipped_no_answer += 1
+                continue
             try:
                 request = adapter.judge_request(sample, response, score)
             except Exception as exc:  # noqa: BLE001
