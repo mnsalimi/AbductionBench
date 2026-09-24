@@ -1,0 +1,43 @@
+# trio_qwen_cot_resume.yaml with the request queue kept short.
+#
+# The read timeout counts from when a request is SENT, including the time it
+# waits in vLLM's queue -- and with 512 in flight per model against a KV cache
+# that holds ~46 (4B) / ~190 (2B) of these long native-reasoning answers, most
+# requests queued for most of their hour and timed out (15 in the first five
+# minutes after the hour), then went back to the end of the queue. Sending only
+# about what each server can run means a request's clock covers its own
+# generation. Throughput is the same -- the surplus only waited -- and nothing
+# about an answer changes: same prompts, sampling and thinking switch, so
+# every saved answer is reused. Timeout 2 h as a margin for a 32k-token answer.
+extends:
+  - trio_qwen_cot_resume.yaml
+
+engine:
+  concurrency:
+    max_parallel_batches_global: 400
+  timeouts:
+    read_s: 7200
+
+models:
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 256
+      max_connections: 300
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 128
+      max_connections: 160
+      context_window: 65536
