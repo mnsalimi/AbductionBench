@@ -542,24 +542,21 @@ class JudgeConfig(_Base):
     #: stage issued its batches strictly one after another, and 29 of the 44
     #: datasets are scored by it.
     max_parallel_calls: int = Field(8, ge=1)
-    #: How much of the conversation the model was sent, and of what it replied,
-    #: a judge may be shown.  Both are passed in full up to these limits and
-    #: middle-clipped beyond them: a judge grading a chain-of-thought answer
-    #: needs the question it was answering and the reasoning that produced it,
-    #: not just the answer line -- but a request that overruns the judge's own
-    #: context window is rejected outright and the sample gets no verdict.
-    #:
-    #: Sized from a measurement, not a guess. Tokenised with gpt-oss-20b's own
-    #: tokenizer over real responses from 13 datasets, this suite runs 2.72
-    #: characters per token at its densest (abd's s-expressions) against a 4.57
-    #: median -- so 60,000 characters is ~22,000 tokens of the judge's 65,536
-    #: window, and the two together leave room for the verdict and the
-    #: adapter's own fields. Raising ``max_tokens`` instead would be the wrong
-    #: lever: measured on the worst-case exchange the judge spends **62** of its
-    #: 2,048 completion tokens, and every token reserved for output is one the
-    #: exchange cannot use.
-    max_prompt_chars: int = Field(60000, ge=1000)
-    max_response_chars: int = Field(60000, ge=1000)
+    #: The judge's context window, if it should not be read from its model's
+    #: ``limits.context_window``. What the judge may be shown is bounded by
+    #: this window in the judge's own tokens (core/judge_budget.py): the whole
+    #: conversation the model was sent, its whole reply, the adapter's fields,
+    #: the template's wording and ``max_tokens`` for the verdict must fit, or
+    #: the sample is skipped -- never clipped. This replaced a 60,000-character
+    #: cap per side that was sized for the densest text in the suite and so
+    #: turned away ordinary long answers with two-thirds of the window unused.
+    context_window: int | None = Field(None, ge=1024)
+    #: RETIRED -- the character caps the window replaced. Still accepted, and
+    #: ignored, because every run folder written before stores them in its
+    #: run_config.resolved.yaml, and a folder whose config no longer loads
+    #: cannot be resumed or reported on.
+    max_prompt_chars: int | None = None
+    max_response_chars: int | None = None
     #: Cache judge verdicts on disk so re-scoring does not re-spend tokens.
     cache: bool = True
 
@@ -682,8 +679,8 @@ class ReasoningJudgeConfig(_Base):
     steps_budget_headroom: int = Field(6144, ge=0)
     #: The most any one call may ask for, whatever the chain's length implies.
     #: A request still has to fit inside the judge's own context window with its
-    #: prompt, and a chain long enough to exceed this was already clipped by
-    #: ``max_chain_chars`` before it got here.
+    #: prompt, and a sample whose chain cannot fit that way is skipped before it
+    #: gets here (the token budget in core/judge_budget.py).
     max_tokens_ceiling: int = Field(32768, ge=1)
     temperature: float = Field(0.0, ge=0)
     #: How hard the judge may think before answering.
@@ -700,22 +697,17 @@ class ReasoningJudgeConfig(_Base):
     #: replies were exactly that.  Counting steps in a chain is a reading task;
     #: it does not need a research budget.  ``None`` leaves the server default.
     reasoning_effort: str | None = "low"
-    #: The answer's and the reference's share of the request budget.  Not a
-    #: cap on either -- nothing sent to this judge is cut.  A request whose
-    #: question, chain, answer and reference together exceed
-    #: ``2 * max_chain_chars + 2 * max_reference_chars`` is skipped and counted
-    #: as oversize instead, because a per-field cap does not bound a sum and the
-    #: sum is what the judge's window constrains: four fields at the chain's
-    #: limit came to 240,000 characters, 88,000 tokens against a 65,536 window.
-    #: The split lets one field run long (moose_chem2's reference is 16,000
-    #: characters, and was clipped at 8,000 when this was a cap) as long as the
-    #: rest leave room.
-    max_reference_chars: int = Field(8000, ge=200)
-    #: Longest question and longest chain (in characters) a judge is sent; a
-    #: sample with a longer one is skipped, not clipped.  Without a bound the
-    #: prompt can exceed the judge's own context window -- observed at 65,621
-    #: tokens against a 65,536 limit -- and the call is rejected outright.
-    max_chain_chars: int = Field(60000, ge=1000)
+    #: The judge's context window, if not its model's ``limits.context_window``.
+    #: A sample is judged only if its largest call fits it in the judge's own
+    #: tokens (core/judge_budget.py): question, chain, answer, reference and
+    #: the template's wording, plus the steps call's reply -- which is as long
+    #: as the chain. Nothing is clipped; a sample that does not fit is skipped
+    #: and counted. This replaced a 60,000-character cap on the chain and an
+    #: 8,000-character share for the reference.
+    context_window: int | None = Field(None, ge=1024)
+    #: RETIRED, accepted and ignored for the same reason as JudgeConfig's.
+    max_reference_chars: int | None = None
+    max_chain_chars: int | None = None
     #: Conversations per batch call.  In-flight sequences are
     #: ``group_size x max_parallel_calls``; together they should fill the judge
     #: server's ``--max-num-seqs`` and not exceed it, since the surplus only

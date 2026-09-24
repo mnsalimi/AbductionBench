@@ -9,7 +9,8 @@ happened to share an opening.
 
 The judge's context window is a real constraint, and it is enforced where it
 belongs: the judge stages skip a request whose fields TOGETHER would overrun it
-(core/judge.py:exceeds_total), so no field has to be cut to make room.
+(core/judge_budget.py, in the judge's own tokens), so no field has to be cut
+to make room.
 """
 
 from __future__ import annotations

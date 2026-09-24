@@ -174,6 +174,29 @@ def reasoning_trace(content: str | None, reasoning: str | None) -> ReasoningTrac
     return ReasoningTrace("", TRACE_NONE)
 
 
+#: Why a reply has no answer, as recorded and reported (the "No answer" sheet).
+NO_ANSWER_EMPTY = "empty_reply"
+NO_ANSWER_CUT_OFF = "cut_off_before_answering"
+
+
+def missing_answer(content: str | None, finish_reason: str | None) -> str | None:
+    """Why this reply never gave an answer, or ``None`` if it did.
+
+    Two ways, and only two: nothing came back at all, or generation stopped
+    at the token budget (``finish_reason == "length"``) before an answer block
+    was ever closed -- the model was still reasoning when it was cut off. A
+    reply that finished on its own counts as having answered even without
+    tags: an untagged final line is a formatting lapse the parser reads, not a
+    missing answer.
+    """
+    body = (content or "").strip()
+    if not body:
+        return NO_ANSWER_EMPTY
+    if finish_reason == "length" and ANSWER_CLOSE not in body.lower():
+        return NO_ANSWER_CUT_OFF
+    return None
+
+
 def cot_chain(content: str | None, reasoning: str | None) -> str:
     """The chain of thought of a reply -- :func:`reasoning_trace`'s text."""
     return reasoning_trace(content, reasoning).text

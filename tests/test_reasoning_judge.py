@@ -610,6 +610,9 @@ class ReasonedAdapter(DatasetAdapter):
                 "group_size": 4,
                 "max_parallel_calls": 4,
                 "max_tokens": 64,
+                # The fake model's own window is 4,096, smaller than the steps
+                # call's reply budget alone; a real judge has 65,536 or more.
+                "context_window": 65536,
             }
         },
         modes={"prompt_modes": ["io", "cot"]},
@@ -763,14 +766,23 @@ def test_a_long_reference_and_answer_reach_the_judge_whole(tmp_path):
 
 
 def test_a_request_too_big_for_the_window_is_skipped_not_cut(tmp_path):
-    """Whole or not at all: an oversize sample is counted, never judged from a cut copy."""
+    """Whole or not at all: an oversize sample is counted, never judged from a cut copy.
+
+    The bound is the judge's window in tokens: the fields, the template's
+    wording and the steps call's reply (as long as the chain) must all fit.
+    """
     sent, out = _targets_sent(
-        tmp_path, reference="R" * 3_000, answer="A" * 3_000,
-        max_chain_chars=1_000, max_reference_chars=1_000,
+        tmp_path, reference="R" * 3_000, answer="A" * 3_000, context_window=8_192,
     )
     assert sent == []
     status = out[0][2].details.get("reasoning_metrics_status", "")
-    assert "oversize" in status and "request_exceeds_4000" in status, status
+    assert "oversize" in status and "token_window" in status, status
+
+    # The same sample fits a real judge's window.
+    sent, _out = _targets_sent(
+        tmp_path / "wide", reference="R" * 3_000, answer="A" * 3_000, context_window=65_536,
+    )
+    assert len(sent) == 1
 
 
 def test_coverage_counts_what_each_metric_was_computed_over(tmp_path):

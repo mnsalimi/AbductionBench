@@ -219,69 +219,52 @@ class ExchangeAdapter(DatasetAdapter):
     assert "Answer: a sprinkler" in body, "the judge cannot see what the model actually replied"
 
 
-def test_the_whole_request_is_budgeted_and_nothing_in_it_is_cut():
-    """Every field goes to the judge whole, so the SUM is what is bounded.
+def test_the_whole_request_is_budgeted_in_the_judges_own_tokens():
+    """Every field goes to the judge whole, so the SUM is what is bounded --
+    in tokens, against the judge's own window, not in characters.
 
-    The answer, gold and observation used to be sliced to a few hundred
-    characters each, which kept the request small by showing the judge a cut
-    answer and calling it the model's. Nothing is sliced now; a request whose
-    fields together would overrun the window is skipped and counted instead.
+    The character caps this replaced (60,000 a side) were sized for the
+    densest text in the suite, 2.72 characters per token, so ordinary prose at
+    ~4.6 was turned away with two-thirds of the window unused.
     """
-    from abductionbench.core.judge import exceeds_total
+    from abductionbench.core.judge_budget import SAFETY_TOKENS, JudgeWindow
 
-    assert exceeds_total(["x" * 40, "y" * 40, None, ""], 100) is None
-    reason = exceeds_total(["x" * 60, "y" * 60], 100)
-    assert reason and "100" in reason and "120" in reason
-    # No limit configured is no limit.
-    assert exceeds_total(["x" * 10_000], 0) is None
+    window = JudgeWindow("no-such-tokenizer", 10_000)   # the conservative estimate
+    assert not window.exact
+    assert window.overrun(["x" * 2_720, None, ""], reserved=1_000) is None
+    reason = window.overrun(["x" * 27_200], reserved=1_000)
+    assert reason and "10000_token_window" in reason
+    # The template's wording and the reply's budget count against the window.
+    fits = 10_000 - SAFETY_TOKENS - 1_000
+    assert window.overrun(["x" * int(2.72 * (fits - 10))], reserved=1_000) is None
+    # No window configured is no limit.
+    assert JudgeWindow("m", None).overrun(["x" * 10_000_000], reserved=0) is None
 
 
-def test_what_a_judge_may_be_shown_fits_the_window_it_has():
-    """The sum of the per-field caps, not each cap on its own.
+def test_the_judges_own_tokenizer_is_used_when_it_is_on_disk():
+    """Exact where it can be: a served judge has its tokenizer in the HF cache."""
+    import pytest
 
-    Twice now a per-field limit has been set without checking what they add up
-    to, and a request that overruns the judge's context window is rejected
-    outright -- the sample gets no verdict at all, which is strictly worse than
-    one read from a clipped copy. The reasoning judge's four fields at its chain
-    limit came to 240,000 characters against a window that holds about 178,000
-    at this suite's densest.
+    from abductionbench.core.judge_budget import JudgeWindow
 
-    The density is measured, not assumed: tokenised with gpt-oss-20b's own
-    tokenizer over real responses from 13 datasets, this suite runs 2.72
-    characters per token at its worst (abd's s-expressions) against a 4.57
-    median. Using the worst is the point -- a limit that only holds for average
-    text is not a limit.
-    """
-    from abductionbench.core.config import JudgeConfig, ReasoningJudgeConfig
+    window = JudgeWindow("openai/gpt-oss-120b", 65_536)
+    if not window.exact:
+        pytest.skip("gpt-oss tokenizer not in the local cache")
+    prose = "The explosion was caused by the fire reaching the stored nitrate. " * 200
+    # Prose is far less dense than the fallback assumes, which is the point.
+    assert window.count(prose) < len(prose) / 2.72 * 0.8
 
-    WINDOW = 65_536          # both judges are served with this context
-    DENSEST = 2.72           # measured chars per token, worst dataset
-    SCAFFOLD = 6_000         # template wording, criteria, gold, observation
 
-    def tokens(chars: int) -> float:
-        return chars / DENSEST
+def test_a_real_judge_window_admits_what_the_character_caps_turned_away():
+    """A 70,000-character answer -- turned away before -- fits a 65,536 window."""
+    from abductionbench.core.config import JudgeConfig
+    from abductionbench.core.judge_budget import JudgeWindow
 
-    answer = JudgeConfig()
-    used = (
-        tokens(answer.max_prompt_chars + answer.max_response_chars)
-        + SCAFFOLD
-        + answer.max_tokens
-    )
-    assert used < WINDOW, (
-        f"the answer judge can be sent {used:,.0f} tokens against a {WINDOW:,} window; "
-        "lower max_prompt_chars/max_response_chars, not max_tokens"
-    )
-
-    reasoning = ReasoningJudgeConfig()
-    # question + chain at the chain limit, answer + reference at theirs.
-    used = (
-        tokens(2 * reasoning.max_chain_chars + 2 * reasoning.max_reference_chars)
-        + SCAFFOLD
-        + reasoning.max_tokens
-    )
-    assert used < WINDOW, (
-        f"the reasoning judge can be sent {used:,.0f} tokens against a {WINDOW:,} window"
-    )
+    window = JudgeWindow("openai/gpt-oss-120b", 65_536)
+    answer = ("Step: the evidence points to the second candidate because it explains "
+              "both the delay and the alert. ") * 700          # ~71,000 characters
+    if window.exact:
+        assert window.overrun([answer, "question " * 300], reserved=700 + JudgeConfig().max_tokens) is None
 
 
 def test_output_budget_is_not_the_constraint_on_a_judge():
@@ -313,11 +296,11 @@ def test_an_exchange_too_big_for_the_window_is_skipped_not_clipped():
     keeps the fact, which is the honest trade: the record is counted and named
     in the coverage report.
     """
-    from abductionbench.core.judge import exceeds_budget
+    from abductionbench.core.judge_budget import JudgeWindow
 
-    limits = {"full_prompt": 100, "full_response": 100}
-    assert exceeds_budget({"full_prompt": "x" * 50, "full_response": "y" * 50}, limits) is None
-    reason = exceeds_budget({"full_prompt": "x" * 500, "full_response": "y"}, limits)
-    assert reason and "full_prompt" in reason and "500" in reason
+    window = JudgeWindow("no-such-tokenizer", 4_000)
+    assert window.overrun({"full_prompt": "x" * 50, "full_response": "y" * 50}.values(), reserved=100) is None
+    reason = window.overrun(["x" * 50_000, "y"], reserved=100)
+    assert reason and "token_window" in reason
     # A missing field is not an oversize field.
-    assert exceeds_budget({}, limits) is None
+    assert window.overrun([], reserved=100) is None

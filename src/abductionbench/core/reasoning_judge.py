@@ -48,6 +48,7 @@ import orjson
 
 from ..adapters._prompting import (
     _HARNESS_TAG_REGEX,
+    missing_answer,
     THINK_OPEN,
     TRACE_NATIVE,
     TRACE_NONE,
@@ -59,7 +60,7 @@ from .batching import iter_chunks
 from .client import ModelClient
 from .config import ReasoningJudgeConfig
 from .errors import ConfigError, EndpointError
-from .judge import exceeds_budget, exceeds_total
+from .judge_budget import JudgeWindow, template_tokens
 from .modes import BOV, COT, SELF_CONSISTENCY
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .retry import RetryPolicy, with_retry
@@ -79,7 +80,7 @@ logger = logging.getLogger(__name__)
 #:
 #: Four is the usual English approximation and it is wrong for this suite,
 #: which is not prose: measured over one run's own judge prompts the ratio is
-#: 2.89, and JudgeConfig.max_prompt_chars records 2.72 at its densest (abd's
+#: 2.89, and 2.72 at its densest (judge_budget.DENSEST_CHARS_PER_TOKEN; abd's
 #: s-expressions) against a 4.57 median. Formal logic, LaTeX and s-expressions
 #: tokenize far finer than English -- and those are exactly the chains long
 #: enough for the budget to matter.
@@ -849,6 +850,8 @@ class ReasoningJudgeStage:
                 "engine.reasoning_judge.templates is missing: " + ", ".join(sorted(missing))
             )
         self.client = clients[config.model]
+        #: The judge's own window, counted in its own tokens.
+        self.window = JudgeWindow.for_client(self.client, config.context_window)
         #: Live view of the models whose batch endpoint the engine found
         #: unusable.  Held by reference and read at call time, because the
         #: engine fills it in after this stage is built.
@@ -916,25 +919,42 @@ class ReasoningJudgeStage:
             if prompt is None:
                 self._mark(updated, index, "not_applicable:prompt_unavailable")
                 continue
-            question, reasoning, reasoning_source = self._question_and_reasoning(prompt, response)
-            too_big = exceeds_budget(
-                {"question": question, "reasoning_chain": reasoning},
-                {
-                    "question": self.config.max_chain_chars,
-                    "reasoning_chain": self.config.max_chain_chars,
-                },
+            transcript = prompt.sample.metadata.get("_transcript")
+            unanswered = (
+                None
+                if isinstance(transcript, list) and transcript
+                else missing_answer(response.content, response.finish_reason)
             )
+            if unanswered:
+                # NO ANSWER, NO REASONING TO MEASURE. A reply that came back
+                # empty, or was cut off by its token budget before it ever
+                # answered, is a failed generation: its chain is a loop or a
+                # fragment, not the reasoning behind an answer, and averaging
+                # its step counts in beside real ones would measure runaway
+                # output. Blank, not zero, and counted per dataset in the
+                # workbook's "No answer" sheet.
+                self.stats["skipped_no_answer"] = self.stats.get("skipped_no_answer", 0) + 1
+                self._mark(updated, index, f"not_applicable:no_answer:{unanswered}")
+                continue
+            question, reasoning, reasoning_source = self._question_and_reasoning(prompt, response)
             answer = score.prediction or response.text or ""
             reference = json.dumps(sample.reference, ensure_ascii=False, default=str)
-            if not too_big:
-                # The answer and the reference go in whole as well, so it is
-                # their sum with the chain that has to fit the judge's window.
-                # The budget is the one the per-field limits were sized to
-                # (tests/test_judge.py checks it against the window).
-                too_big = exceeds_total(
-                    [question, reasoning, answer, reference],
-                    2 * self.config.max_chain_chars + 2 * self.config.max_reference_chars,
-                )
+            options_text = "\n".join(str(o) for o in (self._root_sample(sample).fields.get("options") or []))
+            # WHAT THE LARGEST CALL NEEDS, in the judge's own tokens: the
+            # steps call reads the question and the chain and writes the chain
+            # back cut into steps, so its reply is as long as the chain; every
+            # later call reads the question, the steps (the chain again), the
+            # observations, the answer and the reference. Counted once, as the
+            # worst of them, so a sample either fits every call or is skipped.
+            chain_tokens = self.window.count(reasoning)
+            reply = max(
+                self.config.max_tokens,
+                min(chain_tokens + self.config.steps_budget_headroom, self.config.max_tokens_ceiling),
+            )
+            too_big = self.window.overrun(
+                [question, question, reasoning, answer, reference, options_text],
+                reserved=self._scaffold_tokens() + reply,
+            )
             if too_big:
                 # A judge shown a chain with its middle removed is answering a
                 # different question -- "how many steps are there" least of all
@@ -2110,6 +2130,15 @@ class ReasoningJudgeStage:
                 break
             root = parent
         return root
+
+    def _scaffold_tokens(self) -> int:
+        """Tokens of the wordiest live template's own text, counted once."""
+        if getattr(self, "_scaffold", None) is None:
+            counts = [0]
+            for template in getattr(self, "templates", {}).values():
+                counts.append(template_tokens(self.window, template))
+            self._scaffold = max(counts)
+        return self._scaffold
 
     @staticmethod
     def _question_and_reasoning(

@@ -35,42 +35,12 @@ from .errors import ConfigError, EndpointError
 from .metrics import extract_first_number
 from .prompts import PromptRegistry, PromptRenderer
 from .retry import RetryPolicy, with_retry
+from .judge_budget import JudgeWindow, template_tokens
 from .types import ModelResponse, SampleScore, SampleSpec, SamplingParams, stable_hash
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["JudgeVerdict", "JudgeStage", "exceeds_budget", "exceeds_total"]
-
-
-def exceeds_budget(parts: dict[str, str], limits: dict[str, int]) -> str | None:
-    """Why this exchange is too big to judge, or ``None`` if it fits.
-
-    Skipping beats clipping. A clipped exchange still gets a verdict, and that
-    verdict is reported beside verdicts read from complete ones as though the
-    two were the same measurement -- a judge shown the middle of a chain removed
-    is being asked a different question, and nothing downstream can tell. A
-    skipped record has no verdict, is counted, and is named in the coverage
-    report, so the gap is visible instead of silently averaged in.
-    """
-    for name, limit in limits.items():
-        text = parts.get(name) or ""
-        if limit and len(text) > limit:
-            return f"{name}_exceeds_{limit}_chars_at_{len(text)}"
-    return None
-
-
-def exceeds_total(parts: list[Any], limit: int) -> str | None:
-    """Why a whole request is too big to judge, or ``None`` if it fits.
-
-    The per-field limits above bound each field; this bounds what they add up
-    to, which is what the judge's context window actually constrains. Every
-    field goes in whole or the sample is skipped -- the same rule as above,
-    applied to the sum -- so no field ever has to be cut to make room.
-    """
-    total = sum(len(str(part)) for part in parts if part)
-    if limit and total > limit:
-        return f"request_exceeds_{limit}_chars_at_{total}"
-    return None
+__all__ = ["JudgeVerdict", "JudgeStage"]
 
 
 def _clipped_a_longer_number(match: "re.Match[str]", raw: str) -> bool:
@@ -143,6 +113,9 @@ class JudgeStage:
                 f"({sorted(clients)}); add it to the run's model list"
             )
         self.client = clients[config.model]
+        #: The judge's own window, counted in its own tokens -- what bounds
+        #: what it may be sent (core/judge_budget.py).
+        self.window = JudgeWindow.for_client(self.client, config.context_window)
         self.registry = registry
         self.default_template = registry.get(config.template)
         #: Resolved per adapter: a dataset whose task has its own grading
@@ -220,22 +193,14 @@ class JudgeStage:
             if not request:
                 continue
             exchange = self._whole_exchange(by_id.get(sample.sample_id), response)
-            too_big = exceeds_budget(
-                exchange,
-                {
-                    "full_prompt": self.config.max_prompt_chars,
-                    "full_response": self.config.max_response_chars,
-                },
+            # EVERYTHING GOES IN WHOLE, so what has to fit is the sum: the
+            # exchange, the adapter's own fields, the template's wording and
+            # the reply's budget, in the judge's own tokens, inside the judge's
+            # own window.
+            too_big = self.window.overrun(
+                [*exchange.values(), *request.values()],
+                reserved=template_tokens(self.window, self.template) + self.config.max_tokens,
             )
-            if not too_big:
-                # The answer, gold and observation go in whole too, so the sum
-                # is what has to fit -- the same total the per-field limits
-                # were sized to (tests/test_judge.py checks it against the
-                # judge's window).
-                too_big = exceeds_total(
-                    [*exchange.values(), *request.values()],
-                    self.config.max_prompt_chars + self.config.max_response_chars,
-                )
             if too_big:
                 # No verdict rather than a verdict on a cut-down exchange: the
                 # two would be reported as the same measurement.
@@ -378,7 +343,7 @@ class JudgeStage:
 
         Neither is cut. On the longest items the two together can exceed the
         judge's own context window, and a request that overruns is rejected
-        outright, so :func:`exceeds_budget` and :func:`exceeds_total` skip such a
+        outright, so the token budget (core/judge_budget.py) skips such a
         sample instead -- counted and named in the coverage report, never judged
         from a doctored copy.
         """

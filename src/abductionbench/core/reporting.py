@@ -433,6 +433,58 @@ def build_coverage_frame(result: RunResult) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_no_answer_frame(result: RunResult) -> pd.DataFrame:
+    """How often each task's model never gave an answer, and why.
+
+    One row per task (dataset x model x mode). A reply has no answer when it
+    came back empty or was cut off by its token budget before an answer block
+    was closed (adapters._prompting.missing_answer). Those samples are skipped
+    by the reasoning judge, so this is also how much of each task's reasoning
+    columns is blank for that reason. Failed calls (status ``error``) are not
+    counted here: the model was never heard from, which is a different fact.
+    """
+    from ..adapters._prompting import NO_ANSWER_CUT_OFF, NO_ANSWER_EMPTY, missing_answer
+
+    rows: list[dict[str, Any]] = []
+    for task in result.all_tasks:
+        records = dedupe_records(load_records(Path(task.output_dir) / "records.jsonl"))
+        counts = {NO_ANSWER_EMPTY: 0, NO_ANSWER_CUT_OFF: 0}
+        replies = errors = 0
+        for record in records:
+            if record.get("status") in ("error", "skipped"):
+                errors += record.get("status") == "error"
+                continue
+            replies += 1
+            response = record.get("response") or {}
+            why = missing_answer(response.get("content"), response.get("finish_reason"))
+            if why:
+                counts[why] += 1
+        if not replies and not errors:
+            continue
+        missing = counts[NO_ANSWER_EMPTY] + counts[NO_ANSWER_CUT_OFF]
+        identity = task.identity
+        rows.append(
+            {
+                "dataset_id": identity.dataset_id,
+                "model_id": identity.model_id,
+                "prompt_mode": identity.prompt_mode,
+                "task": f"{identity.template_id}@{identity.template_version}",
+                "replies": replies,
+                "no_answer": missing,
+                "no_answer_rate": round(missing / replies, 4) if replies else None,
+                "cut_off_before_answering": counts[NO_ANSWER_CUT_OFF],
+                "empty_reply": counts[NO_ANSWER_EMPTY],
+                "failed_calls_not_counted": errors,
+            }
+        )
+    columns = [
+        "dataset_id", "model_id", "prompt_mode", "task", "replies", "no_answer",
+        "no_answer_rate", "cut_off_before_answering", "empty_reply", "failed_calls_not_counted",
+    ]
+    frame = pd.DataFrame(rows, columns=columns)
+    return frame.sort_values(["dataset_id", "model_id", "prompt_mode", "task"]).reset_index(drop=True)
+
+
 def _build_samples_frame(task_dirs: list[Path], *, clip: int, limit: int) -> pd.DataFrame:
     task_records = [
         dedupe_records(load_records(directory / "records.jsonl")) for directory in task_dirs
@@ -626,6 +678,11 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             path = reports_dir / "coverage.csv"
             coverage.to_csv(path, index=False)
             written["coverage_csv"] = path
+        no_answer = build_no_answer_frame(result)
+        if not no_answer.empty:
+            path = reports_dir / "no_answer.csv"
+            no_answer.to_csv(path, index=False)
+            written["no_answer_csv"] = path
 
     excel_path = reports_dir / reporting.excel_filename
     # Written to a sibling temp file and renamed into place.  Reports are now
@@ -661,6 +718,9 @@ def write_reports(result: RunResult) -> dict[str, Path]:
             )
             _write_sheet(
                 writer, build_coverage_frame(result), _safe_sheet_name("Coverage", used)
+            )
+            _write_sheet(
+                writer, build_no_answer_frame(result), _safe_sheet_name("No_answer", used)
             )
             _write_sheet(writer, models, _safe_sheet_name("Models", used))
             simulators = _build_simulators_frame(result)
