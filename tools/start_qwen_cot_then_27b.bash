@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stop the current Qwen cot run safely, then start tools/qwen_cot_then_27b.sh
-# detached (phase 1: the same Qwen 2B/4B cot pass; phase 2: Qwen3.5-27B io +
+# Stop the current Qwen cot run safely, then start tools/qwen_cot_then_27b_openrouter.sh
+# detached (phase 1: the same Qwen 2B/4B cot pass; phase 2: Qwen3.5-27B via OpenRouter, io +
 # cot; end: workbook rebuilt, final Drive sync).
 #
 #   cd /workspace/AbductionBench && bash tools/start_qwen_cot_then_27b.bash
@@ -13,7 +13,7 @@
 set -uo pipefail
 cd /workspace/AbductionBench || exit 1
 LOG=/workspace/abench_trio.log
-say() { echo "$(date '+%F %T') [q27-start] $*" | tee -a "$LOG"; }
+say() { echo "$(date '+%F %T') [q27or-start] $*" | tee -a "$LOG"; }
 
 for pid in $(pgrep -f 'tools/[q]wen_cot_(continue|resume)\.sh'); do
     kill -TERM "$pid" && say "stopped wrapper $pid"
@@ -36,5 +36,5 @@ else
     say "no abench run was going"
 fi
 
-nohup bash tools/qwen_cot_then_27b.sh > /dev/null 2>&1 &
-say "started tools/qwen_cot_then_27b.sh (pid $!) -- watch: tail -f $LOG | grep -E 'q27|finished'"
+nohup bash tools/qwen_cot_then_27b_openrouter.sh > /dev/null 2>&1 &
+say "started tools/qwen_cot_then_27b_openrouter.sh (pid $!) -- watch: tail -f $LOG | grep -E 'q27or|finished'"

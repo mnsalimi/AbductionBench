@@ -1,0 +1,16 @@
+# Qwen3.5-27B (OpenRouter), the IO pass: native reasoning OFF, as for
+# Qwen3.5-2B/4B. OpenRouter's effort switch.
+# tools/qwen_cot_then_27b_openrouter.sh probes the io variants (a, b, c, d)
+# and runs the first whose probe comes back with no reasoning at all.
+extends:
+  - trio_qwen27b_or_cot.yaml
+
+modes:
+  prompt_modes: [io]
+
+models:
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+    sampling:
+      extra:
+        provider: {sort: price, allow_fallbacks: false}
+        reasoning: {effort: none}

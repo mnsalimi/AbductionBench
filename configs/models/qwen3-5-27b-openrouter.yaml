@@ -1,0 +1,48 @@
+# Qwen3.5-27B through OpenRouter, as a model under evaluation -- the same
+# sampling as Qwen3.5-2B/4B (qwen3-5-{2b,4b}-local.yaml) and their 65,536-token
+# window and 32,000-token answer budget, so the three Qwens are treated alike.
+#
+# Cheapest provider only: `sort: price` picks Alibaba ($0.195 / $1.56 per M on
+# 2026-09-25), and allow_fallbacks is false: every answer comes from that one
+# host, never from a pricier fp8 host that might ignore the thinking switch.
+# The switch is per pass, in the run configs (trio_qwen27b_or_*.yaml): io OFF,
+# cot ON.
+model:
+  id: qwen3-5-27b-openrouter
+  model_name: qwen/qwen3.5-27b
+  description: >-
+    Qwen3.5-27B called through OpenRouter (cheapest provider first) as a model
+    under evaluation.
+  reasoning_model: false
+
+  endpoint:
+    base_url: ${env:ABENCH_OPENROUTER_BASE_URL|https://openrouter.ai/api}
+    api_key: ${env:OPENROUTER_API_KEY}
+    models_path: /v1/models
+    chat_path: /v1/chat/completions
+    batch:
+      enabled: false
+    discovery:
+      base_url_command: null
+      batch_base_url_command: null
+
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    seed: 20260903
+    max_tokens_default: 32000
+    max_tokens_cap: 32000
+    max_tokens_floor: 128
+    extra:
+      provider: {sort: price, allow_fallbacks: false}
+
+  limits:
+    max_parallel_batches: 256
+    requests_per_minute: null
+    tokens_per_minute: null
+    max_connections: 300
+    context_window: 65536
+
+  notes:
+    served_by: OpenRouter (qwen/qwen3.5-27b, provider sort=price)
+    role: under evaluation, not judging

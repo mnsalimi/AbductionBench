@@ -1,0 +1,35 @@
+# Qwen3.5-27B (OpenRouter), the COT pass: native reasoning ON, as for
+# Qwen3.5-2B/4B -- the thinking comes back in the reply's `reasoning` field.
+# GENERATING ONLY: judges deferred, no engine sync (tools/sync_run.sh backs the
+# folder up). 256 requests in flight. Run by tools/qwen_cot_then_27b_openrouter.sh.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+modes:
+  prompt_modes: [cot]
+
+engine:
+  concurrency:
+    max_parallel_tasks: 72
+    max_parallel_batches_global: 300
+  timeouts:
+    read_s: 3600
+
+  judge:
+    enabled: false
+    defer: true
+
+  reasoning_judge:
+    enabled: false
+
+  sync:
+    enabled: false
+
+models:
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+    sampling:
+      extra:
+        provider: {sort: price, allow_fallbacks: false}
+        reasoning: {enabled: true}

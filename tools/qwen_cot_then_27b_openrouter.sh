@@ -2,23 +2,24 @@
 # Two phases in 20260924-002252_openrouter-trio, generation only (no judges):
 #
 #   PHASE 1 -- exactly the current Qwen pass: Qwen3.5-4B (:18002) and
-#     Qwen3.5-2B (:18001) served side by side with the same settings as
+#     Qwen3.5-2B (:18001) served side by side with the settings of
 #     tools/qwen_cot_resume.sh, resuming the cot pass with
-#     trio_qwen_cot_resume_v2.yaml (native reasoning ON, one answer per
-#     request, short queue, 2-hour timeout). Saved answers are reused.
-#   PHASE 2 -- every vLLM server down, Qwen3.5-27B (:18007) up alone, then its
-#     io pass (native reasoning OFF) and its cot pass (native reasoning ON) on
-#     all datasets, treated exactly as the two small Qwens were.
-#   END -- servers down, .env files restored, the workbook rebuilt from every
-#     record on disk (abench report), and the Drive sidecar stopped: it makes
-#     its final VERIFIED upload, and this script waits for it.
-#
-# The 27B's weights are already in /workspace/.hf_home. If it will not start,
-# the only things retried smaller are its parallelism and CUDA graphs -- never
-# its 65,536-token window or 32,000-token answer budget.
+#     trio_qwen_cot_resume_v2.yaml (native reasoning ON). Saved answers reused.
+#     Then every vLLM server is stopped -- nothing else needs the GPU.
+#   PHASE 2 -- Qwen3.5-27B through OpenRouter (cheapest provider only, 256
+#     requests in flight) on all datasets, treated as the small Qwens were:
+#       io  -- native reasoning OFF. The providers do not all honour the same
+#              switch (Alibaba ignored reasoning.enabled=false on 2026-09-25),
+#              so the io variants a-d are probed in order, one short request
+#              each, and the first that returns NO reasoning is run. If none
+#              does, io is NOT run with reasoning on -- it is skipped and said.
+#       cot -- native reasoning ON, probed the same way first.
+#   END -- the workbook rebuilt from every record on disk (abench report), then
+#     the Drive sidecar is stopped: it makes its final VERIFIED upload, and
+#     this script waits for it.
 #
 # Start:  bash tools/start_qwen_cot_then_27b.bash      (stops the current run first)
-# Watch:  tail -f /workspace/abench_trio.log           (steps tagged [q27])
+# Watch:  tail -f /workspace/abench_trio.log           (steps tagged [q27or])
 set -uo pipefail
 
 RUN=20260924-002252_openrouter-trio
@@ -26,12 +27,12 @@ REPO=/workspace/AbductionBench
 SERVING=/workspace/vllm_serving
 LOG=/workspace/abench_trio.log
 PHASE1_CONFIG=configs/runs/trio_qwen_cot_resume_v2.yaml
-IO27_CONFIG=configs/runs/trio_qwen27b_generate_io.yaml
-COT27_CONFIG=configs/runs/trio_qwen27b_generate_cot.yaml
+COT27_CONFIG=configs/runs/trio_qwen27b_or_cot.yaml
+IO27_VARIANTS="a b c d"
 BACKUP_SUFFIX=.env.q27-backup
 SIDECAR="$REPO/tools/sync_run.sh"
 
-say() { echo "$(date '+%F %T') [q27] $*" | tee -a "$LOG"; }
+say() { echo "$(date '+%F %T') [q27or] $*" | tee -a "$LOG"; }
 
 cd "$REPO" || exit 1
 [ -d "runs/$RUN/datasets" ] || { say "no run folder runs/$RUN"; exit 1; }
@@ -125,6 +126,13 @@ run_pass() {  # run_pass <label> <config>
     return $rc
 }
 
+probe_thinking() {  # probe_thinking <config> on|off
+    local out rc
+    out=$(.venv/bin/python tools/probe_openrouter_thinking.py "$1" "$2" 2>&1 | tail -1); rc=$?
+    say "probe $(basename "$1") (want $2): $out"
+    [[ "$out" == "$2 ("* ]]
+}
+
 # -- 0. never two runs in one folder ------------------------------------------
 while pgrep -f '[b]in/abench run' >/dev/null; do
     say "another abench run is still going; waiting"; sleep 60
@@ -163,39 +171,34 @@ else
     say "PHASE 1 SKIPPED: the small Qwens would not start or failed the probe -- going on to phase 2"
 fi
 
-# ============================ PHASE 2 =========================================
-say "PHASE 2: every vLLM server down, Qwen3.5-27B up alone"
+
+# -- after phase 1: nothing needs the GPU any more ------------------------------
 free_gpu
 restore_envs
-M=qwen3.5-27b; NAME=qwen3.5-27b-vllm; PORT=18007; MODEL=Qwen/Qwen3.5-27B
-set_env $M MAX_MODEL_LEN 65536
-set_env $M ENABLE_PREFIX_CACHING 1
-set_env $M REASONING_PARSER qwen3
-set_env $M MAX_NUM_BATCHED_TOKENS 16384
-set_env $M LANGUAGE_MODEL_ONLY 1
-# Tried in order; only parallelism, memory share and CUDA graphs change --
-# the window stays 65,536.
-up=0
-for attempt in "128 0.92 0" "96 0.92 0" "64 0.90 0" "64 0.90 1" "32 0.88 1"; do
-    read -r seqs util eager <<<"$attempt"
-    set_env $M MAX_NUM_SEQS "$seqs"
-    set_env $M GPU_MEMORY_UTILIZATION "$util"
-    set_env $M ENFORCE_EAGER "$eager"
-    say "starting $NAME: MAX_NUM_SEQS=$seqs GPU_MEMORY_UTILIZATION=$util ENFORCE_EAGER=$eager MAX_MODEL_LEN=65536"
-    if start_service "$NAME" "$PORT"; then up=1; break; fi
-    sleep 20
-done
 
-if [ $up = 1 ] && probe "$PORT" "$MODEL"; then
-    run_pass "phase 2 io pass (27B, thinking off)" "$IO27_CONFIG"
-    run_pass "phase 2 cot pass (27B, thinking on)" "$COT27_CONFIG"
+# ============================ PHASE 2 =========================================
+say "PHASE 2: Qwen3.5-27B through OpenRouter, io (thinking off) then cot (thinking on)"
+io_config=""
+for round in 1 2; do
+    for v in $IO27_VARIANTS; do
+        if probe_thinking "configs/runs/trio_qwen27b_or_io_$v.yaml" off; then
+            io_config="configs/runs/trio_qwen27b_or_io_$v.yaml"; break 2
+        fi
+    done
+    [ $round = 1 ] && sleep 60
+done
+if [ -n "$io_config" ]; then
+    run_pass "phase 2 io pass (27B via OpenRouter, thinking off, $(basename "$io_config"))" "$io_config"
 else
-    say "PHASE 2 NOT RUN: Qwen3.5-27B did not start or failed the probe (see /var/log/portal/$NAME.log)"
+    say "PHASE 2 IO NOT RUN: no variant turned the 27B's native reasoning off on OpenRouter -- nothing generated with reasoning on"
+fi
+if probe_thinking "$COT27_CONFIG" on || { sleep 60; probe_thinking "$COT27_CONFIG" on; }; then
+    run_pass "phase 2 cot pass (27B via OpenRouter, thinking on)" "$COT27_CONFIG"
+else
+    say "PHASE 2 COT NOT RUN: the 27B did not return native reasoning with thinking on"
 fi
 
 # ============================ END =============================================
-free_gpu
-restore_envs
 say "rebuilding the workbook from every record on disk"
 .venv/bin/abench report "runs/$RUN" >>"$LOG" 2>&1 && say "workbook rebuilt" || say "abench report failed (see log)"
 
