@@ -11,6 +11,11 @@ modes:
   prompt_modes: [cot]
 
 engine:
+  # No workbook between datasets: rewriting the whole Excel file after each one
+  # took ~80 s apiece, serially. The workbook is written once, at the end
+  # (tools/qwen_all_parallel.sh runs `abench report` last).
+  reporting:
+    interim_after_each_dataset: false
   concurrency:
     max_parallel_tasks: 72
     max_parallel_batches_global: 300
