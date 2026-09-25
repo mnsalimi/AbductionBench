@@ -114,7 +114,9 @@ say "full pass: trio remainder + answer judge (local), reasoning judge (local + 
 # Remote at 48 in flight (not 128): CoreWeave timed out in bursts at 128. The
 # tool pauses the remote judge for 10 min whenever >= 30 of its requests fail
 # permanently in one minute; the local judge carries on.
-QUEUE_ARGS="--remote-calls 48 --remote-jobs 12 $REMOTE_ARGS"
+# JUDGE_REMOTES: which OpenRouter hosts (comma-separated judge ids from
+# configs/runs/judge_shared_queue.yaml) share the queue with the local judge.
+QUEUE_ARGS="--remote-calls 48 --remote-jobs 12 --remotes ${JUDGE_REMOTES:-gpt-oss-120b-coreweave} $REMOTE_ARGS"
 .venv/bin/python tools/judge_shared_queue.py "runs/$RUN" $QUEUE_ARGS >>"$LOG" 2>&1
 rc=$?
 say "full pass exited with $rc"

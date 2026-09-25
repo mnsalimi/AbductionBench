@@ -248,54 +248,63 @@ async def run(run_dir: Path, args) -> int:
 
     rj_cfg = config.engine.reasoning_judge
     local_model = next(m for m in config.models if m.id == LOCAL)
-    remote_model = next(m for m in config.models if m.id == REMOTE)
+    remote_ids = [] if args.no_remote else [r.strip() for r in args.remotes.split(",") if r.strip()]
     timeouts, rediscover = config.engine.timeouts, config.engine.retry.recovery.rediscover_on_connection_error
     local_client = ModelClient(local_model, timeouts, rediscover=rediscover)
-    # The remote judge gets its own, shorter read timeout: CoreWeave sometimes
-    # holds a request without answering, and 30 minutes (the local default,
-    # which a queued local batch can need) is too long to wait for a slot that
-    # a retry would put to use. A long step list takes ~3 min there (measured
-    # 8,327 tokens in 181 s), so 15 minutes is ample for a real answer.
-    remote_timeouts = timeouts.model_copy(update={"read_s": args.remote_read_s})
-    remote_client = ModelClient(remote_model, remote_timeouts, rediscover=rediscover)
     local_report = await local_client.verify()
-    await remote_client.verify()
-    # The breaker counts what the REMOTE ENDPOINT did wrong: every call attempt
-    # that raised, except a rate limit (429s are routine here and the retry
-    # waits them out). Not the stage's "failed" count -- that also counts
-    # replies that arrived fine but were unusable (a step list that does not
-    # parse), which says nothing about OpenRouter's health.
-    remote_errors = {"n": 0}
-    raw_chat_single = remote_client.chat_single
-
-    async def counted_chat_single(*a, **k):
-        try:
-            return await raw_chat_single(*a, **k)
-        except RateLimitError:
-            raise
-        except Exception:
-            remote_errors["n"] += 1
-            raise
-
-    remote_client.chat_single = counted_chat_single
     local_batch_off = set() if (local_client.supports_batch and local_report.get("batch_ok")) else {LOCAL}
 
     # ONE call budget for everything that queues on the local server.
     local_calls = asyncio.Semaphore(args.local_calls)
-    remote_calls = asyncio.Semaphore(args.remote_calls)
     common = dict(registry=engine.registry, renderer=engine.renderer, retry_policy=engine.retry_policy,
                   cache_dir=run_dir / "reasoning_judge_cache",
                   log_path=run_dir / "reasoning_metrics.jsonl", run_dir=run_dir)
-    stages = {
-        "local": ThrottledStage(config=rj_cfg.model_copy(update={"model": LOCAL}),
-                                clients={LOCAL: local_client}, batch_disabled=local_batch_off,
-                                calls=local_calls, **common),
-        "remote": ThrottledStage(config=rj_cfg.model_copy(update={"model": REMOTE}),
-                                 clients={REMOTE: remote_client}, batch_disabled={REMOTE},
-                                 calls=remote_calls, **common),
-    }
-    stages["remote"]._cache = stages["local"]._cache  # noqa: SLF001 - one cache, one writer
-    judge_ids = {"local": LOCAL, "remote": REMOTE}
+    stages = {"local": ThrottledStage(config=rj_cfg.model_copy(update={"model": LOCAL}),
+                                      clients={LOCAL: local_client}, batch_disabled=local_batch_off,
+                                      calls=local_calls, **common)}
+    judge_ids = {"local": LOCAL}
+    clients = [local_client]
+    # EVERY REMOTE HOST IS ITS OWN JUDGE: its own id (so each verdict is cached
+    # and recorded under the host that produced it), client, call budget, read
+    # timeout and circuit breaker. They all pull from the one shared queue.
+    #
+    # The remote read timeout is shorter than the local one: a host sometimes
+    # holds a request without answering, and 30 minutes (which a queued local
+    # batch can need) is too long to keep a slot idle. A long step list takes
+    # ~3 min on CoreWeave (8,327 tokens in 181 s), so 15 minutes is ample.
+    #
+    # The breaker counts what the ENDPOINT did wrong: every call attempt that
+    # raised, except a rate limit (429s are routine and the retry waits them
+    # out) -- not the stage's "failed" count, which also counts replies that
+    # arrived fine but were unusable.
+    breakers: dict[str, dict] = {}
+    remote_timeouts = timeouts.model_copy(update={"read_s": args.remote_read_s})
+    for rid in remote_ids:
+        side = rid.removeprefix("gpt-oss-120b-")
+        model = next(m for m in config.models if m.id == rid)
+        client = ModelClient(model, remote_timeouts, rediscover=rediscover)
+        await client.verify()
+        breaker = {"errors": 0, "last_errors": 0, "until": 0.0, "trips": 0}
+        raw = client.chat_single
+
+        async def counted(*a, _raw=raw, _b=breaker, **k):
+            try:
+                return await _raw(*a, **k)
+            except RateLimitError:
+                raise
+            except Exception:
+                _b["errors"] += 1
+                raise
+
+        client.chat_single = counted
+        stages[side] = ThrottledStage(config=rj_cfg.model_copy(update={"model": rid}),
+                                      clients={rid: client}, batch_disabled={rid},
+                                      calls=asyncio.Semaphore(args.remote_calls), **common)
+        stages[side]._cache = stages["local"]._cache  # noqa: SLF001 - one cache, one writer
+        judge_ids[side], breakers[side] = rid, breaker
+        clients.append(client)
+    remote_sides = list(breakers)
+    log.info("judges: local + %s", ", ".join(remote_ids) or "no remote")
     answer_cache: dict | None = None
 
     def answer_stage() -> JudgeStage:
@@ -311,7 +320,8 @@ async def run(run_dir: Path, args) -> int:
         return stage
 
     # "reason" is the shared queue; a reasoning job pinned to one judge (only
-    # the probe pins them) waits in that judge's own queue instead.
+    # the probe pins them) waits in that judge's own queue instead. A job
+    # pinned to "remote" (the probe) goes to the first remote host.
     queues = {k: collections.deque() for k in ("trio-reason", "answer", "reason", "local-only", "remote-only")}
     for job in jobs:
         if job.kind == "reason" and job.eligible == {"local"}:
@@ -320,20 +330,18 @@ async def run(run_dir: Path, args) -> int:
             queues["remote-only"].append(job)
         else:
             queues[job.kind].append(job)
-    preference = {"local": ("trio-reason", "local-only", "answer", "reason"),
-                  "remote": ("remote-only", "reason")}
     done = collections.Counter()
     failed: list[str] = []
     started = time.time()
-    # CIRCUIT BREAKER for the remote judge. A burst of permanent failures means
-    # OpenRouter is unwell (timeouts, not the usual 429s the retries absorb):
-    # every failure leaves a sample with a family missing. Remote workers then
-    # take no new chunk for --remote-pause-s while the local judge carries on;
-    # anything that still failed is queued again by reset_failed_reasoning.py.
-    breaker = {"until": 0.0, "last_errors": 0, "trips": 0}
 
     def take(side: str) -> Job | None:
-        for kind in preference[side]:
+        if side == "local":
+            kinds = ("trio-reason", "local-only", "answer", "reason")
+        elif remote_sides and side == remote_sides[0]:
+            kinds = ("remote-only", "reason")
+        else:
+            kinds = ("reason",)
+        for kind in kinds:
             if queues[kind]:
                 return queues[kind].popleft()
         return None
@@ -360,7 +368,7 @@ async def run(run_dir: Path, args) -> int:
 
     async def worker(side: str) -> None:
         while True:
-            if side == "remote" and time.monotonic() < breaker["until"]:
+            if side in breakers and time.monotonic() < breakers[side]["until"]:
                 await asyncio.sleep(15)
                 continue
             job = take(side)
@@ -376,33 +384,33 @@ async def run(run_dir: Path, args) -> int:
         while True:
             await asyncio.sleep(60)
             elapsed = time.time() - started
-            reason_done = done["reason@local"] + done["reason@remote"]
+            reason_done = sum(v for k, v in done.items() if k.startswith("reason@"))
             rate = reason_done / elapsed if elapsed else 0
             eta = (reason_new - reason_done) / rate / 3600 if rate else float("nan")
-            log.info("progress %.0f min: %s | reasoning calls local %s remote %s | new-model ETA %.1f h",
-                     elapsed / 60, dict(done), stages["local"].stats.get("calls"),
-                     stages["remote"].stats.get("calls"), eta)
-            now_errors = remote_errors["n"]
-            burst, breaker["last_errors"] = now_errors - breaker["last_errors"], now_errors
-            if burst >= args.remote_fail_limit and time.monotonic() >= breaker["until"]:
-                breaker["until"] = time.monotonic() + args.remote_pause_s
-                breaker["trips"] += 1
-                log.warning("REMOTE PAUSED for %.0f min: %d remote call attempt(s) raised (timeouts / "
-                            "server errors, not 429s) in the last minute (trip %d); the local judge "
-                            "continues", args.remote_pause_s / 60, burst, breaker["trips"])
+            calls = " ".join(f"{side} {stage.stats.get('calls')}" for side, stage in stages.items())
+            log.info("progress %.0f min: %s | reasoning calls %s | new-model ETA %.1f h",
+                     elapsed / 60, dict(done), calls, eta)
+            for side, b in breakers.items():
+                burst, b["last_errors"] = b["errors"] - b["last_errors"], b["errors"]
+                if burst >= args.remote_fail_limit and time.monotonic() >= b["until"]:
+                    b["until"] = time.monotonic() + args.remote_pause_s
+                    b["trips"] += 1
+                    log.warning("REMOTE PAUSED %s for %.0f min: %d call attempt(s) raised (timeouts / "
+                                "server errors, not 429s) in the last minute (trip %d); the others "
+                                "continue", side, args.remote_pause_s / 60, burst, b["trips"])
 
     ticker = asyncio.create_task(progress())
     try:
-        sides = ["local"] * args.local_jobs + ([] if args.no_remote else ["remote"] * args.remote_jobs)
+        sides = ["local"] * args.local_jobs + [s for s in remote_sides for _ in range(args.remote_jobs)]
         await asyncio.gather(*(worker(s) for s in sides))
     finally:
         ticker.cancel()
         stages["local"]._save_cache(force=True)  # noqa: SLF001
-        await local_client.aclose()
-        await remote_client.aclose()
-    log.info("DONE in %.1f h: %s; failed jobs: %d %s; local stats %s; remote stats %s",
+        for client in clients:
+            await client.aclose()
+    log.info("DONE in %.1f h: %s; failed jobs: %d %s; %s",
              (time.time() - started) / 3600, dict(done), len(failed), failed[:10],
-             stages["local"].stats, stages["remote"].stats)
+             "; ".join(f"{side} {stage.stats}" for side, stage in stages.items()))
     return 1 if failed else 0
 
 
@@ -423,6 +431,8 @@ def main() -> int:
     ap.add_argument("--remote-read-s", type=float, default=900, help="read timeout for the remote judge only")
     ap.add_argument("--no-answers", action="store_true")
     ap.add_argument("--no-remote", action="store_true")
+    ap.add_argument("--remotes", default=REMOTE,
+                    help="comma-separated remote judge ids (each pinned to one host in the config)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return asyncio.run(run(args.run_dir.resolve(), args))
