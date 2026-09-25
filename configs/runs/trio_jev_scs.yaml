@@ -17,7 +17,9 @@ extends:
 
 name: openrouter-trio
 
-disable_datasets: [hypobench]
+# musr, scir and xcopa out of the rest of the run too (2026-09-25, 16:49):
+# no further generation or judging; their results on disk are left as they are.
+disable_datasets: [hypobench, musr, scir, xcopa]
 
 modes:
   prompt_modes: [io]
