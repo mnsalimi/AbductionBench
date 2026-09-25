@@ -1,0 +1,41 @@
+# Shared-queue judging (tools/judge_shared_queue.py): the five new models and
+# any trio remainder, judged by TWO gpt-oss-120b judges pulling from one queue.
+#
+#   gpt-oss-120b-local     this box's vLLM (:18004); batches of 8
+#   gpt-oss-120b-coreweave OpenRouter pinned to CoreWeave (the same native
+#                          MXFP4 weights), every parameter required, no
+#                          fallback host -- calibrated against the local judge
+#                          on 2026-09-25: -0.3 points agreement (95% CI -1.0
+#                          to +0.4), within the local judge's own noise
+#
+# Both judges get the SAME 65,536-token window, so a chain too long for one is
+# too long for both. Separate judge ids, so each verdict is cached and
+# recorded under the judge that produced it.
+extends:
+  - trio_judge_all.yaml
+
+engine:
+  judge:
+    context_window: 65536
+  reasoning_judge:
+    context_window: 65536
+
+models:
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
+  - file: ../models/gemini-3.8-flash-openrouter.yaml
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+  - file: ../models/gemma-4-e4b-local.yaml
+  - file: ../models/gemma-4-e2b-local.yaml
+  - file: ../models/qwen3-5-2b-local.yaml
+  - file: ../models/qwen3-5-4b-local.yaml
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+  - file: ../models/gpt-oss-120b-local.yaml
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-coreweave
+    sampling:
+      extra:
+        provider: {order: ["coreweave/fp4"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 128
+      max_connections: 192
