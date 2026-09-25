@@ -65,7 +65,7 @@ class OfflineClient:
         return None
 
 
-def record(run_dir: Path, per_task: int, scratch: Path):
+def record(run_dir: Path, per_task: int, scratch: Path, config_path: str = CONFIG):
     """(family, request_id, fields, cached values) for every cache-answered request."""
     recorded: list[tuple[str, str, dict, dict]] = []
     cache_copy = scratch / "record_cache"
@@ -100,7 +100,8 @@ def record(run_dir: Path, per_task: int, scratch: Path):
         config, dry_run=True, run_dir=scratch / "engine", run_id=run_dir.name
     )
     rejudge._append_records = lambda _p, _r: None
-    config = load_run_config(CONFIG)
+    trio = ["gpt-5.6-luna-openrouter", "gemini-3.8-flash-openrouter", "gemma-4-31b-it-openrouter"]
+    config = load_run_config(config_path, model_filter=trio)
     asyncio.run(rejudge._judge_run(run_dir, config, dataset_filter=None, limit=per_task))
     # one entry per distinct request (the same prompt can recur across repeats)
     seen, unique = set(), []
@@ -203,25 +204,34 @@ def main() -> int:
     ap.add_argument("--local-parallel", type=int, default=8, help="local judge calls in flight (x8 per batch)")
     ap.add_argument("--remote-parallel", type=int, default=64)
     ap.add_argument("--max-requests", type=int, default=0, help="cap on requests (0 = all) -- for a probe")
+    ap.add_argument("--config", default=CONFIG, help="run config holding both judge entries")
+    ap.add_argument("--remote", default=REMOTE_ID, help="judge id of the remote host under test")
+    ap.add_argument("--skip-local", action="store_true",
+                    help="do not re-ask the local judge; compare with the local-vs-local baseline "
+                         "already measured (analysis/judge_calibration/summary.json)")
     args = ap.parse_args()
     run_dir = args.run_dir.resolve()
-    out_dir = run_dir / "analysis" / "judge_calibration"
+    out_dir = run_dir / "analysis" / "judge_calibration" / ("" if args.remote == REMOTE_ID else args.remote)
     out_dir.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="judge-calib-"))
 
     t0 = time.time()
-    recorded, config = record(run_dir, args.per_task, scratch)
+    recorded, config = record(run_dir, args.per_task, scratch, args.config)
     if args.max_requests:
         recorded = recorded[: args.max_requests]
     print(f"recorded {len(recorded)} cache-answered requests in {time.time() - t0:.0f}s", flush=True)
 
     async def both():
-        return await asyncio.gather(
-            replay(config, recorded, LOCAL_ID, args.local_parallel, scratch),
-            replay(config, recorded, REMOTE_ID, args.remote_parallel, scratch),
-        )
+        remote = replay(config, recorded, args.remote, args.remote_parallel, scratch)
+        if args.skip_local:
+            return (({}, {}), await remote)
+        return await asyncio.gather(replay(config, recorded, LOCAL_ID, args.local_parallel, scratch), remote)
 
     (B, b_stats), (C, c_stats) = asyncio.run(both())
+    if args.skip_local:
+        # No local re-ask: B is the cached verdict itself (agreement 1), and the
+        # local noise floor is the baseline measured on 2026-09-25.
+        B = {rid: vals for _f, rid, _fields, vals in recorded}
     rows, failures, pairs = summarise(recorded, B, C)
     lo, hi = bootstrap_ci(pairs) if pairs else (float("nan"), float("nan"))
     mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")  # noqa: E731
@@ -246,6 +256,13 @@ def main() -> int:
         "local_stage_stats": b_stats, "remote_stage_stats": c_stats,
         "elapsed_s": round(time.time() - t0, 1),
     }
+    if args.skip_local:
+        base = json.loads((run_dir / "analysis" / "judge_calibration" / "summary.json").read_text())
+        summary["baseline_local_vs_local"] = base.get("agreement_local_vs_local")
+        summary["baseline_local_vs_coreweave"] = base.get("agreement_local_vs_remote")
+        summary["difference_vs_local_baseline"] = round(overall_ac - base["agreement_local_vs_local"], 4)
+        summary["note"] = "skip-local: agreement_local_vs_local here is 1 by construction; compare with the baseline"
+    summary["remote"] = args.remote
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     import csv
     with (out_dir / "per_output.csv").open("w", newline="") as fh:

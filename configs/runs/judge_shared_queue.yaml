@@ -48,3 +48,39 @@ models:
     limits:
       max_parallel_batches: 128
       max_connections: 192
+
+  # Novita: the same native-MXFP4 weights; used only once
+  # tools/judge_provider_calibration.py --remote gpt-oss-120b-novita passes.
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-novita
+    sampling:
+      extra:
+        provider: {order: ["novita/fp4"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+
+  # Nebius: the same native-MXFP4 weights; used only once
+  # tools/judge_provider_calibration.py --remote gpt-oss-120b-nebius passes.
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-nebius
+    sampling:
+      extra:
+        provider: {order: ["nebius/fp4"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+
+  # Parasail: the same native-MXFP4 weights; used only once
+  # tools/judge_provider_calibration.py --remote gpt-oss-120b-parasail passes.
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-parasail
+    sampling:
+      extra:
+        provider: {order: ["parasail/fp4"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
