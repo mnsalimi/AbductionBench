@@ -3291,7 +3291,14 @@ class EvaluationEngine:
         # Static deliveries only. An interactive episode answers in its own
         # turn-by-turn protocol, which the tagged format deliberately does not
         # touch, so there is no shape here to be compliant with.
-        if result.identity is not None and result.identity.data_delivery_mode == "static":
+        # Not for a model with no prompt mode ("n/a", a decision endpoint): it is
+        # given no prompt and no answer format, so there is no format to comply
+        # with -- and "n/a" is not a TaskModes prompt mode either.
+        if (
+            result.identity is not None
+            and result.identity.data_delivery_mode == "static"
+            and result.identity.prompt_mode != "n/a"
+        ):
             from ..adapters._prompting import format_compliance
 
             modes = TaskModes(
