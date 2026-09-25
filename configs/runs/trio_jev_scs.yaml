@@ -1,0 +1,44 @@
+# TypeSafe jev (OpenRouter System One decision API) on the SCS selection tasks
+# of THIS run, 20260924-002252_openrouter-trio -- the same records the other
+# eight models answered, three repeats each. Extends openrouter_trio.yaml so the
+# dataset list and every sampling knob of the draw (seed, sample_size,
+# sample_offset) are the run's own; only the task grid and the model change.
+#
+# Jev is not a language model: it gets the evidence as `state`, the question as
+# `instructions` and the options as `criteria` (core/client.py: decide()), and
+# returns a choice with probabilities. No io/cot distinction reaches it -- its
+# model file runs the io variant once and the task identity records the prompt
+# mode as n/a, so the reports show ONE jev column. SCS only: jev-openrouter.yaml
+# filters out MCS (aer has no jev task) and every generation task.
+# No judges (an SCS answer is scored against the gold label), no engine sync,
+# no interim workbooks. Run by tools/judge_and_jev.sh beside the judging.
+extends:
+  - openrouter_trio.yaml
+
+name: openrouter-trio
+
+disable_datasets: [hypobench]
+
+modes:
+  prompt_modes: [io]
+  selection_modes: [SCS]
+  hypothesis_modes: [selection]
+  bov: false
+  repeats: 3
+
+engine:
+  concurrency:
+    max_parallel_tasks: 16
+    max_parallel_batches_global: 24
+  judge:
+    enabled: false
+    defer: true
+  reasoning_judge:
+    enabled: false
+  sync:
+    enabled: false
+  reporting:
+    interim_after_each_dataset: false
+
+models:
+  - file: ../models/jev-openrouter.yaml
