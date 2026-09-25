@@ -238,7 +238,8 @@ async def run(run_dir: Path, args) -> int:
         picked = []
         sides = ("local", "local") if args.no_remote else ("local", "remote")
         for job, side in zip(reason_jobs[:2], sides):
-            job.records, job.prompts, job.eligible = job.records[:20], job.prompts[:20], {side}
+            job.records, job.prompts, job.eligible = (job.records[:args.probe_size],
+                                                      job.prompts[:args.probe_size], {side})
             picked.append(job)
         jobs = picked
         reason_new = sum(len(j.records) for j in jobs)
@@ -419,7 +420,8 @@ def main() -> int:
     ap.add_argument("run_dir", type=Path)
     ap.add_argument("--plan", action="store_true", help="count the work and estimate; call nothing")
     ap.add_argument("--limit", type=int, default=None, help="judge at most this many records")
-    ap.add_argument("--probe", action="store_true", help="20 real records on EACH judge, then stop")
+    ap.add_argument("--probe", action="store_true", help="--probe-size real records on EACH judge, then stop")
+    ap.add_argument("--probe-size", type=int, default=5)
     ap.add_argument("--chunk", type=int, default=50)
     ap.add_argument("--local-jobs", type=int, default=12)
     ap.add_argument("--remote-jobs", type=int, default=24)

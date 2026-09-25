@@ -100,8 +100,9 @@ say "local judge up on :$JUDGE_PORT"
 # on long requests from ~14:20 on 2026-09-25.
 REMOTE_ARGS=""
 [ "${JUDGE_REMOTE:-on}" = "off" ] && REMOTE_ARGS="--no-remote" && say "LOCAL JUDGE ONLY (JUDGE_REMOTE=off): nothing is sent to OpenRouter"
-say "probe: 20 real records on each judge"
-.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" --probe $REMOTE_ARGS >>"$LOG" 2>&1
+say "probe: 5 real records on the local judge and on the first remote host (${JUDGE_REMOTES:-gpt-oss-120b-coreweave})"
+.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" --probe --probe-size 5 \
+    --remotes "${JUDGE_REMOTES:-gpt-oss-120b-coreweave}" $REMOTE_ARGS >>"$LOG" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then
     say "PROBE FAILED (exit $rc) -- nothing more is sent; see the log above"
