@@ -12,9 +12,12 @@
 #   2. makes sure the local judge is up (starts it with the judging settings
 #      if not) and answers
 #   3. PROBE: 20 real records on each judge; any failure stops here
+#   2b. queues again every sample whose judging failed (tools/reset_failed_reasoning.py)
 #   4. everything still owed: trio remainder (local), the answer judge for the
 #      five new models (local), their reasoning judge (both judges, shared
-#      queue). Resumable: records already judged are skipped on a re-run.
+#      queue; remote at 48 in flight, paused automatically on a failure burst).
+#      Resumable: records already judged are skipped on a re-run.
+#   4b. one retry pass for what failed during step 4
 #   5. judge server stopped, workbook rebuilt locally (abench report)
 #
 # Start:  cd /workspace/AbductionBench && nohup bash tools/judge_shared_queue.sh > /dev/null 2>&1 &
@@ -86,6 +89,12 @@ fi
 healthy $JUDGE_PORT || { say "local judge not answering on :$JUDGE_PORT -- stopping"; exit 1; }
 say "local judge up on :$JUDGE_PORT"
 
+# -- 2b. queue again every sample whose judging failed somewhere (timeouts,
+#        exhausted retries, unusable step lists); cached families stay free -------
+.venv/bin/python tools/reset_failed_reasoning.py "runs/$RUN" --apply >>"$LOG" 2>&1 \
+    && say "failed samples queued again (see reset_failed_reasoning output above)" \
+    || { say "reset_failed_reasoning skipped files written in the last 2 min -- is another run live? stopping"; exit 1; }
+
 # -- 3. probe both judges ------------------------------------------------------------
 say "probe: 20 real records on each judge"
 .venv/bin/python tools/judge_shared_queue.py "runs/$RUN" --probe >>"$LOG" 2>&1
@@ -98,9 +107,20 @@ say "probe passed"
 
 # -- 4. everything still owed ------------------------------------------------------
 say "full pass: trio remainder + answer judge (local), reasoning judge (local + CoreWeave, shared queue)"
-.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" >>"$LOG" 2>&1
+# Remote at 48 in flight (not 128): CoreWeave timed out in bursts at 128. The
+# tool pauses the remote judge for 10 min whenever >= 30 of its requests fail
+# permanently in one minute; the local judge carries on.
+QUEUE_ARGS="--remote-calls 48 --remote-jobs 12"
+.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" $QUEUE_ARGS >>"$LOG" 2>&1
 rc=$?
-say "full pass exited with $rc$([ $rc -ne 0 ] && echo ' -- some jobs failed; run this script again to retry only what is missing')"
+say "full pass exited with $rc"
+
+# -- 4b. one retry pass for whatever failed during the full pass ------------------
+.venv/bin/python tools/reset_failed_reasoning.py "runs/$RUN" --apply >>"$LOG" 2>&1
+say "retry pass: samples whose judging failed during the full pass"
+.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" $QUEUE_ARGS --no-answers >>"$LOG" 2>&1
+rc=$?
+say "retry pass exited with $rc$([ $rc -ne 0 ] && echo ' -- some jobs failed; run this script again to retry only what is missing')"
 
 # -- 5. the end (local only) -------------------------------------------------------
 supervisorctl stop "$JUDGE_SERVICE" >>"$LOG" 2>&1

@@ -299,6 +299,12 @@ async def run(run_dir: Path, args) -> int:
     done = collections.Counter()
     failed: list[str] = []
     started = time.time()
+    # CIRCUIT BREAKER for the remote judge. A burst of permanent failures means
+    # OpenRouter is unwell (timeouts, not the usual 429s the retries absorb):
+    # every failure leaves a sample with a family missing. Remote workers then
+    # take no new chunk for --remote-pause-s while the local judge carries on;
+    # anything that still failed is queued again by reset_failed_reasoning.py.
+    breaker = {"until": 0.0, "last_failed": 0, "trips": 0}
 
     def take(side: str) -> Job | None:
         for kind in preference[side]:
@@ -327,7 +333,13 @@ async def run(run_dir: Path, args) -> int:
         done[f"{job.kind}@{side}"] += len(job.records)
 
     async def worker(side: str) -> None:
-        while (job := take(side)) is not None:
+        while True:
+            if side == "remote" and time.monotonic() < breaker["until"]:
+                await asyncio.sleep(15)
+                continue
+            job = take(side)
+            if job is None:
+                return
             try:
                 await do(job, side)
             except Exception as exc:  # noqa: BLE001 - one chunk must not end the pass
@@ -344,6 +356,14 @@ async def run(run_dir: Path, args) -> int:
             log.info("progress %.0f min: %s | reasoning calls local %s remote %s | new-model ETA %.1f h",
                      elapsed / 60, dict(done), stages["local"].stats.get("calls"),
                      stages["remote"].stats.get("calls"), eta)
+            now_failed = stages["remote"].stats.get("failed", 0)
+            burst, breaker["last_failed"] = now_failed - breaker["last_failed"], now_failed
+            if burst >= args.remote_fail_limit and time.monotonic() >= breaker["until"]:
+                breaker["until"] = time.monotonic() + args.remote_pause_s
+                breaker["trips"] += 1
+                log.warning("REMOTE PAUSED for %.0f min: %d remote request(s) failed permanently in the "
+                            "last minute (trip %d); the local judge continues",
+                            args.remote_pause_s / 60, burst, breaker["trips"])
 
     ticker = asyncio.create_task(progress())
     try:
@@ -371,6 +391,9 @@ def main() -> int:
     ap.add_argument("--remote-jobs", type=int, default=24)
     ap.add_argument("--local-calls", type=int, default=32, help="x8 per batch = 256, the server's MAX_NUM_SEQS")
     ap.add_argument("--remote-calls", type=int, default=128)
+    ap.add_argument("--remote-fail-limit", type=int, default=30,
+                    help="permanent remote failures in one minute that pause the remote judge")
+    ap.add_argument("--remote-pause-s", type=float, default=600)
     ap.add_argument("--no-answers", action="store_true")
     ap.add_argument("--no-remote", action="store_true")
     args = ap.parse_args()
