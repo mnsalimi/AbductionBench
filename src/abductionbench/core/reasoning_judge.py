@@ -1684,8 +1684,16 @@ class ReasoningJudgeStage:
         for request_id, blob in results.items():
             index = int(request_id)
             sample, response, score = updated[index]
-            verdicts = _binary_list((blob or {}).get("relevance_per_step"),
-                                    steps_by_id[request_id])
+            raw = (blob or {}).get("relevance_per_step")
+            steps = steps_by_id[request_id]
+            verdicts = _binary_list(raw, steps)
+            if verdicts is None and isinstance(raw, list) and len(raw) == steps + 1:
+                # The judge also graded the FINAL ANSWER, which it is shown
+                # beside the numbered actions and which is not one of them
+                # (gpt-oss-120b did this on 3 of 5 cloud_opsbench episodes).
+                # The actions' verdicts are the first `steps`; the extra one
+                # is dropped, not counted.
+                verdicts = _binary_list(raw[:steps], steps)
             metrics = dict(score.metrics)
             details = dict(score.details or {})
             if verdicts is None:

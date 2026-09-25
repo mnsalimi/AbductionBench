@@ -399,10 +399,15 @@ class EvalRecord:
             # metric already means "not measured", which is what an absent key
             # means to the aggregator, so it is dropped rather than written as
             # a value nothing can read.
+            #
+            # The one string kept is MISSING_METRIC ("None", core/metrics.py):
+            # "this sample has no value for this metric" said out loud (never
+            # correct, nothing to grade), which every mean already skips.
             "metrics": {
                 key: value
                 for key, value in (self.metrics or {}).items()
-                if isinstance(value, (int, float)) and math.isfinite(value)
+                if (isinstance(value, (int, float)) and math.isfinite(value))
+                or value == "None"
             },
             "prediction": self.prediction,
             "parse_ok": self.parse_ok,

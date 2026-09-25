@@ -109,14 +109,19 @@ class AthenaBenchAdapter(InteractiveMixin, PooledDatasetAdapter):
         f"{ANSWER_OPEN}threat actor name{ANSWER_CLOSE}"
     )
 
+    #: "Only when sure": asked plainly, gpt-oss-120b knows TA571 is not
+    #: Sandworm, but told that aliases count it scored the pair 1 five times
+    #: in five -- an invitation to match aliases is read as permission to
+    #: guess one.
     _CRITERIA = (
-        "The candidate is correct if it names the same threat actor as the reference, however "
-        "written: vendor aliases and tracking names for the same group count (for example "
-        "APT28 / Fancy Bear / Sednit / Sofacy, or APT29 / Cozy Bear / UNC2452 / Midnight "
-        "Blizzard), as do spelling variants and an added or dropped 'group'. A different "
-        "group -- including one from the same country, a sub-group named separately from "
-        "the reference, or a broader umbrella that does not identify the reference -- does "
-        "not count."
+        "The candidate is correct if it names the same threat actor as the reference. Spelling "
+        "variants and an added or dropped 'group' count. A different name counts ONLY if it is "
+        "a well-documented alias of the same group that you are certain of (for example APT28 "
+        "/ Fancy Bear / Sednit / Sofacy, or APT29 / Cozy Bear / Midnight Blizzard). Two names "
+        "are NOT the same group merely because both are from the same country, share tooling "
+        "or targets, or overlap in some reporting. A different group, a sub-group named "
+        "separately, or a broader umbrella that does not identify the reference does not "
+        "count. If you are not sure the two names are the same group, score 0."
     )
 
     # ------------------------------------------------------------------ #
