@@ -53,7 +53,12 @@ def main() -> int:
         for record in dedupe_records(load_records(task_dir / "records.jsonl")):
             details = record.get("details") or {}
             ref = record.get("reference")
-            gold = details.get("gold") or (ref.get("gold") if isinstance(ref, dict) else ref)
+            # Most adapters keep the answer under `gold`; a structured one
+            # (cloud_opsbench: root_cause, fault_object, fault_taxonomy) is
+            # the whole reference.
+            gold = details.get("gold")
+            if gold is None:
+                gold = ref.get("gold", ref) if isinstance(ref, dict) else ref
             r = {"task": task_dir.name, "sample_id": record.get("sample_id"),
                  "status": record.get("status"),
                  **{f"metric.{k}": v for k, v in (record.get("metrics") or {}).items()},
