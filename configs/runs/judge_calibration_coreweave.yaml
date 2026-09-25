@@ -1,0 +1,21 @@
+# Judge calibration (tools/judge_provider_calibration.py): the trio judging
+# config plus gpt-oss-120b rented from OpenRouter, PINNED to CoreWeave -- the
+# host serving the same native-MXFP4 weights as our vLLM -- with every request
+# parameter required to be honoured (no silent drops) and no fallback host.
+# Nothing here is used by a run.
+extends:
+  - trio_judge_trio.yaml
+
+models:
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
+  - file: ../models/gemini-3.8-flash-openrouter.yaml
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+  - file: ../models/gpt-oss-120b-local.yaml
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    sampling:
+      extra:
+        provider: {order: ["coreweave/fp4"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 64
+      max_connections: 128
