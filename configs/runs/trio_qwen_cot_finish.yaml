@@ -1,0 +1,11 @@
+# The last of Qwen3.5-2B's and 4B's cot pass, WITHOUT the 27B (stopped by the
+# user on 2026-09-25): trio_qwen_cot_resume_v2.yaml -- same servers, sampling,
+# thinking ON, one answer per request, 256 / 128 in flight, hypobench off --
+# with no workbook between datasets (written once, at the end).
+# Run by tools/qwen_finish.sh.
+extends:
+  - trio_qwen_cot_resume_v2.yaml
+
+engine:
+  reporting:
+    interim_after_each_dataset: false
