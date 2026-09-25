@@ -344,8 +344,11 @@ class ModelClient:
             choices.append(
                 RawChoice(
                     index=index,
-                    # The answer line the dataset's own scorer reads.
-                    content=(f"Answer: {chosen}" if chosen is not None else None),
+                    # The answer TAG every dataset's scorer reads first. Not
+                    # "Answer: X": for letter labels the lenient parser took
+                    # the "A" of "Answer" -- jev scored A on 150/150 scir,
+                    # true_detective and diagnosisarena samples (2026-09-25).
+                    content=(f"<answer>{chosen}</answer>" if chosen is not None else None),
                     reasoning=None,
                     finish_reason="stop" if chosen is not None else "error",
                     raw={

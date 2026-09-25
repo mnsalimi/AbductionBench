@@ -121,7 +121,9 @@ def test_the_criteria_are_keyed_by_the_datasets_own_labels():
 def test_the_choice_becomes_the_answer_line_the_scorer_reads():
     """The whole point: jev is scored by the same code as every other model."""
     result, _ = _decide(_client(), [_prompt()])
-    assert result.choices[0].content == "Answer: 3"
+    # The answer tag, not "Answer: 3": with a LETTER label the scorers' lenient
+    # parser read the "A" of "Answer" (see test below).
+    assert result.choices[0].content == "<answer>3</answer>"
     assert result.choices[0].finish_reason == "stop"
 
 
@@ -314,3 +316,16 @@ def test_the_shipped_jev_config_sends_no_temperature_or_seed():
     assert "temperature" not in sampling
     assert "seed" not in sampling
     assert "top_p" not in sampling
+
+
+def test_a_letter_choice_is_scored_as_that_letter_not_the_a_of_answer():
+    """Regression, 2026-09-25: jev chose D on scir and was scored A.
+
+    "Answer: D" went through the selection parser as the label "A" (the first
+    letter of "Answer"), so jev read as answering A on every letter-labelled
+    dataset. The tag it now emits is what every scorer reads first.
+    """
+    from abductionbench.core.metrics import extract_choice_label
+
+    labels = list("ABCDEFGHIJ")
+    assert extract_choice_label("<answer>D</answer>", labels) == "D"
