@@ -52,6 +52,7 @@ from abductionbench.core.checkpoint import dedupe_records, load_records
 from abductionbench.core.client import ModelClient
 from abductionbench.core.config import load_run_config
 from abductionbench.core.engine import EvaluationEngine
+from abductionbench.core.errors import RateLimitError
 from abductionbench.core.judge import JudgeStage
 from abductionbench.core.modes import COT, INTERACTIVE
 from abductionbench.core.rejudge import (
@@ -252,6 +253,24 @@ async def run(run_dir: Path, args) -> int:
     remote_client = ModelClient(remote_model, timeouts, rediscover=rediscover)
     local_report = await local_client.verify()
     await remote_client.verify()
+    # The breaker counts what the REMOTE ENDPOINT did wrong: every call attempt
+    # that raised, except a rate limit (429s are routine here and the retry
+    # waits them out). Not the stage's "failed" count -- that also counts
+    # replies that arrived fine but were unusable (a step list that does not
+    # parse), which says nothing about OpenRouter's health.
+    remote_errors = {"n": 0}
+    raw_chat_single = remote_client.chat_single
+
+    async def counted_chat_single(*a, **k):
+        try:
+            return await raw_chat_single(*a, **k)
+        except RateLimitError:
+            raise
+        except Exception:
+            remote_errors["n"] += 1
+            raise
+
+    remote_client.chat_single = counted_chat_single
     local_batch_off = set() if (local_client.supports_batch and local_report.get("batch_ok")) else {LOCAL}
 
     # ONE call budget for everything that queues on the local server.
@@ -304,7 +323,7 @@ async def run(run_dir: Path, args) -> int:
     # every failure leaves a sample with a family missing. Remote workers then
     # take no new chunk for --remote-pause-s while the local judge carries on;
     # anything that still failed is queued again by reset_failed_reasoning.py.
-    breaker = {"until": 0.0, "last_failed": 0, "trips": 0}
+    breaker = {"until": 0.0, "last_errors": 0, "trips": 0}
 
     def take(side: str) -> Job | None:
         for kind in preference[side]:
@@ -356,14 +375,14 @@ async def run(run_dir: Path, args) -> int:
             log.info("progress %.0f min: %s | reasoning calls local %s remote %s | new-model ETA %.1f h",
                      elapsed / 60, dict(done), stages["local"].stats.get("calls"),
                      stages["remote"].stats.get("calls"), eta)
-            now_failed = stages["remote"].stats.get("failed", 0)
-            burst, breaker["last_failed"] = now_failed - breaker["last_failed"], now_failed
+            now_errors = remote_errors["n"]
+            burst, breaker["last_errors"] = now_errors - breaker["last_errors"], now_errors
             if burst >= args.remote_fail_limit and time.monotonic() >= breaker["until"]:
                 breaker["until"] = time.monotonic() + args.remote_pause_s
                 breaker["trips"] += 1
-                log.warning("REMOTE PAUSED for %.0f min: %d remote request(s) failed permanently in the "
-                            "last minute (trip %d); the local judge continues",
-                            args.remote_pause_s / 60, burst, breaker["trips"])
+                log.warning("REMOTE PAUSED for %.0f min: %d remote call attempt(s) raised (timeouts / "
+                            "server errors, not 429s) in the last minute (trip %d); the local judge "
+                            "continues", args.remote_pause_s / 60, burst, breaker["trips"])
 
     ticker = asyncio.create_task(progress())
     try:
@@ -392,7 +411,7 @@ def main() -> int:
     ap.add_argument("--local-calls", type=int, default=32, help="x8 per batch = 256, the server's MAX_NUM_SEQS")
     ap.add_argument("--remote-calls", type=int, default=128)
     ap.add_argument("--remote-fail-limit", type=int, default=30,
-                    help="permanent remote failures in one minute that pause the remote judge")
+                    help="remote call attempts raising (not 429) in one minute that pause the remote judge")
     ap.add_argument("--remote-pause-s", type=float, default=600)
     ap.add_argument("--no-answers", action="store_true")
     ap.add_argument("--no-remote", action="store_true")
