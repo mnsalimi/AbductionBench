@@ -12,6 +12,10 @@
 extends:
   - trio_qwen_cot_resume.yaml
 
+# hypobench is out of the rest of this run (2026-09-25): no generation and no
+# judging for it. Its answers already on disk are left as they are.
+disable_datasets: [hypobench]
+
 engine:
   concurrency:
     max_parallel_batches_global: 400

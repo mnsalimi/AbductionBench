@@ -10,6 +10,10 @@ name: openrouter-trio
 modes:
   prompt_modes: [cot]
 
+# hypobench is out of the rest of this run (2026-09-25): no generation and no
+# judging for it. Its answers already on disk are left as they are.
+disable_datasets: [hypobench]
+
 engine:
   # No workbook between datasets: rewriting the whole Excel file after each one
   # took ~80 s apiece, serially. The workbook is written once, at the end
