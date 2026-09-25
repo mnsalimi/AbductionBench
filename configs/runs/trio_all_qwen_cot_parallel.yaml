@@ -19,8 +19,12 @@ engine:
     interim_after_each_dataset: false
   concurrency:
     max_parallel_tasks: 108
-    # 256 (2B) + 128 (4B) + 512 (27B), with room to spare.
-    max_parallel_batches_global: 1000
+    # ABOVE EVERYTHING THAT CAN BE QUEUED, not above what may run. A batch takes
+    # its global slot BEFORE its model's slot, so at 1000 the 27B's ~5,000
+    # queued requests held every global slot (512 running, the rest waiting on
+    # the 27B's own limit) and the two local Qwens got none -- their GPU sat
+    # idle. The per-model limits (256 / 128 / 512) are what bound the load.
+    max_parallel_batches_global: 20000
   timeouts:
     read_s: 7200
 
