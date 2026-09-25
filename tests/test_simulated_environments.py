@@ -699,7 +699,8 @@ def test_the_run_config_wires_the_two_requested_models():
     assert config.for_dataset("medqdx").model == "openai/gpt-4o-mini"
     assert config.for_dataset("med_inquire").model == "openai/gpt-4o-mini"
     viva = config.for_dataset("vivabench")
-    assert viva.model == "openai/gpt-5.6-luna"
+    # gpt-4o-mini since 2026-09-25 (was gpt-5.6-luna), like the two patients.
+    assert viva.model == "openai/gpt-4o-mini"
     # A reasoning model shares max_tokens between its chain and its reply; at
     # the 512 default a long chain returns empty content, which is retried and
     # then fails the episode.
