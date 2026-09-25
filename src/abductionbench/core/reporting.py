@@ -396,6 +396,19 @@ def build_turns_frame(task_dirs: list[Path], *, clip: int) -> pd.DataFrame:
                                     ("turn_matches_final", "turn_matches_final")):
                     values = details.get(key) or []
                     row[column] = values[number - 1] if number <= len(values) else None
+            # INTERACTIVE deliveries: the step-relevance judge's verdict on
+            # THIS turn's action (1 relevant / 0 irrelevant to the gold), one
+            # per question the model asked. The final turn is the answer, not
+            # an action, so it has none; "unjudged" says the judge's list was
+            # unusable for the whole episode.
+            per_step = details.get("interaction_step_relevance_per_step")
+            if row.get("dataset_id") and turn.get("data_delivery_mode") == "interactive":
+                if number == last_turn.get(sample_id):
+                    row["step_relevant"] = "final answer (not a step)"
+                elif isinstance(per_step, list) and 0 < number <= len(per_step):
+                    row["step_relevant"] = per_step[number - 1]
+                elif details.get("interaction_step_relevance"):
+                    row["step_relevant"] = "unjudged"
             for metric, value in (episode.get("metrics") or {}).items():
                 row[f"metric.{metric}"] = _fmt(value)
             rows.append(row)
