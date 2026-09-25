@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -41,14 +42,27 @@ def failed_families(record: dict) -> list[str]:
     return sorted({e.split(":")[0] for e in errors if ":judge_failed" in e})
 
 
+def enabled_datasets() -> set[str]:
+    """Datasets the judging still covers: a disabled dataset is never re-judged,
+    so resetting its samples would only delete results nothing will replace."""
+    os.environ.setdefault("ABENCH_API_KEY", "unused")      # only the dataset list is read
+    os.environ.setdefault("OPENROUTER_API_KEY", "unused")
+    from abductionbench.core.config import load_run_config
+    config = load_run_config(str(Path(__file__).resolve().parents[1] / "configs/runs/judge_shared_queue.yaml"))
+    return {d.id for d in config.enabled_datasets()}
+
+
 def main() -> int:
     run_dir = Path(sys.argv[1]).resolve()
     apply = "--apply" in sys.argv[2:]
     now = time.time()
+    enabled = enabled_datasets()
     counts, fams, recent = collections.Counter(), collections.Counter(), []
     plan: list[tuple[Path, list[dict]]] = []
     for model in NEW:
         for path in sorted(run_dir.glob(f"datasets/*/{model}/cot*/records.jsonl")):
+            if path.parent.parent.parent.name not in enabled:
+                continue
             latest: dict[tuple, dict] = {}
             for line in path.open():
                 if line.strip():
@@ -75,7 +89,8 @@ def main() -> int:
                     recent.append(path)
                 else:
                     plan.append((path, resets))
-    print(f"{'APPLYING' if apply else 'DRY RUN (add --apply)'}: {run_dir.name}")
+    print(f"{'APPLYING' if apply else 'DRY RUN (add --apply)'}: {run_dir.name} "
+          f"({len(enabled)} enabled datasets; disabled ones are left alone)")
     print(f"  samples to queue again: {sum(counts.values())} {dict(counts)}")
     print(f"  failed families among them: {dict(fams.most_common())}")
     for path in recent:
