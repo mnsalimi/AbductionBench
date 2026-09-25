@@ -236,7 +236,8 @@ async def run(run_dir: Path, args) -> int:
         # One small real chunk for EACH judge, so both paths are tested end to end.
         reason_jobs = [j for j in jobs if j.kind == "reason"]
         picked = []
-        for job, side in zip(reason_jobs[:2], ("local", "remote")):
+        sides = ("local", "local") if args.no_remote else ("local", "remote")
+        for job, side in zip(reason_jobs[:2], sides):
             job.records, job.prompts, job.eligible = job.records[:20], job.prompts[:20], {side}
             picked.append(job)
         jobs = picked

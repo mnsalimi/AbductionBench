@@ -96,8 +96,12 @@ say "local judge up on :$JUDGE_PORT"
     || { say "reset_failed_reasoning skipped files written in the last 2 min -- is another run live? stopping"; exit 1; }
 
 # -- 3. probe both judges ------------------------------------------------------------
+# JUDGE_REMOTE=off -> local judge only (no OpenRouter at all): CoreWeave hung
+# on long requests from ~14:20 on 2026-09-25.
+REMOTE_ARGS=""
+[ "${JUDGE_REMOTE:-on}" = "off" ] && REMOTE_ARGS="--no-remote" && say "LOCAL JUDGE ONLY (JUDGE_REMOTE=off): nothing is sent to OpenRouter"
 say "probe: 20 real records on each judge"
-.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" --probe >>"$LOG" 2>&1
+.venv/bin/python tools/judge_shared_queue.py "runs/$RUN" --probe $REMOTE_ARGS >>"$LOG" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then
     say "PROBE FAILED (exit $rc) -- nothing more is sent; see the log above"
@@ -110,7 +114,7 @@ say "full pass: trio remainder + answer judge (local), reasoning judge (local + 
 # Remote at 48 in flight (not 128): CoreWeave timed out in bursts at 128. The
 # tool pauses the remote judge for 10 min whenever >= 30 of its requests fail
 # permanently in one minute; the local judge carries on.
-QUEUE_ARGS="--remote-calls 48 --remote-jobs 12"
+QUEUE_ARGS="--remote-calls 48 --remote-jobs 12 $REMOTE_ARGS"
 .venv/bin/python tools/judge_shared_queue.py "runs/$RUN" $QUEUE_ARGS >>"$LOG" 2>&1
 rc=$?
 say "full pass exited with $rc"
