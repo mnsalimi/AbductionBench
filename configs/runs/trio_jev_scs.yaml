@@ -42,3 +42,12 @@ engine:
 
 models:
   - file: ../models/jev-openrouter.yaml
+    # The planner gives a decision endpoint the prompt mode "n/a" (it has no
+    # io/cot), but jev-openrouter.yaml's filter lists prompt_modes: [io] --
+    # "n/a" is never "io", so every task was refused and the first run planned
+    # 0 tasks (2026-09-25). The prompt-mode axis is already pinned to io by
+    # `modes:` above, so it is left unrestricted here; SCS and selection stay.
+    only_tasks:
+      prompt_modes: []
+      selection_modes: [SCS]
+      task_kinds: [selection]
