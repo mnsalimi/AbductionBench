@@ -121,8 +121,11 @@ def test_episodes_run_to_completion_and_are_scored(
 
     # Every episode ran for exactly as many turns as its environment demanded.
     assert task.n_scored == 3
-    assert task.metrics["solved"] == 1.0
-    assert task.metrics["turns"] == 2.0        # (1 + 2 + 3) / 3
+    # An episode task reports its own columns only (core/episode_metrics.py):
+    # the adapter's headline becomes final_answer_accuracy.
+    assert task.metrics["final_answer_accuracy"] == 1.0
+    assert task.metrics["turns_to_final_output"] == 2.0        # (1 + 2 + 3) / 3
+    assert "solved" not in task.metrics and "turns" not in task.metrics
 
     # Six model turns in total (1 + 2 + 3), but each turn of all still-live
     # episodes goes out as one batch, so the run costs three batch calls plus
@@ -246,8 +249,8 @@ def test_two_models_do_not_score_each_others_episodes(
     assert len(result.tasks) == 2
     for task in result.tasks:
         # Each model's episodes ran to their own environment's demands.
-        assert task.metrics["solved"] == 1.0, task.identity.model_id
-        assert task.metrics["turns"] == 2.0
+        assert task.metrics["final_answer_accuracy"] == 1.0, task.identity.model_id
+        assert task.metrics["turns_to_final_output"] == 2.0
 
 
 # --------------------------------------------------------------------------- #

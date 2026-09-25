@@ -323,7 +323,7 @@ def test_episodes_in_flight_when_the_stop_comes_run_to_the_end(fake_server, writ
     assert not result.interrupted
     task = result.tasks[0]
     assert task.n_scored == 3
-    assert task.metrics["solved"] == 1.0, "an episode was cut short or scored early"
+    assert task.metrics["final_answer_accuracy"] == 1.0, "an episode was cut short or scored early"
     assert len(turns) == 6          # 1 + 2 + 3
 
 

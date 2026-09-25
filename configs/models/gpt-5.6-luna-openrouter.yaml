@@ -42,6 +42,10 @@ model:
     max_tokens_cap: 32000
     max_tokens_floor: 128
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra:
+      reasoning: {enabled: false}
 
   limits:
     # One request per "batch", because there is no batch route -- so this is

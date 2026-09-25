@@ -36,6 +36,14 @@ model:
     # Provider defaults for reasoning, as for gpt-5.6-luna: nothing is forced
     # on or off, so each model is measured the way it is served.
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    # EXCEPT HERE, where OFF DOES NOT EXIST: OpenRouter answers 400 "Reasoning is
+    # mandatory for this endpoint and cannot be disabled" to enabled:false,
+    # effort:none and max_tokens:0 (checked 2026-09-25). `minimal` is the least
+    # it accepts, so this model's episodes run with minimal reasoning, not none.
+    reasoning_off_extra:
+      reasoning: {effort: minimal}
 
   limits:
     # Requests in flight -- the only throughput lever a remote model has.

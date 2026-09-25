@@ -35,6 +35,10 @@ model:
     max_tokens_floor: 128
     extra:
       provider: {sort: price, allow_fallbacks: false}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra:
+      reasoning: {enabled: false}
 
   limits:
     max_parallel_batches: 256

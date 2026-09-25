@@ -1107,6 +1107,14 @@ class ModelSamplingConfig(_Base):
     stop: list[str] = Field(default_factory=list)
     #: Vendor-specific extras passed straight through to the request body.
     extra: dict[str, Any] = Field(default_factory=dict)
+    #: The request fields that switch THIS model's native reasoning off
+    #: (e.g. ``{chat_template_kwargs: {enable_thinking: false}}`` for a local
+    #: Qwen, ``{reasoning: {enabled: false}}`` on OpenRouter). Laid over
+    #: ``extra`` on every interactive and sequential turn, which run io with
+    #: reasoning off whatever the run's own setting is. ``None`` = not
+    #: declared (the engine warns); ``{}`` = the model has no reasoning to
+    #: switch off.
+    reasoning_off_extra: dict[str, Any] | None = None
 
 
 class ModelLimitsConfig(_Base):

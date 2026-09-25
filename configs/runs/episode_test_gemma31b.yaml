@@ -1,0 +1,66 @@
+# TEST of the interactive + sequential datasets (branch interactive-sequential):
+# gemma-4-31b-it on its cheapest OpenRouter host, 5 random records of each of
+# medqdx, med_inquire, ddxplus, vivabench, cloud_opsbench and athena_bench.
+# Both judges (answer + step relevance) are gpt-oss-120b on OpenRouter
+# (DekaLLM: passed the calibration, not used by the trio judging). Local only:
+# no Drive, its own output folder.
+#
+#   PYTHONPATH=src ../AbductionBench/.venv/bin/python -m abductionbench.cli run \
+#     configs/runs/episode_test_gemma31b.yaml \
+#     -d medqdx,med_inquire,ddxplus,vivabench,cloud_opsbench,athena_bench
+extends:
+  - full.yaml
+
+name: episode-test-gemma31b
+description: >-
+  gemma-4-31b-it (OpenRouter, cheapest host) on 5 records of every interactive
+  and sequential dataset; judged by gpt-oss-120b on OpenRouter.
+
+dataset_force:
+  sample_size: 5
+
+# 5 records, each asked ONCE (the suite asks every record 3 times).
+modes:
+  repeats_by_delivery: {interactive: 1, sequential: 1}
+
+engine:
+  output_root: /workspace/AbductionBench-interseq/runs
+  data_root: /workspace/AbductionBench/data
+  concurrency:
+    max_parallel_tasks: 6
+    max_parallel_batches_global: 64
+  judge:
+    enabled: true
+    defer: false
+    model: gpt-oss-120b-dekallm
+    group_size: 1
+    max_parallel_calls: 16
+    context_window: 65536
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-dekallm
+    group_size: 1
+    max_parallel_calls: 16
+    kill_switch: "off"
+    context_window: 65536
+  sync:
+    enabled: false
+  reporting:
+    interim_after_each_dataset: false
+
+models:
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+    sampling:
+      extra:
+        provider: {sort: price}
+    limits:
+      max_parallel_batches: 32
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-dekallm
+    sampling:
+      extra:
+        provider: {order: ["dekallm/bf16"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 32
+      max_connections: 64

@@ -15,6 +15,7 @@ from typing import Any
 
 import orjson
 
+from . import episode_metrics
 from .adapter import AdapterContext
 from .checkpoint import TaskCheckpoint, dedupe_records, load_records
 from .config import RunConfig, load_yaml
@@ -163,7 +164,11 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                     adapter = adapters.get(dataset_id)
 
                 metrics: dict[str, float] = {}
-                if adapter is not None and scores:
+                episode = episode_metrics.is_episode(identity.data_delivery_mode)
+                if episode and scores:
+                    # Only the episode metrics, as the engine reports them.
+                    metrics.update(episode_metrics.aggregate(identity.data_delivery_mode, scores))
+                elif adapter is not None and scores:
                     try:
                         metrics.update(
                             {k: float(v) for k, v in (adapter.aggregate(scores) or {}).items()}
@@ -223,7 +228,7 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                     or (dataset_cfg.primary_metric if dataset_cfg else None)
                     or (adapter.primary_metric if adapter else "")
                 )
-                if primary and primary in metrics:
+                if primary and primary in metrics and not episode:
                     metrics[f"{primary}_strict"] = metrics[primary] * metrics["coverage"]
 
                 checkpoint = None

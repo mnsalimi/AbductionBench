@@ -70,6 +70,7 @@ from .errors import (
 )
 from .judge import JudgeStage
 from .metrics import aggregate_mean_metrics, mean, stored_metrics
+from . import episode_metrics
 from .modes import BOV, COT, SELF_CONSISTENCY, TaskModes
 from .prompts import PromptRegistry, PromptRenderer, PromptTemplate
 from .reasoning_judge import ReasoningJudgeStage
@@ -1869,6 +1870,7 @@ class EvaluationEngine:
                     checkpoint=checkpoint, model=model, group_size=group_size,
                     identity=identity,
                     max_output_tokens=bundle.config.max_output_tokens,
+                    modes=prompt_set.modes,
                 )
             records = await self._score_batch(
                 adapter, identity, pairs, checkpoint=checkpoint, scores=scores
@@ -2168,6 +2170,25 @@ class EvaluationEngine:
                 )
                 checkpoint.notes["reasoning_judge_error"] = str(exc)
 
+        # INTERACTIVE AND SEQUENTIAL: only their own metrics stay columns
+        # (core/episode_metrics.py); the adapter's others move to
+        # details["adapter_metrics"]. Every record the projection changed is
+        # rewritten below, reused ones included.
+        episode_mode = identity.data_delivery_mode if episode_metrics.is_episode(
+            identity.data_delivery_mode) else None
+        projected: list[tuple[SampleSpec, ModelResponse, SampleScore]] = []
+        if episode_mode:
+            def _project(triplets):
+                out = []
+                for sample, response, score in triplets:
+                    new = episode_metrics.project(adapter, episode_mode, score, response)
+                    if new.metrics != score.metrics or new.details != score.details:
+                        projected.append((sample, response, new))
+                    out.append((sample, response, new))
+                return out
+            scores = _project(scores)
+            reused_triplets = _project(reused_triplets)
+
         # Records are written per batch, before judging, for crash safety.
         # Append their post-judge replacements now: record de-duplication keeps
         # the newest per (sample_id, prompt_fingerprint), which is what puts
@@ -2178,6 +2199,18 @@ class EvaluationEngine:
             or (self._reasoning_judge is not None and reasoning_mode)
         ):
             to_refresh = []
+        if projected:
+            # In place, like the answer judge's verdicts: a projection is the
+            # same record, reported on its own columns.
+            store.update_scores({
+                sample.sample_id: {
+                    "metrics": dict(score.metrics),
+                    "prediction": score.prediction,
+                    "details": dict(score.details),
+                    "parse_ok": score.parse_ok,
+                }
+                for sample, _response, score in projected
+            })
         # A prediction restored from an older run's cut copy reaches disk whether
         # or not anything judged it this pass. (The answer judge's own verdicts
         # are written back in place above, by store.update_scores.)
@@ -2346,6 +2379,7 @@ class EvaluationEngine:
         group_size: int,
         identity: TaskIdentity,
         max_output_tokens: int | None = None,
+        modes: TaskModes | None = None,
     ) -> tuple[list[tuple[RenderedPrompt, ModelResponse]], set[str]]:
         """Drive an interactive benchmark to completion, one turn at a time.
 
@@ -2447,6 +2481,7 @@ class EvaluationEngine:
                     exact_tokens=getattr(self.token_counter, "exact", False),
                     max_output_tokens=max_output_tokens,
                 )
+                sampling = self._episode_sampling(sampling, model, modes or TaskModes())
                 # Underscore-prefixed, so it stays out of the record metadata
                 # (_make_record drops those) while the raw writer and the turn
                 # log can both see it. The episode's sample_id is untouched.
@@ -2966,6 +3001,46 @@ class EvaluationEngine:
             )
         return restored
 
+    def _episode_sampling(self, sampling: SamplingParams, model: ModelConfig, modes: TaskModes) -> SamplingParams:
+        """Decoding for one interactive / sequential turn.
+
+        * TEMPERATURE: the temperature the static datasets are sampled at
+          (``modes.repeat_temperature``, 0.7), always -- also when the episode
+          is asked once, which is the default for these deliveries -- with the
+          model's fixed seed dropped. Episodes used to keep the model's own
+          temperature (0.0 with a seed).
+        * NATIVE REASONING OFF, always: interactive and sequential datasets run
+          io only, and the model's ``reasoning_off_extra`` is laid over its
+          ``extra`` for every turn (the one override the client lets win over
+          the run's model setting). A model that declares none gets a warning,
+          once, and its own setting.
+        """
+        temperature, seed = sampling.temperature, sampling.seed
+        mode_temperature = modes.sampling_temperature or modes.repeat_temperature
+        if mode_temperature is not None:
+            temperature, seed = mode_temperature, None
+        off = model.sampling.reasoning_off_extra
+        if off is None:
+            warned = self.__dict__.setdefault("_reasoning_off_warned", set())
+            if model.id not in warned:
+                warned.add(model.id)
+                logger.warning(
+                    "model %s declares no sampling.reasoning_off_extra: its interactive/sequential "
+                    "turns run with the run's own reasoning setting", model.id,
+                )
+            off = {}
+        import json as _json  # local: keeps the module's import block unchanged
+
+        return SamplingParams(
+            max_tokens=sampling.max_tokens,
+            temperature=temperature,
+            top_p=sampling.top_p,
+            seed=seed,
+            stop=sampling.stop,
+            extra=sampling.extra,
+            override_extra_json=_json.dumps(off, sort_keys=True) if off else "",
+        )
+
     @staticmethod
     def _unanswered(prompt: RenderedPrompt, response: ModelResponse) -> str | None:
         """Why a static reply never gave an answer (``missing_answer``), else None.
@@ -3240,7 +3315,13 @@ class EvaluationEngine:
         plus latency and token statistics.
         """
         metrics: dict[str, float] = {}
-        if all_scores:
+        delivery = result.identity.data_delivery_mode if result.identity is not None else "static"
+        episode = episode_metrics.is_episode(delivery)
+        if episode:
+            # Only the episode metrics (core/episode_metrics.py): no adapter
+            # aggregate, no repeat / vote / Best-of-N, no `_strict` column.
+            metrics.update(episode_metrics.aggregate(delivery, all_scores))
+        elif all_scores:
             try:
                 metrics.update(
                     {k: float(v) for k, v in (adapter.aggregate(all_scores) or {}).items()}
@@ -3251,7 +3332,7 @@ class EvaluationEngine:
 
         # A dataset whose answers are graded by an LLM judge, or by overlap with
         # a reference, has no discrete answer space for a vote to be taken over.
-        metrics.update(
+        metrics.update({} if episode else
             self._repeat_metrics(
                 fresh,
                 result,
@@ -3333,7 +3414,7 @@ class EvaluationEngine:
         # wrong one. `parse_ok` is the adapter's own judgement about whether it
         # could read the output, which is the right place for that line.
         primary = result.primary_metric
-        if primary and primary in metrics:
+        if primary and primary in metrics and not episode:
             per_sample = [
                 float(s.metrics[primary]) for s in answered if primary in s.metrics
             ]

@@ -94,6 +94,9 @@ model:
     max_tokens_cap: 512
     max_tokens_floor: 16
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra: {}
 
   limits:
     # One request per sample, so this is simply how many are in flight.

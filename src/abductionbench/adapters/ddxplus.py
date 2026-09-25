@@ -49,6 +49,7 @@ from . import _common as C
 from ._base import PooledDatasetAdapter, selection_score, text_match_score
 from ._interactive import EvidenceStore, InteractiveMixin, parse_action
 from ._prompting import mode_instruction
+from ._retrieval import BM25, DEFAULT_THRESHOLD
 
 FIGSHARE = "https://ndownloader.figshare.com/files"
 FILES = {
@@ -96,6 +97,14 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         "not run."
     )
     primary_metric = "diagnosis_match"
+
+    @property
+    def final_answer_metric(self) -> str:
+        # The free-text diagnosis is graded by the judge; the string match is
+        # its fallback, not the final-answer score.
+        if self.context.modes.hypothesis_mode == "generation":
+            return "diagnosis_match_judged"
+        return self.headline_metric
 
     primary_metric_by_mode = {
         # The two tasks are scored by different things, so each names
@@ -285,14 +294,48 @@ class DDXPlusAdapter(InteractiveMixin, PooledDatasetAdapter):
         self.bump(state, "ask")
         if self.over_limit(state, "ask"):
             return "That is all the history available. Please give your diagnosis now."
-        store: EvidenceStore = state["evidence"]
-        answer = store.reveal("ask", action.query_text, limit=3)
+        answer = self._retrieve(state, action.query_text)
         if not answer:
             # The patient record has nothing matching. DDXPlus records a
             # patient's *positive* evidences plus the questionnaire's defaults,
             # so an unmatched question is genuinely a negative answer.
             answer = "No, nothing like that."
         return answer + self.limit_note(state, "ask")
+
+    #: How many recorded questions one request may bring back.
+    RETRIEVAL_LIMIT = 3
+
+    def _bm25(self) -> BM25:
+        """BM25 over the release's whole question inventory (term statistics)."""
+        if getattr(self, "_bm25_index", None) is None:
+            self._bm25_index = BM25(self._question_catalogue().values())
+        return self._bm25_index
+
+    def _retrieve(self, state: dict[str, Any], query: str) -> str:
+        """The patient's recorded questions most similar to the one asked.
+
+        BM25 over normalised (stop-worded, Snowball-stemmed) words -- see
+        adapters/_retrieval.py -- scoring the questions this patient's record
+        answers, with the term statistics of the full questionnaire. At most
+        three at or above the normalised threshold (0.5), best first, each with
+        the patient's answer, and the model is told that is what they are: the
+        closest recorded questions, not necessarily the one it asked.
+        """
+        answers: dict[str, str] = state["evidence"].categories.get("ask", {})
+        hits = self._bm25().search(
+            query, answers.keys(), limit=self.RETRIEVAL_LIMIT,
+            threshold=float(self.context.option("retrieval_threshold", DEFAULT_THRESHOLD)),
+        )
+        state.setdefault("retrievals", []).append(
+            {"query": query, "hits": [[q, round(score, 3)] for q, score in hits]}
+        )
+        if not hits:
+            return ""
+        lines = "\n".join(f"- {question} -> {answers[question]}" for question, _s in hits)
+        return (
+            "These are the recorded questions most similar to the question you asked, "
+            f"with the patient's answers:\n{lines}"
+        )
 
     def make_sample(self, item: dict[str, Any], index: int) -> SampleSpec | None:
         pathology = C.normalize_whitespace(item.get("PATHOLOGY"))

@@ -38,6 +38,8 @@ adapters = [
   # 5.1 return identical verdicts on the instances checked. The real guard is
   # adapters/_abd_eval.py, which runs the solver in a process of its own.
   "z3-solver>=4.12,<5",
+  # BM25 word normalisation for the ddxplus patient (adapters/_retrieval.py).
+  "snowballstemmer>=2.2",
 ]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
@@ -46,6 +48,10 @@ abench = "abductionbench.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Datasets shipped with the code because they have no public download.
+"abductionbench.adapters" = ["resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

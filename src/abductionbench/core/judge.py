@@ -185,8 +185,35 @@ class JudgeStage:
         """
         self.template = self._template_for(adapter)
         by_id = {p.sample_id: p for p in (prompts or [])}
-        pending: list[tuple[int, dict[str, Any], str]] = []
+        pending: list[tuple[int, dict[str, Any], str, str | None]] = []
+        multi = callable(getattr(adapter, "judge_requests", None))
         for index, (sample, response, score) in enumerate(scored):
+            if multi:
+                # SEVERAL VERDICTS PER SAMPLE (a sequential episode: one per
+                # turn), and before the no-answer rule: a last turn with no
+                # answer leaves the earlier turns' predictions to grade. The
+                # adapter's fields are the whole question -- the turn's
+                # prediction, the gold, the case -- so no exchange is added:
+                # the transcript would only repeat them, at length.
+                try:
+                    requests = adapter.judge_requests(sample, response, score) or {}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("adapter %s: judge_requests failed: %s", adapter.dataset_id, exc)
+                    continue
+                for sub, request in requests.items():
+                    too_big = self.window.overrun(
+                        list(request.values()),
+                        reserved=template_tokens(self.window, self.template) + self.config.max_tokens,
+                    )
+                    if too_big:
+                        self.skipped_oversize += 1
+                        score.details.setdefault("judge_skipped", too_big)
+                        continue
+                    key = stable_hash(
+                        {"template": self.template.ref, "judge": self.config.model, "fields": request}
+                    )
+                    pending.append((index, request, key, sub))
+                continue
             if (score.details or {}).get("no_answer"):
                 # The model never answered (engine._score): there is nothing
                 # to grade, and the scorer has already recorded it as
@@ -233,12 +260,12 @@ class JudgeStage:
                     "fields": request,
                 }
             )
-            pending.append((index, request, key))
+            pending.append((index, request, key, None))
 
         if not pending:
             return scored
 
-        to_call = [item for item in pending if item[2] not in self._cache]
+        to_call = list({item[2]: item for item in pending if item[2] not in self._cache}.values())
         logger.info(
             "judge stage: %d sample(s) to judge (%d cached) with %s via %s",
             len(to_call),
@@ -253,9 +280,9 @@ class JudgeStage:
         can_batch = self.client.supports_batch and self.config.model not in self._batch_disabled
         chunk_size = self.config.group_size if can_batch else 1
 
-        async def run_chunk(chunk: list[tuple[int, dict[str, Any], str]]) -> None:
+        async def run_chunk(chunk: list[tuple[int, dict[str, Any], str, str | None]]) -> None:
             conversations = []
-            for _index, fields, _key in chunk:
+            for _index, fields, _key, _sub in chunk:
                 spec = SampleSpec(
                     sample_id=f"judge::{_key}", fields=fields, task_kind="judge"
                 )
@@ -303,7 +330,7 @@ class JudgeStage:
                 )
                 logger.warning("judge batch: %s; dropping the group", self.last_error)
                 return
-            for (_index, _fields, key), choice in zip(chunk, result.choices, strict=True):
+            for (_index, _fields, key, _sub), choice in zip(chunk, result.choices, strict=True):
                 verdict = self._parse(choice.content or "")
                 self._cache[key] = {
                     "label": verdict.label,
@@ -323,7 +350,22 @@ class JudgeStage:
             self._cache_path.write_bytes(orjson.dumps(self._cache, option=orjson.OPT_INDENT_2))
 
         updated = list(scored)
-        for index, _fields, key in pending:
+        if multi:
+            by_index: dict[int, dict[str, JudgeVerdict]] = {}
+            for index, _fields, key, sub in pending:
+                cached = self._cache.get(key)
+                if cached:
+                    by_index.setdefault(index, {})[sub] = self._verdict(cached)
+            for index, verdicts in by_index.items():
+                sample, response, score = updated[index]
+                try:
+                    new_score = adapter.apply_judges(sample, response, score, verdicts)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("adapter %s: apply_judges failed: %s", adapter.dataset_id, exc)
+                    continue
+                updated[index] = (sample, response, new_score or score)
+            return updated
+        for index, _fields, key, _sub in pending:
             cached = self._cache.get(key)
             if not cached:
                 continue
@@ -346,6 +388,16 @@ class JudgeStage:
         return updated
 
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _verdict(cached: dict[str, Any]) -> JudgeVerdict:
+        return JudgeVerdict(
+            label=cached.get("label"),
+            score=cached.get("score"),
+            raw=cached.get("raw", ""),
+            parsed=bool(cached.get("parsed")),
+            details=dict(cached.get("details") or {}),
+        )
 
     def _whole_exchange(self, prompt: Any, response: ModelResponse) -> dict[str, Any]:
         """The conversation sent and the reply received, both in full.
