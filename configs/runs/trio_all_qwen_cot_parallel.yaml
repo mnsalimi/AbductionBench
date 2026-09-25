@@ -1,0 +1,54 @@
+# The COT pass for all three Qwens AT ONCE, in one run: Qwen3.5-2B and 4B on
+# this box's vLLM servers (exactly as trio_qwen_cot_resume_v2.yaml) and
+# Qwen3.5-27B through OpenRouter (exactly as trio_qwen27b_or_cot.yaml).
+# Native reasoning ON for all three. One run, so one writer to the folder.
+# GENERATING ONLY: judges off, no engine sync (tools/sync_run.sh backs up).
+# Saved answers are reused. Run by tools/qwen_all_parallel.sh.
+extends:
+  - trio_qwen_cot_resume_v2.yaml
+
+engine:
+  concurrency:
+    max_parallel_tasks: 108
+    # 256 (2B) + 128 (4B) + 512 (27B), with room to spare.
+    max_parallel_batches_global: 1000
+  timeouts:
+    read_s: 7200
+
+models:
+  - file: ../models/qwen3-5-2b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 256
+      max_connections: 300
+      context_window: 65536
+  - file: ../models/qwen3-5-4b-local.yaml
+    endpoint:
+      batch:
+        group_size: 1
+    sampling:
+      extra:
+        chat_template_kwargs: {enable_thinking: true}
+    limits:
+      max_parallel_batches: 128
+      max_connections: 160
+      context_window: 65536
+  # 512 in flight on the cheapest host (Alibaba, no fallbacks). At 256, io's
+  # short requests drew 429s that the retries almost always absorbed; cot
+  # requests run for minutes, so the same concurrency is a far lower request
+  # rate. Above this, the provider only answers 429 -- and whatever still
+  # fails is asked again by the retry pass at the end.
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+    sampling:
+      extra:
+        provider: {sort: price, allow_fallbacks: false}
+        reasoning: {enabled: true}
+    limits:
+      max_parallel_batches: 512
+      max_connections: 600
+      context_window: 65536
