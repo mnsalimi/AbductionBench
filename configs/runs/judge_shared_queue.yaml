@@ -84,3 +84,51 @@ models:
     limits:
       max_parallel_batches: 48
       max_connections: 96
+
+  # More hosts, calibrated before use (2026-09-25). bf16 = the MXFP4 weights
+  # upcast: different arithmetic from ours, so only the calibration decides.
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-akashml
+    sampling:
+      extra:
+        provider: {order: ["akashml/bf16"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-deepinfra
+    sampling:
+      extra:
+        provider: {order: ["deepinfra/bf16"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-dekallm
+    sampling:
+      extra:
+        provider: {order: ["dekallm/bf16"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-crusoe
+    sampling:
+      extra:
+        provider: {order: ["crusoe/bf16"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
+  - file: ../models/gpt-oss-120b-openrouter.yaml
+    id: gpt-oss-120b-groq
+    sampling:
+      extra:
+        provider: {order: ["groq"], allow_fallbacks: false, require_parameters: true}
+        reasoning: {effort: low}
+    limits:
+      max_parallel_batches: 48
+      max_connections: 96
