@@ -27,24 +27,29 @@ engine:
   concurrency:
     max_parallel_tasks: 35
     max_parallel_batches_global: 1024
+  # OPENROUTER CONCURRENCY KEPT MODERATE (the model, the judges, the
+  # simulators): enough to keep things moving, not so much that providers
+  # answer with 429s or time out. episode_trio50 ran 24 judge calls and drew
+  # ~90 rate limits (all retried); this is lower.
   judge:
     enabled: true
     defer: false
     model: gpt-oss-120b-akashml
     group_size: 1
-    max_parallel_calls: 32
+    max_parallel_calls: 16
     context_window: 65536
   reasoning_judge:
     enabled: true
     model: gpt-oss-120b-akashml
     group_size: 1
-    max_parallel_calls: 32
+    max_parallel_calls: 16
     kill_switch: "off"
     context_window: 65536
   # 8 held every simulated turn of the last run in one queue (vivabench
-  # finished last because of it). Throughput only; answers are unchanged.
+  # finished last because of it); 16 doubles that without pushing gpt-4o-mini
+  # hard. Throughput only; answers are unchanged.
   simulator:
-    max_parallel_calls: 48
+    max_parallel_calls: 16
   retry:
     max_attempts: 8
     max_backoff_s: 300
@@ -62,8 +67,8 @@ models:
       extra:
         provider: {sort: price, allow_fallbacks: false}
     limits:
-      max_parallel_batches: 64
-      max_connections: 128
+      max_parallel_batches: 24
+      max_connections: 48
   # Local: one request per call (group_size 1) and up to 256 in flight each,
   # under the servers' 512 sequences; the servers run at 65,536 context.
   - file: ../models/gemma-4-e4b-local.yaml
@@ -85,5 +90,5 @@ models:
         provider: {order: ["akashml/bf16"], allow_fallbacks: false, require_parameters: true}
         reasoning: {effort: low}
     limits:
-      max_parallel_batches: 48
-      max_connections: 96
+      max_parallel_batches: 16
+      max_connections: 32
