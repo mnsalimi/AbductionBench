@@ -1578,7 +1578,11 @@ class EvaluationEngine:
                     model_id=model.id,
                     template_id=prompt_set.template.id,
                     template_version=prompt_set.template.version,
-                    prompt_mode=modes.prompt_mode,
+                    # "n/a" for a model with no prompt mode (a decision
+                    # endpoint), as the filter above was told: the row must not
+                    # claim an io condition that never reached the model, or
+                    # the workbook gives it an io column beside chat models.
+                    prompt_mode=(modes.prompt_mode if model.has_prompt_mode else "n/a"),
                     selection_mode=modes.selection_mode or "n/a",
                     # A task whose samples mix kinds names the kind it is built
                     # around; each record still carries its own.
