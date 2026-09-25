@@ -36,6 +36,10 @@ model:
     # Provider defaults for reasoning, as for gpt-5.6-luna: nothing is forced
     # on or off, so each model is measured the way it is served.
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra:
+      reasoning: {enabled: false}
 
   limits:
     # Requests in flight -- the only throughput lever a remote model has.

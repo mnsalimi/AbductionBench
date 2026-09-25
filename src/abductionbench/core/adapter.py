@@ -332,6 +332,15 @@ class DatasetAdapter(ABC):
             return self.primary_metric_by_mode[mode]
         return self.primary_metric
 
+    @property
+    def final_answer_metric(self) -> str:
+        """The per-sample metric an episode's ``final_answer_accuracy`` is read
+        from (interactive deliveries; see core/episode_metrics.py): the
+        dataset's own headline -- the judge's verdict where the answer is free
+        text, the exact match where it is a label. Override where the headline
+        is not a per-sample score of the final answer."""
+        return self.headline_metric
+
     def system_prompt_for(self, sample: SampleSpec) -> str:
         """The system instruction for one sample.
 
@@ -508,7 +517,7 @@ class DatasetAdapter(ABC):
         # self-consistency stays restricted to datasets with a checkable
         # answer; the judged ones report Best-of-N over the same repeats
         # instead (see EvaluationEngine._best_of_n_metrics).
-        if cls.io_only and modes.prompt_mode != IO:
+        if (cls.io_only or cls.data_delivery_mode != "static") and modes.prompt_mode != IO:
             # One action per turn, in a shape the environment parses. There is
             # no room for a reasoning mode that does not contradict it.
             return (

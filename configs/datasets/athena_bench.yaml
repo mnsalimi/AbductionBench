@@ -1,0 +1,13 @@
+dataset:
+  id: athena_bench
+  enabled: true
+  impl: abductionbench.adapters.athena_bench:AthenaBenchAdapter
+  # 50 of the 57 cases, drawn by the run seed.
+  sample_size: 50
+  primary_metric: final_answer_accuracy
+  options: {}
+  notes: >-
+    Sequential threat-actor attribution: each turn adds evidence, the model
+    names the culprit after every turn with the earlier turns as history.
+    Every turn judged against the gold (aliases count). io only, native
+    reasoning off, temperature 0.7.

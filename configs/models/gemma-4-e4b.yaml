@@ -54,6 +54,10 @@ model:
     max_tokens_cap: 32000
     max_tokens_floor: 128
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra:
+      chat_template_kwargs: {enable_thinking: false}
 
   limits:
     # 8 x 8 = 64 in flight, matching MAX_NUM_SEQS=64. It was 2 (16 in flight)

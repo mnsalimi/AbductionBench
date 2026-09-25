@@ -83,20 +83,30 @@ class SamplingParams:
     seed: int | None = None
     stop: tuple[str, ...] = ()
     extra: tuple[tuple[str, Any], ...] = ()  # frozen dict of vendor-specific knobs
+    #: Request fields laid OVER the model's own ``sampling.extra`` (deep-merged,
+    #: as JSON so the class stays hashable). The client otherwise lets the
+    #: model's extra win over everything in here; this is the one slot that
+    #: beats it -- used to switch native reasoning off for interactive and
+    #: sequential episodes whatever the run's model setting is. Empty for every
+    #: other request, and then it is in no signature or fingerprint at all.
+    override_extra_json: str = ""
 
     def signature(self) -> str:
         """Key identifying which samples may share one batch call."""
-        return stable_hash(
-            {
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "seed": self.seed,
-                "stop": list(self.stop),
-                "extra": sorted(self.extra),
-            },
-            length=12,
-        )
+        fields: dict[str, Any] = {
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "seed": self.seed,
+            "stop": list(self.stop),
+            "extra": sorted(self.extra),
+        }
+        if self.override_extra_json:
+            fields["override_extra"] = self.override_extra_json
+        return stable_hash(fields, length=12)
+
+    def override_extra(self) -> dict[str, Any]:
+        return json.loads(self.override_extra_json) if self.override_extra_json else {}
 
     def to_payload(self) -> dict[str, Any]:
         """Render as request JSON fields (only non-default values are sent)."""
@@ -206,14 +216,17 @@ class RenderedPrompt:
         Changing the template, the sampling params or the model invalidates
         previously stored records for the sample.
         """
-        return stable_hash(
-            {
-                "model": model_id,
-                "template": f"{self.template_id}@{self.template_version}",
-                "messages": [m.to_dict() for m in self.messages],
-                "sampling": self.sampling.to_payload(),
-            }
-        )
+        fields: dict[str, Any] = {
+            "model": model_id,
+            "template": f"{self.template_id}@{self.template_version}",
+            "messages": [m.to_dict() for m in self.messages],
+            "sampling": self.sampling.to_payload(),
+        }
+        # Only when set, so every fingerprint made before the slot existed is
+        # unchanged.
+        if self.sampling.override_extra_json:
+            fields["override_extra"] = self.sampling.override_extra_json
+        return stable_hash(fields)
 
 
 class ResponseStatus(str, Enum):

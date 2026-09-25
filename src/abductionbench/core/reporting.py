@@ -385,6 +385,17 @@ def build_turns_frame(task_dirs: list[Path], *, clip: int) -> pd.DataFrame:
                 "prediction": _clip(episode.get("prediction"), clip) if episode else None,
                 "parse_ok": episode.get("parse_ok") if episode else None,
             }
+            # SEQUENTIAL deliveries answer on EVERY turn: that turn's parsed
+            # prediction and the judge's verdicts on it (athena_bench), read
+            # from the episode record, on every row.
+            details = (episodes.get(sample_id, {}).get("details") or {})
+            predictions = details.get("turn_predictions")
+            if predictions is not None and 0 < number <= len(predictions):
+                row["turn_prediction"] = _clip(predictions[number - 1], clip)
+                for key, column in (("turn_correct", "turn_correct"),
+                                    ("turn_matches_final", "turn_matches_final")):
+                    values = details.get(key) or []
+                    row[column] = values[number - 1] if number <= len(values) else None
             for metric, value in (episode.get("metrics") or {}).items():
                 row[f"metric.{metric}"] = _fmt(value)
             rows.append(row)

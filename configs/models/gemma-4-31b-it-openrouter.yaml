@@ -37,6 +37,9 @@ model:
     max_tokens_cap: 16384
     max_tokens_floor: 128
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra: {}
 
   limits:
     max_parallel_batches: ${env:ABENCH_GEMMA_PARALLEL|64}

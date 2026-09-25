@@ -58,6 +58,10 @@ model:
     max_tokens_cap: 32000
     max_tokens_floor: 128
     extra: {}
+    # Interactive and sequential datasets run io with native reasoning OFF,
+    # whatever the run sets in `extra`: this is laid over `extra` on their turns.
+    reasoning_off_extra:
+      chat_template_kwargs: {enable_thinking: false}
 
   limits:
     # 2 -> 4, with group_size 16, to drive exactly MAX_NUM_SEQS=64. This costs

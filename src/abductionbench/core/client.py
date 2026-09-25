@@ -48,6 +48,23 @@ logger = logging.getLogger(__name__)
 __all__ = ["RawChoice", "BatchResult", "ModelClient"]
 
 
+def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _apply_override_extra(payload: dict[str, Any], sampling: SamplingParams) -> None:
+    """Lay ``sampling.override_extra`` over the payload, the model's extra included."""
+    over = sampling.override_extra()
+    if over:
+        payload.update(_deep_merge(payload, over))
+
+
 @dataclass(slots=True)
 class RawChoice:
     """One normalized choice out of a (batched or single) completion."""
@@ -377,6 +394,7 @@ class ModelClient:
             **sampling.to_payload(),
             **self.model.sampling.extra,
         }
+        _apply_override_extra(payload, sampling)
         started = time.monotonic()
         data = await self._post(url, payload, batch=False)
         latency = time.monotonic() - started
@@ -433,6 +451,7 @@ class ModelClient:
             **sampling.to_payload(),
             **self.model.sampling.extra,
         }
+        _apply_override_extra(payload, sampling)
         started = time.monotonic()
         data = await self._post(url, payload, batch=True)
         latency = time.monotonic() - started

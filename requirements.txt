@@ -17,3 +17,4 @@ tiktoken>=0.7
 requests>=2.32
 datasets>=2.19
 huggingface_hub>=0.23
+snowballstemmer>=2.2   # ddxplus BM25 word normalisation
