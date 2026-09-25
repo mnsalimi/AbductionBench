@@ -251,7 +251,13 @@ async def run(run_dir: Path, args) -> int:
     remote_model = next(m for m in config.models if m.id == REMOTE)
     timeouts, rediscover = config.engine.timeouts, config.engine.retry.recovery.rediscover_on_connection_error
     local_client = ModelClient(local_model, timeouts, rediscover=rediscover)
-    remote_client = ModelClient(remote_model, timeouts, rediscover=rediscover)
+    # The remote judge gets its own, shorter read timeout: CoreWeave sometimes
+    # holds a request without answering, and 30 minutes (the local default,
+    # which a queued local batch can need) is too long to wait for a slot that
+    # a retry would put to use. A long step list takes ~3 min there (measured
+    # 8,327 tokens in 181 s), so 15 minutes is ample for a real answer.
+    remote_timeouts = timeouts.model_copy(update={"read_s": args.remote_read_s})
+    remote_client = ModelClient(remote_model, remote_timeouts, rediscover=rediscover)
     local_report = await local_client.verify()
     await remote_client.verify()
     # The breaker counts what the REMOTE ENDPOINT did wrong: every call attempt
@@ -414,6 +420,7 @@ def main() -> int:
     ap.add_argument("--remote-fail-limit", type=int, default=30,
                     help="remote call attempts raising (not 429) in one minute that pause the remote judge")
     ap.add_argument("--remote-pause-s", type=float, default=600)
+    ap.add_argument("--remote-read-s", type=float, default=900, help="read timeout for the remote judge only")
     ap.add_argument("--no-answers", action="store_true")
     ap.add_argument("--no-remote", action="store_true")
     args = ap.parse_args()
