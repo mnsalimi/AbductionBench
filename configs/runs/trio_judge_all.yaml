@@ -1,0 +1,50 @@
+# JUDGING ONLY, over answers already on disk in openrouter-trio -- nothing is
+# asked of any model under test. Used by tools/judge_all_after_generation.sh:
+#
+#   * abench judge-reasoning --config <this>   reasoning metrics (cot) for the
+#     trio (cache hits are free; anchoring v3@1.1 and any other misses are
+#     asked) and for the five models never judged
+#   * tools/judge_answers_offline.py --config <this>   the answer judge (io
+#     and cot) for the five new models
+#
+# The judge is gpt-oss-120b served on this box (:18004), under the SAME id the
+# trio was judged with -- gpt-oss-120b-local -- because the id is part of every
+# cache key: any other id would re-buy all 207,041 cached verdicts.
+# 32 calls x 8 conversations = 256 in flight, the server's MAX_NUM_SEQS; the
+# group size stays 8 (vLLM at temperature 0 is not bit-stable across batch
+# sizes, so it is the one knob that would change verdicts).
+extends:
+  - openrouter_trio.yaml
+
+disable_datasets: [hypobench]
+
+engine:
+  judge:
+    enabled: true
+    defer: false
+    model: gpt-oss-120b-local
+    group_size: 8
+    max_parallel_calls: 32
+  reasoning_judge:
+    enabled: true
+    model: gpt-oss-120b-local
+    group_size: 8
+    max_parallel_calls: 32
+    kill_switch: "off"
+  sync:
+    enabled: false
+  reporting:
+    interim_after_each_dataset: false
+
+models:
+  # The trio first, as in the run itself (the engine's token counter reads the
+  # first model's tokenizer name).
+  - file: ../models/gpt-5.6-luna-openrouter.yaml
+  - file: ../models/gemini-3.8-flash-openrouter.yaml
+  - file: ../models/gemma-4-31b-it-openrouter.yaml
+  - file: ../models/gemma-4-e4b-local.yaml
+  - file: ../models/gemma-4-e2b-local.yaml
+  - file: ../models/qwen3-5-2b-local.yaml
+  - file: ../models/qwen3-5-4b-local.yaml
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+  - file: ../models/gpt-oss-120b-local.yaml

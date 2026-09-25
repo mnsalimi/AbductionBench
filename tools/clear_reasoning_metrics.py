@@ -7,6 +7,15 @@ touched.
 
     python tools/clear_reasoning_metrics.py runs/<run>            # dry run: counts only
     python tools/clear_reasoning_metrics.py runs/<run> --apply    # remove
+    python tools/clear_reasoning_metrics.py runs/<run> --apply --keep-cache --exclude hypobench
+
+--exclude <id,...> leaves those datasets' task folders exactly as they are --
+for a dataset taken out of the run, whose metrics will not be re-judged.
+
+--keep-cache leaves reasoning_judge_cache/ in place: the metrics are cleared,
+but a re-judge under the same judge id then reads every verdict it already
+bought from the cache instead of asking again. Only what changed -- a new
+template version, a different input -- is asked.
 
 Removed:
   * run level:  reasoning_metrics.jsonl, reasoning_judge_cache/
@@ -84,7 +93,7 @@ def _strip_record(row: dict) -> bool:
     return changed
 
 
-def main(run_dir: Path, apply: bool) -> int:
+def main(run_dir: Path, apply: bool, keep_cache: bool = False, exclude: frozenset = frozenset()) -> int:
     run_dir = run_dir.resolve()
     JUDGE_METRICS.update(_judge_metric_names(run_dir))
     assert not {"reasoning_recall", "reasoning_overlap"} & JUDGE_METRICS, "dataset metrics in the list"
@@ -101,10 +110,12 @@ def main(run_dir: Path, apply: bool) -> int:
         if path.exists():
             deletes.append(path)
     cache = run_dir / "reasoning_judge_cache"
-    if cache.exists():
+    if cache.exists() and not keep_cache:
         deletes.extend(sorted(p for p in cache.rglob("*") if p.is_file()))
 
     for task_dir in sorted(run_dir.glob("datasets/*/*/*")):
+        if task_dir.parent.parent.name in exclude:
+            continue
         audit = task_dir / "reasoning_judge_calls.jsonl"
         if audit.exists():
             deletes.append(audit)
@@ -144,7 +155,7 @@ def main(run_dir: Path, apply: bool) -> int:
     size = sum(p.stat().st_size for p in deletes)
     print(f"{'APPLYING' if apply else 'DRY RUN -- nothing changes (add --apply)'}: {run_dir.name}")
     print(f"  delete   {len(deletes)} file(s), {size / 1e6:.0f} MB: reasoning_metrics.jsonl, "
-          f"the reasoning-judge cache, {sum(p.name == 'reasoning_judge_calls.jsonl' for p in deletes)} "
+          f"{'(cache KEPT)' if keep_cache else 'the reasoning-judge cache'}, {sum(p.name == 'reasoning_judge_calls.jsonl' for p in deletes)} "
           f"task audit log(s)")
     print(f"  rewrite  {len(rewrites)} records.jsonl ({stripped_lines} line(s) lose their reasoning "
           f"metrics and details)")
@@ -154,7 +165,8 @@ def main(run_dir: Path, apply: bool) -> int:
     if not apply:
         return 0
 
-    archive = run_dir.parent / "_superseded" / f"{run_dir.name}__reasoning_metrics_cleared.tar.gz"
+    suffix = "__keep-cache" if keep_cache else ""
+    archive = run_dir.parent / "_superseded" / f"{run_dir.name}__reasoning_metrics_cleared{suffix}.tar.gz"
     archive.parent.mkdir(parents=True, exist_ok=True)
     if not archive.exists():
         with tarfile.open(archive, "w:gz") as tar:
@@ -178,8 +190,16 @@ def main(run_dir: Path, apply: bool) -> int:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--apply"]
+    argv = sys.argv[1:]
+    exclude: frozenset = frozenset()
+    if "--exclude" in argv:
+        at = argv.index("--exclude")
+        exclude = frozenset(x for x in argv[at + 1].split(",") if x)
+        argv = argv[:at] + argv[at + 2:]
+    args = [a for a in argv if a not in ("--apply", "--keep-cache")]
     if len(args) != 1:
         print(__doc__)
         sys.exit(2)
-    sys.exit(main(Path(args[0]), "--apply" in sys.argv[1:]))
+    if exclude:
+        print(f"  excluded (left untouched): {', '.join(sorted(exclude))}")
+    sys.exit(main(Path(args[0]), "--apply" in argv, "--keep-cache" in argv, exclude))

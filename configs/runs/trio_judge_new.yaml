@@ -1,0 +1,14 @@
+# trio_judge_all.yaml for the five models never judged: gemma-4-E4B/E2B,
+# Qwen3.5-2B/4B (local) and Qwen3.5-27B (OpenRouter). Answer judge on io and
+# cot, reasoning judge on cot -- only replies that exist: the 27B's cot
+# samples stored as errors (out of credit) are not judged.
+extends:
+  - trio_judge_all.yaml
+
+models:
+  - file: ../models/gemma-4-e4b-local.yaml
+  - file: ../models/gemma-4-e2b-local.yaml
+  - file: ../models/qwen3-5-2b-local.yaml
+  - file: ../models/qwen3-5-4b-local.yaml
+  - file: ../models/qwen3-5-27b-openrouter.yaml
+  - file: ../models/gpt-oss-120b-local.yaml
