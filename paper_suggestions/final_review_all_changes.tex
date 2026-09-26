@@ -1,0 +1,469 @@
+% ===========================================================================
+% AbductionBench -- final review: ALL suggested LaTeX, each with its reason.
+% Tested: all changes applied to a scratch copy of Overleaf version bae9304
+% and compiled -> no errors, no undefined references, no duplicate labels,
+% and the MAIN TEXT ENDS ON PAGE 9 (it currently ends on page 12).
+% Nothing was written to Overleaf.
+% Upload needed: prism-uploads/figS4_accuracy_vs_reasoning_length.pdf
+% ===========================================================================
+
+%============================================================================
+% CHANGE 1 -- Sections/2_introduction.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL: paragraph 3 contains a duplicated line ('\emph{interactive} tasks ...
+%   (Section~...)') that prints twice in the PDF.
+%   Paragraph 4 repeats setup numbers that now live in the Results setup paragraph.
+%   Added the missing motivation (why benchmarks fragment; why delivery mode matters)
+%   and the Jev finding; contributions now state the real counts (69,599 static
+%   responses, 2,400 episodes). About 0.3 page shorter.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:introduction}
+
+Abductive reasoning seeks plausible explanations for observed evidence. When information is incomplete, several hypotheses may fit the same observations, and new evidence may change which explanation is best supported. For large language models (LLMs), a correct final answer alone does not show whether the model used the relevant evidence, considered alternatives, or revised an earlier hypothesis. Evaluation therefore needs to examine outcomes alongside observable reasoning and evidence-gathering behavior, without treating written traces as direct records of internal computation.
+
+Existing benchmarks address parts of this problem. Abductive Commonsense Reasoning evaluates narrative explanation selection and generation \citep{Bhagavatula2020Abductive}; GEAR evaluates generated hypothesis sets on four programmable benchmarks \citep{impl_he2025gear}. Because each benchmark fixes its own formulation and scoring, results do not show how abductive ability varies with the kind of hypothesis required, the domain, or the way evidence arrives. Most benchmarks also supply all evidence at once, whereas practical abduction---clinical diagnosis, incident response, threat attribution---requires revising a hypothesis as evidence arrives or deciding which evidence to seek.
+
+AbductionBench addresses this gap. It brings existing tasks into one execution and reporting protocol and describes each along three axes: hypothesis generation or selection, application domain, and evidence delivery, which is \emph{static} (all evidence at the outset), \emph{passive} (evidence arrives in a fixed order and the model revises its hypothesis after each turn), or \emph{interactive} (the model's questions or actions determine what it observes next). It scores final answers with task-appropriate checks or an LLM judge, and separately analyzes chain-of-thought (CoT) traces for evidence use, hypothesis comparison, uncertainty, and commitment, and multi-turn episodes for question relevance and hypothesis revision.
+
+We evaluate eight LLMs from four model families on 27 datasets (21 static, five interactive, one passive), together with Jev, a non-LLM System~One decision system, on the single-choice tasks. CoT helps when an explanation must be derived by chaining evidence but often hurts open-ended hypothesis generation, and within a dataset, longer traces go with lower accuracy. Jev is competitive with small LLMs when selecting among explanations over compact evidence but falls behind on long cases. In interactive diagnosis, a relevant first question goes with a correct final answer and relevance declines as the interaction proceeds; with passively arriving evidence, models rarely revise their first hypothesis.
+
+Our contributions are:
+\begin{itemize}
+    \item \textbf{A structured suite} of 27 datasets spanning ten domains, hypothesis generation and selection, and three modes of evidence delivery (static, passive, interactive), including a passive adaptation of AthenaBench, with source-task adaptations documented.
+    \item \textbf{A complementary evaluation protocol} that reports final-answer outcomes alongside trace measures for static tasks and turn-level measures for passive and interactive episodes.
+    \item \textbf{An empirical study} of eight LLMs and a non-LLM System~One decision system (Jev), covering 69,599 static responses and 2,400 passive and interactive episodes.
+\end{itemize}
+
+%============================================================================
+% CHANGE 2 -- Sections/3_related_work.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   'GEAR \citet{..}' and 'Wiring the Why \citet{..}' print the author name twice
+%   ('GEAR He et al. (2025)'); now \citep. The critique of our own earlier paper
+%   (salimi2026wiring) repeated 'by its own description' twice -- shortened and
+%   made neutral (a heavy self-critique also hints at authorship). About 0.2 page shorter.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\section{Related Work}
+\label{sec:related_work}
+
+Abduction seeks plausible explanations for observations rather than conclusions that must be true \citep{schurz2008patterns}. Prior benchmarks isolate individual pieces of this problem: ART's $\alpha$NLI asks models to select the more plausible explanation connecting two observations, while e-CARE includes both a two-choice causal-reasoning task and an explanation-generation task \citep{Bhagavatula2020Abductive,du2022ecare}. $\alpha$NLG and UNcommonsense focus on open-ended explanation generation, whereas True Detective and MuSR evaluate answer selection in longer narratives \citep{impl_zhao2023uncommonsense,del2022truedetective,sprague2024musr}. ProofWriter and AbductionRules study abduction over natural-language rule bases, and HypoSpace evaluates set-valued hypothesis generation under underdetermination \citep{impl_tafjord2020proofwriter,young2022abductionrules,chen2026hypospace}. In clinical settings, MedCaseReasoning evaluates diagnosis together with alignment to clinician-authored reasoning, while DDXPlus supports interactive evidence collection and differential diagnosis \citep{wu2025medcasereasoning,fansitchango2022ddxplus}. On the evaluation side, IBE-Eval scores explanations by consistency, parsimony, coherence, and uncertainty \citep{dalal2024ibe}, and RECV reports higher error on claim verification that requires abduction from incomplete evidence \citep{dougrezlewis2024recv}.
+
+Closest to our work, GEAR \citep{impl_he2025gear} evaluates sets of executable hypotheses by consistency, generalizability, and diversity, but is restricted to domains where hypotheses compile to code and has no candidate-selection task, so it cannot separate generating good candidates from discriminating among them. \emph{Wiring the ``Why''} \citep{salimi2026wiring} surveys over 60 papers and compares generation and selection empirically, but with a fixed prompt per benchmark, a small set of models, and static benchmarks only. AbductionBench evaluates generation and selection as distinct tasks across 27 datasets and ten domains, under static, passive, and interactive evidence delivery, and reports reasoning-trace and interaction measures alongside outcome accuracy.
+
+%============================================================================
+% CHANGE 3 -- Sections/4_methodology.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL CONTRADICTION: Sec 3.3 says 'run three direct-answer episodes per record';
+%   episodes ran ONCE per record (Results setup, Appendix D say once).
+%   Hard-coded 'Section~4.4' -> \ref. 'Data Delivery Modes / Hypothesis Processing
+%   Modes' used terms defined nowhere. 'Initial working inventory of candidate
+%   datasets' is wrong: Appendix A.2 is the final 27-dataset roster.
+%   Defines SCS/MCS (used in Table 1 but never defined in the text).
+%   AthenaBench paragraph kept, tightened. About 0.5 page shorter.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\section{Benchmark Scope and Design}
+\label{sec:framework}
+\label{sec:methodology}
+
+AbductionBench brings existing tasks into a common evaluation interface. This section defines which tasks fall within its scope, how they are categorized, and how datasets are integrated; execution and scoring are specified in Section~\ref{sec:evaluation_protocol}.
+
+\subsection{What Counts as an Abductive Task}
+\label{sec:framework_scope}
+
+We include benchmarks designed to evaluate abductive reasoning and selected tasks from other benchmarks. For each task, we identify what is given, what the model must infer, and why that inference is abductive: usually, the model infers a hypothesis that explains supplied observations. Inclusion is decided at the task or subset level rather than from a dataset's domain label.
+
+\subsection{Task Taxonomy}
+\label{sec:task_representation}
+
+A \emph{task configuration} specifies a task from a dataset or subset, the information available to the model, the required output, and how evidence is supplied; a dataset contributes one configuration per task format it supports. We describe each configuration along three axes.
+
+\subsubsection{Hypothesis Generation and Selection}
+\label{sec:methodology_task_formulation}
+
+Following \citet{salimi2026wiring}, \textbf{generation} produces one or more candidate explanations $H=\{h_1,\ldots,h_n\}$ for observations $O$, whereas \textbf{selection} evaluates supplied candidates against the observations and returns the choice or subset the task requires, as in ART's $\alpha$NLI \citep{Bhagavatula2020Abductive}. Selection is posed as single choice (SCS) or, where several candidates may be correct, multiple choice (MCS). When a dataset supports both generation and selection, we evaluate each as a separate configuration. These terms describe the benchmark's observable inputs and outputs, not stages of the model's internal computation.
+
+\subsubsection{Application Domains}
+\label{sec:methodology_domain_taxonomy}
+
+Each configuration receives one primary-domain label: Healthcare, Commonsense, Narrative Reasoning, Formal Reasoning, Event Reasoning, Scientific Discovery, Scientific Reasoning, Computing Systems, Cybersecurity, or Agentic Systems (definitions in Appendix~\ref{app:domain_taxonomy}).
+
+\subsubsection{Evidence-Delivery Mode}
+\label{sec:methodology_data_delivery}
+
+Evidence-delivery mode describes when the model receives evidence and whether it can influence what evidence arrives next.
+\textbf{Static:} all evidence supplied by the task is available at the outset; it may still be incomplete, as is typical in abduction.
+\textbf{Passive:} evidence arrives in a predetermined sequence; the model may revise its hypothesis as evidence accumulates, but cannot choose what it receives next.
+\textbf{Interactive:} the model's actions or queries determine the information it receives next, so later observations depend on the interaction history.
+
+\input{Sections/abductive_task_scope.tex}
+
+\subsection{Dataset Selection and Adaptation}
+\label{sec:methodology_dataset_selection}
+
+From a larger candidate inventory, we retain tasks that meet the scope above and exclude datasets that are not publicly accessible, are prohibitively expensive to evaluate, are saturated by current models, or duplicate the abductive challenge of another selection. The resulting 27 datasets (Appendix~\ref{app:datasets}) cover all ten domains, both hypothesis formulations, and all three delivery modes. For each configuration, a dataset adapter converts source records into the common interface and connects them to the required evaluation resources, such as reference answers or an interaction environment; changes to the evidence shown, the allowed answers, or the output format are documented as our adaptations.
+
+\paragraph{Passive adaptation of AthenaBench.}
+AthenaBench poses threat-actor attribution: given evidence about malicious activity, name the responsible actor. We convert its 57 attribution cases (39 actors) into passive episodes. Each case's 15--25 evidence items---the actor's profile and motivation, techniques with MITRE ATT\&CK identifiers, and documented incidents---are delivered in source order over four to six turns, usually four items per turn. After each turn, the model names one actor while retaining all earlier evidence and predictions; it cannot request, reorder, or stop the evidence, which separates hypothesis revision from evidence acquisition. We keep the source's per-turn question and supply the system prompt and answer format. Because actors have many aliases (e.g., Sednit and APT28), each turn's prediction is judged against the gold actor by an LLM judge rather than by string match (Section~\ref{sec:sequential_interactive_evaluation}).
+
+%============================================================================
+% CHANGE 4 -- Sections/5_evaluation.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL CONTRADICTION: 'Passive and interactive tasks: We retain the original task
+%   prompts' -- false; Sec 3.3 itself says we supply the system prompt and format.
+%   'macro F1' is wrong: the code computes set F1 per item, averaged over items.
+%   Table 1 uses EM for ProofWriter/UniADILR-HGc and JRA for Cloud-OpsBench; neither
+%   was defined. Sec 4.4 claimed a metric we never compute ('whether evidence-
+%   gathering preserves or eliminates viable hypotheses'); replaced by the metrics
+%   actually reported. Judge description no longer duplicated. About 0.3 page shorter.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\section{Evaluation Protocol}
+\label{sec:evaluation_protocol}
+\label{sec:methodology_evaluation_protocol}
+
+The protocol separates \emph{final-answer evaluation}, which scores the answer or terminal result, from \emph{process analysis}, which characterizes the reasoning trace or interaction history produced alongside it. Full metric definitions are in Appendix~\ref{app:metrics} and all judge prompts in Appendix~\ref{app:prompts}.
+
+\subsection{Prompting and Task Execution}
+\label{sec:task_execution}
+
+\textbf{Static tasks} are run under two AbductionBench templates that replace the source prompts: input--output (IO), which requests a direct answer, and chain-of-thought (CoT), which additionally requests an explicit reasoning trace. \textbf{Passive and interactive tasks} are run as multi-turn episodes under IO only, since the interaction itself exposes the process: the source's questions and environments are kept, while the system prompt and answer format are ours. The absence of a written trace under IO is not treated as evidence that a model performs no internal reasoning.
+
+\subsection{Final-Answer Evaluation}
+\label{sec:outcome_evaluation}
+\label{sec:methodology_metrics}
+
+Single-choice selection (SCS) is scored by accuracy, and multiple-choice selection (MCS) by exact set match (EM) and set F1 averaged over items. Generation tasks with a formally checkable answer (ProofWriter, UniADILR-HGc) are scored by exact match; other free-form explanations receive a binary correct/incorrect verdict from an LLM judge (gpt-oss-120b) that compares them with the gold explanation. Cloud-OpsBench is scored by joint root-cause accuracy: the judged fault type and the faulty component must both be correct.
+
+\subsection{Reasoning-Trace Analysis}
+\label{sec:reasoning_trace_evaluation}
+
+For CoT outputs, a segmentation judge splits each trace into steps, and a reasoning judge (gpt-oss-120b) scores each step or trace on thirteen descriptors: evidence use (observation coverage); step quality (useful and helpful steps, backtracking); expressed uncertainty; hypothesis breadth (branchiness, diversity, comparison exhaustiveness); direction and commitment (evidence-to-hypothesis directionality, anchoring point); unsupported content (prior knowledge, unresolved contradiction); and whether the gold hypothesis remains under consideration. These measures describe the reasoning a model writes, not its hidden computation.
+
+\subsection{Passive and Interactive Evaluation}
+\label{sec:sequential_interactive_evaluation}
+
+Every episode is scored by final-answer accuracy. For interactive tasks, each action before the final answer (a question, test, or tool call) is judged relevant or irrelevant to the gold answer, giving per-step relevance and the turns taken. For AthenaBench, every turn's prediction is judged against the gold actor, giving per-turn accuracy, the first correct turn, and the first turn at which the final prediction appears. Static-trace measures are not applied to episodes.
+
+%============================================================================
+% CHANGE 5a -- Sections/6_experiments.tex: setup paragraph, last sentence
+%============================================================================
+% WHY:
+%   CRITICAL (scientific honesty): the text says Qwen-3.5-27B CoT is incomplete on
+%   'nine' datasets. The stored records show TEN datasets, with only 7-101 of 150
+%   answers (uniadilr_hgc: 7; matter_to_mechanism: 19; medr_bench/llm4bio: 22).
+%   Those cells average the completed answers only, while empty/truncated replies of
+%   all other models count as wrong. Reviewers must be told n and the rule.
+% HOW: replace the old sentence with the new one
+%----------------------------------------------------------------------------
+% OLD:
+% Qwen-3.5-27B's CoT run is incomplete on nine static datasets, whose scores rest on the samples completed.
+% NEW:
+Empty or truncated replies count as incorrect. For Qwen-3.5-27B under CoT, provider errors left only 7--101 of 150 answers on ten generation datasets (\texttt{house\_md}, \texttt{hypogen}, \texttt{llm4biohypogen}, \texttt{matter\_to\_mechanism}, \texttt{medcasereasoning}, \texttt{medr\_bench}, \texttt{neulr}, \texttt{proof\_writer}, \texttt{uncommonsense}, \texttt{uniadilr\_hgc}); these cells average the completed answers only, are never bolded, and should be read with caution.
+
+%============================================================================
+% CHANGE 5b -- Table 1 (6_experiments.tex): proof_writer row, bold
+%============================================================================
+% WHY:
+%   The bold 'best' 59.3 (Qwen-3.5-27B CoT) rests on only 27 of 150 answers.
+%   Bold the best complete score instead: 52.7 (Gemma-4-E2B CoT).
+% HOW: replace the row start
+%----------------------------------------------------------------------------
+% OLD:
+% \texttt{proof\_writer} & Gen & EM & 37.3 & 40.0 & 40.0 & 44.0 & 42.0 & 47.3 & 34.0 & \textbf{59.3} & 39.3 & 17.3 & 15.3 & 52.7 & ...
+% NEW:
+% \texttt{proof\_writer} & Gen & EM & 37.3 & 40.0 & 40.0 & 44.0 & 42.0 & 47.3 & 34.0 & 59.3 & 39.3 & 17.3 & 15.3 & \textbf{52.7} & ...   (rest of the row unchanged)
+
+%============================================================================
+% CHANGE 5c -- Sections/6_experiments.tex: EVERYTHING AFTER \end{table}
+%============================================================================
+% WHY:
+%   PAGE LIMIT (main lever, ~1.3 pages): the radar+histogram figure* and the
+%   horizon figure move to the appendix (CHANGE 9); Sec 5.3 and 5.4 merge into one
+%   paragraph that keeps the key numbers. Figures 'first question' (0.72 width) and
+%   'Athena' (0.85) are placed BEFORE their sections so they no longer float past
+%   Limitations. 'Models' paragraph: Average row mixes IO incl. interactive rows
+%   with CoT static-only, so it looks like CoT helps every model; on static rows
+%   (computed from Table 1) CoT helps 6/8 and HURTS Gemma-4-31B and Qwen-3.5-2B
+%   (-2.4 each) -- now stated. 'Interactive tasks are the hardest' -> 'among the
+%   hardest' (RCA100 24.6 and house_md 26.2 are lower than ddxplus 32.5).
+%   Sec 5.5: missing final period added; duplicated 'since abduction proceeds...' removed.
+%   Old labels sec:reasoning_length / fig:horizon_scaling are kept, so no ref breaks.
+% HOW: keep lines 1..\end{table} (with 5a and 5b applied); replace everything after it
+%----------------------------------------------------------------------------
+
+
+\label{sec:experiments}
+\label{sec:results}
+
+\graphicspath{{prism-uploads/}{figures/}{./}}
+
+Table~\ref{tab:main_results_all_models} reports final-answer scores for eight LLMs and the Jev decision system; the subsections below explain what drives them and what the reasoning traces and interaction histories add.
+
+\subsection{What determines performance across benchmarks?}
+\label{sec:main_results}
+
+\textbf{Task format.} Proposing an explanation is harder than recognizing it: where one dataset is posed both ways, the row average falls from 84.5 (SCS) to 38.2 (Gen) on \texttt{art} and from 82.8 to 47.5 on \texttt{ecare}. Allowing several answers also costs accuracy for every model---10.6 points on average, up to 27.7 for Qwen-3.5-2B (Appendix~\ref{sec:single_vs_multiple_choice}).
+
+\textbf{Chain-of-thought.} Averaged over the static rows, CoT raises accuracy for six of the eight LLMs---most for Qwen-3.5-4B (43.4$\to$51.4)---and lowers it for Gemma-4-31B and Qwen-3.5-2B (2.4 points each). It helps where the explanation must be derived by chaining premises or findings---\texttt{neulr} (Qwen-3.5-4B 13.3$\to$68.0), \texttt{proof\_writer} (Gemma-4-E2B 15.3$\to$52.7), \texttt{medcasereasoning} (Qwen-3.5-4B 23.3$\to$42.7)---but often hurts open-ended hypothesis generation: \texttt{uniadilr\_hgc} (Gemma-4-E4B 40.0$\to$2.7), \texttt{matter\_to\_mechanism} (GPT-5.6-Luna 76.7$\to$64.7), \texttt{uncommonsense} (Qwen-3.5-2B 34.7$\to$18.7).
+
+\textbf{Delivery mode and models.} Interactive and passive tasks are among the hardest: the best model reaches 58.0 on \texttt{vivabench}, 44.0 on \texttt{athena\_bench}, and only 10.0 on \texttt{cloud\_opsbench}, where four of the eight LLMs score 0.0. Gemini-3.8-Flash has the highest average in both modes and the best score on four of the seven interactive and passive rows; the smallest model, Qwen-3.5-2B, is last. IO averages include the interactive and passive rows, which have no CoT variant, so the IO and CoT columns of the Average row are not directly comparable.
+
+\subsection{Can a System One decision system perform abductive selection?}
+\label{sec:jev}
+
+Only in a narrow sense. Jev chooses among the supplied candidates without writing an explanation, so we evaluate it only on SCS, the discriminative half of abduction. On the six single-choice tasks it averages 62.0, above every small LLM under IO (48.3--59.3) but below every large one (64.7--74.5). It is near the top on short commonsense explanation choices---88.0 on \texttt{ecare}, where only two of the sixteen LLM cells are higher, and 86.7 on \texttt{art}---but falls far behind when the candidates must be weighed against many clues in a long case: 36.0 vs.\ 73.3 on \texttt{true\_detective} and 50.7 vs.\ 74.7 on \texttt{diagnosisarena}. A fast decision system thus covers explanation \emph{selection} over compact evidence, but not the evidence integration that longer abductive cases require.
+
+\subsection{Which trace properties accompany a correct explanation?}
+\label{sec:cognitive_profiles_and_quality_gap}
+\label{sec:reasoning_length}
+
+For Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna, correct and incorrect CoT traces differ most in whether the correct explanation stays in play: the helpful-step fraction (0.72 vs.\ 0.19) and the rate at which the gold hypothesis remains under consideration (0.36 vs.\ 0.16) drop sharply in failures. Both are judged against the gold answer and partly restate correctness, but gold-free measures point the same way: correct traces cover more observations (0.72 vs.\ 0.61) and compare candidates more exhaustively (0.62 vs.\ 0.52), whereas the \emph{form} of the trace---directionality, prior-knowledge use, anchoring point---barely differs (Appendix~\ref{app:trace_profiles}). Longer traces do not help either: within each dataset, accuracy falls from 68\% for the shortest fifth of CoT replies to 37\% for the longest, for every one of the eight LLMs, and the decline beyond about six steps holds at every input length (Appendix~\ref{app:reasoning_length}). The relation is associational---harder cases elicit longer traces---but additional steps do not recover an explanation the model has not found early.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_relative_position_heatmap.pdf}
+    \subcaption{}
+    \label{fig:position_heatmaps_a}
+  \end{subfigure}%
+  \hfill
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_correct_incorrect_heatmap.pdf}
+    \subcaption{}
+    \label{fig:position_heatmaps_b}
+  \end{subfigure}
+  \caption{Judged trace measures by relative position in the chain (0--100\%), pooled over the eight LLMs. \textbf{(a)} Mean, each row min--max scaled. \textbf{(b)} Correct-minus-incorrect difference, computed within each dataset and averaged; each row scaled symmetrically around zero, so \textbf{blue} marks positions where correct chains score higher and \textbf{red} where incorrect chains score higher. Row intensities are not comparable across measures.}
+  \label{fig:position_heatmaps}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.72\linewidth]{Sections/fig_first_question_per_model.pdf}
+  \caption{Final-answer accuracy of interactive episodes whose \emph{first} action was judged irrelevant (gray) or relevant (color) to the gold answer, per task and pooled (\emph{All}), per model; 95\% Wilson intervals. $\times$: relevant-to-irrelevant ratio over all tasks.}
+  \label{fig:first_question}
+\end{figure}
+
+\subsection{Where in the chain do correct and incorrect reasoning diverge?}
+\label{sec:chain_position}
+
+On average, traces follow the order abduction prescribes (Figure~\ref{fig:position_heatmaps_a}): observations concentrate in the first fifth of the chain, backtracking and uncertainty peak near the midpoint, and the anchoring point, the gold hypothesis, and step directionality peak in the last fifth---evidence first, commitment last. Splitting by outcome (Figure~\ref{fig:position_heatmaps_b}) shows where failures begin. \emph{Unresolved contradiction} is higher in incorrect chains from the very first steps, before any hypothesis is anchored, making it the earliest trace signal of an eventual error. Around the midpoint, uncertainty, backtracking, branchiness, and observation mentions are all higher in incorrect chains, so mid-chain hedging and revisiting accompany wrong answers rather than successful self-correction. The gold hypothesis and helpful steps favor correct chains throughout and increasingly toward the end, partly by construction.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Sections/fig_athena_belief_revision.pdf}
+  \caption{AthenaBench (passive): share of the 50 episodes per model whose predicted actor never changed (right or wrong from the first turn), changed without changing the outcome, or changed from wrong to right or right to wrong between the first and last turn.}
+  \label{fig:athena_revision}
+\end{figure}
+
+\subsection{Does asking the right question first decide an interactive diagnosis?}
+\label{sec:first_question}
+
+Largely, yes. Only 35\% of interactive episodes open with an action judged relevant to the gold answer, but those end correctly 2.4 times as often as the rest (39.7\% vs.\ 16.6\%), and every model shows the effect, with ratios from $\times$1.8 (Gemma-4-31B, Qwen-3.5-27B) to $\times$3.1 (Qwen-3.5-2B) (Figure~\ref{fig:first_question}). Relevance then declines as the episode proceeds for every model (Appendix~\ref{app:relevance_by_step}), so later questions rarely repair a poor start. The relation is associational---a model that understands the case both asks better and diagnoses better---but it shows that the quality of evidence \emph{seeking}, invisible in final-answer accuracy, is measurable from the first step.
+
+\subsection{Do models revise their hypothesis as passive evidence accumulates?}
+\label{sec:athena_revision}
+
+Rarely. Each AthenaBench case reveals 15--25 evidence items over four to six turns, yet in 78.5\% of the 400 episodes the model names the same actor at every turn (Figure~\ref{fig:athena_revision}). Revisions seldom help: only 7 episodes move from a wrong first prediction to a correct final one, and 2 move the other way, so final accuracy nearly equals first-turn accuracy (Gemini-3.8-Flash 40\%$\to$44\%, GPT-5.6-Luna 24\%$\to$30\%, unchanged for the other six LLMs). Frequent revision is not sufficient either: Qwen-3.5-2B changes its prediction in 48\% of episodes but never reaches the correct actor. Passive delivery thus exposes what static evaluation cannot---models anchor on the explanation formed from the first evidence and do not update it as the evidence accumulates.
+
+%============================================================================
+% CHANGE 6 -- Sections/7_future_work.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL: 'The present draft has four material limitations. First, the final task
+%   roster ... are not yet documented consistently' -- tells reviewers the paper is
+%   unfinished. Section titled 'Future Work' held a Limitations subsection plus two
+%   speculative subsections. Replaced by one honest Limitations paragraph (single
+%   unvalidated judge, +-7-8 / +-13 intervals, simulator dependence, IO-only episodes,
+%   traces not faithful). \label{sec:future_work} kept. About 0.6 page shorter.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\FloatBarrier
+
+\section{Limitations}
+\label{sec:future_work}
+\label{sec:limitations}
+
+Comparisons across domains, hypothesis formulations, and delivery modes are observational: the source datasets differ in content, difficulty, and answer space, so category-level differences do not isolate a single cause. All free-form answers, trace measures, and step-relevance labels come from a single LLM judge (gpt-oss-120b) whose agreement with human annotators we have not measured. With 50 records per dataset, a static score has a 95\% interval of roughly $\pm$7--8 points and an episode score of up to $\pm$13, so small differences between models should not be over-read. Interactive results depend on the simulated patient or examiner (gpt-4o-mini) and on recorded environments, and passive and interactive tasks are run under IO only. Finally, written traces are observable outputs, not faithful records of the computation that produced the answer. Future work should validate the judges on human-annotated samples and add controlled variants that change one task property at a time.
+
+%============================================================================
+% CHANGE 7 -- Sections/8_conclusion.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   The conclusion claims results the paper does not show: 'accuracy depends on ...
+%   context length' (appendix only) and 'larger candidate sets make selection harder'
+%   (never tested). It also omits the Jev, interactive and passive findings.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+AbductionBench organizes abductive evaluation around what models must do with hypotheses, where tasks are applied, and how evidence becomes available, and it reports reasoning traces and interaction histories alongside final answers. Across eight LLMs and 27 datasets, generating an explanation is much harder than selecting one, CoT helps derivation-heavy tasks but often hurts open-ended generation, and longer traces go with lower accuracy. A non-LLM decision system matches small LLMs on selection over compact evidence but not on long cases. Beyond static tasks, the first question of an interactive diagnosis already signals its outcome, and models rarely revise their first hypothesis when evidence arrives passively. Evaluating abduction therefore requires looking at how evidence is sought and used, not only at the final answer, while keeping clear limits on what written traces reveal about internal reasoning.
+
+%============================================================================
+% CHANGE 8a -- Sections/ethics.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL: still the ICLR TEMPLATE text '(This section is recommended ...)' -- it
+%   prints in the PDF. Either delete the \input or use this. It does not count
+%   toward the page limit. It addresses clinical data and threat-actor content.
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\subsection*{Ethics statement}
+
+AbductionBench is built from publicly released datasets, used under their licenses; we add no new human-subject data and collect no personal information. The clinical datasets contain de-identified or synthetic cases, and model outputs on them are not medical advice. AthenaBench describes real threat actors and their publicly reported techniques; we use it only to evaluate attribution and release no new offensive capability. Simulated patients and examiners are played by an LLM, not by people. Automated judging can carry the judge model's biases, which we note as a limitation.
+
+%============================================================================
+% CHANGE 8b -- Sections/reproducibility.tex (FULL REPLACEMENT)
+%============================================================================
+% WHY:
+%   CRITICAL: still the ICLR TEMPLATE text. A benchmark paper without a
+%   reproducibility statement is a weak spot; this one points to the right appendices
+%   and promises code/outputs (anonymized supplement, no GitHub link: double-blind).
+% HOW: replace the whole file
+%----------------------------------------------------------------------------
+\subsection*{Reproducibility statement}
+
+Section~\ref{sec:methodology} and Appendix~\ref{app:datasets} list every dataset, configuration, and adaptation; Section~\ref{sec:results} and Appendix~\ref{app:evaluation_details} give the models, decoding settings, turn limits, simulators, and judges; Appendix~\ref{app:metrics} defines every metric; and Appendix~\ref{app:prompts} reproduces the judge prompts. Records are sampled with a fixed seed, and every response, judge verdict, and metric is stored per sample. We will release the evaluation framework, dataset adapters, sampled record identifiers, and all model outputs upon publication; an anonymized copy is provided as supplementary material.
+
+%============================================================================
+% CHANGE 9 -- Sections/Appendix/appendix.tex (4 edits)
+%============================================================================
+% WHY:
+%   (a) duplicate \label{app:metrics} (also defined in metrics.tex) -> LaTeX warning.
+%   (b) DELETE subsubsection 'Per-Model Correctness, IO vs. CoT' (Fig. per_model_
+%       correctness): its caption says CoT improves 5 models and is flat for one and
+%       hurts 2, then names a 3rd loser (qwen3-5-2b); its text says 4/1/3; Table 1
+%       gives 6 up / 2 down. Contradicts itself and the main table; not referenced.
+%   (c) the undefined '??' (app:reasoning_length) and the moved figures: paste the
+%       block below right BEFORE '\subsubsection{Reasoning Length by Input Context
+%       Length}', and change that heading to '\paragraph{Reasoning length by input
+%       context length.}' (it currently sits under 'relevance by step', wrong parent).
+%   (d) internal run names (\textsc{qwen3-5-27b-openrouter}, \textsc{gemma-4-e2b-local},
+%       ...) -> paper names (Qwen-3.5-27B, Gemma-4-E2B, ...). Check also the panel titles
+%       inside fig_relative_position_heatmap_by_model.pdf.
+% HOW: (a) delete the line '\label{app:metrics}' right after '\section{Metrics}'; (b) delete the block below marked REMOVED; (c) paste the block; (d) replace names
+%----------------------------------------------------------------------------
+% ---- (b) REMOVED block (delete from appendix.tex):
+% \subsubsection{Per-Model Correctness, IO vs.\ CoT}
+% \label{sec:by_model_correctness}
+% \FloatBarrier
+% 
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.8\linewidth]{fig_viz_per_model_bar_all.pdf}
+%   \caption{\emph{Mean correctness per model, averaged across datasets, for the \textsc{io} and \textsc{cot} prompting variants.} Models are ordered by \textsc{cot} correctness, descending. \textsc{cot} improves correctness for five of eight models, is roughly flat for \textsc{gemma-4-e2b-local}, and reduces it slightly for \textsc{gemma-4-31b-it} and \textsc{gemma-4-e4b-local}; the largest gain is \textsc{qwen3-5-4b-local} ($+0.102$) and the largest loss is negligible ($-0.015$, \textsc{qwen3-5-2b-local}).}
+%   \label{fig:per_model_correctness}
+% \end{figure}
+% 
+% Figure~\ref{fig:per_model_correctness} reports mean correctness by model,
+% averaged across datasets, for the \textsc{io} and \textsc{cot} prompting
+% conditions separately. \textsc{cot} is not a uniform win: it improves
+% \textsc{gemini-3.8-flash}, \textsc{gpt-5.6-luna}, \textsc{qwen3-5-27b}, and
+% \textsc{qwen3-5-4b-local}, leaves \textsc{gemma-4-e2b-local} essentially
+% unchanged, and slightly \emph{hurts} \textsc{gemma-4-31b-it},
+% \textsc{gemma-4-e4b-local}, and \textsc{qwen3-5-2b-local}. There is no clean
+% split by model family or by parameter count---both \textsc{gemma} variants
+% that benefit least from \textsc{cot} sit on opposite ends of the size
+% range---so whatever determines whether a model benefits from chain-of-thought
+% prompting on this task is not simply "bigger models benefit more" or
+% "family X benefits, family Y doesn't." Overall correctness itself does track
+% scale reasonably well within a family (e.g. \textsc{qwen3-5-27b} $>$
+% \textsc{qwen3-5-4b-local} $>$ \textsc{qwen3-5-2b-local} under both
+% conditions), but the \textsc{cot} effect is not explained by that same
+% ordering.
+% 
+% 
+% ---- (c) block to paste:
+\FloatBarrier
+\subsection{Trace Profiles and Reasoning Length}
+\label{app:trace_profiles}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[c]{0.40\linewidth}
+    \centering
+    \subcaption{\textbf{\small Trace profiles}}
+    \label{fig:cognitive_profile_radar}
+    \includegraphics[width=\linewidth]{fig_cognitive_profile_radar_11_metrics.pdf}
+  \end{subfigure}%
+  \hspace{0.03\linewidth}%
+  \begin{subfigure}[c]{0.55\linewidth}
+    \centering
+    \subcaption{\textbf{\small Correct vs.\ incorrect traces}}
+    \label{fig:quality_gap_histogram}
+    \includegraphics[width=\linewidth]{fig_quality_gap_11_metrics_histogram.pdf}
+  \end{subfigure}
+  \caption{Eleven normalized trace measures (0--1) for the CoT traces of Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna. \textbf{(a)} Mean per model. \textbf{(b)} Mean for correct ($y=1$) and incorrect ($y=0$) answers. Helpful Fraction and Gold Alive are judged against the gold answer.}
+  \label{fig:cognitive_profile_and_quality_gap}
+\end{figure}
+
+Models reach similar accuracy through different traces (Figure~\ref{fig:cognitive_profile_radar}): Gemma-4-31B covers the most observations and compares candidates most exhaustively, whereas GPT-5.6-Luna has the highest share of helpful steps and prior-knowledge use and commits to its answer earliest. Correct and incorrect traces (Figure~\ref{fig:quality_gap_histogram}) differ most in helpful-step fraction (0.72 vs.\ 0.19) and gold-hypothesis retention (0.36 vs.\ 0.16), moderately in observation coverage (0.72 vs.\ 0.61) and comparison exhaustiveness (0.62 vs.\ 0.52), and barely in directionality (0.70 vs.\ 0.69), prior knowledge (0.44 vs.\ 0.45), and anchoring point (0.50 vs.\ 0.50); failed traces are more diverse (0.70 vs.\ 0.59) and contain more useless steps (0.61 vs.\ 0.55).
+
+\subsubsection{Accuracy and Reasoning Length}
+\label{app:reasoning_length}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_horizon_scaling.jpeg}
+    \subcaption{}
+    \label{fig:horizon_scaling}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figS4_accuracy_vs_reasoning_length.pdf}
+    \subcaption{}
+    \label{fig:accuracy_vs_reasoning_length}
+  \end{subfigure}
+  \caption{\textbf{(a)} Accuracy by CoT trace length (steps) for three models against each model's IO baseline (dashed); bands are $\pm$SEM, points with $n<5$ omitted. \textbf{(b)} CoT accuracy by reasoning-length quintile for all eight LLMs, computed within each dataset and model (1 = shortest fifth of replies), with 95\% Wilson bands; dotted: all models pooled.}
+  \label{fig:reasoning_length}
+\end{figure}
+
+Accuracy is highest for short chains---79.8 for Gemini-3.8-Flash and 77.1 for GPT-5.6-Luna at two steps, 81.0 for Gemma-4-31B at four---all above their IO baselines (Figure~\ref{fig:horizon_scaling}). Beyond six steps, GPT-5.6-Luna falls to 33.3 and Gemini-3.8-Flash to 59.4 at ten steps, both below IO, while Gemma-4-31B stays near its baseline. Within every model, accuracy declines monotonically from the shortest to the longest fifth of CoT replies, from 68\% to 37\% pooled; Qwen-3.5-2B falls from 40\% to 11\% (Figure~\ref{fig:accuracy_vs_reasoning_length}).
+
+% ---- (d) replacements: \textsc{gemma-4-e2b-local}->Gemma-4-E2B, \textsc{gemma-4-e4b-local}->Gemma-4-E4B, \textsc{qwen3-5-27b-openrouter}->Qwen-3.5-27B, \textsc{qwen3-5-27b}->Qwen-3.5-27B, \textsc{qwen3-5-2b-local}->Qwen-3.5-2B, \textsc{qwen3-5-4b-local}->Qwen-3.5-4B, \textsc{gemma-4-31b-it}->Gemma-4-31B, \textsc{gemini-3.8-flash}->Gemini-3.8-Flash, \textsc{gpt-5.6-luna}->GPT-5.6-Luna
+
+%============================================================================
+% CHANGE 10 -- Sections/Appendix/dataset.tex (dataset table, 7 cells)
+%============================================================================
+% WHY:
+%   The table disagrees with Table 1 and with the taxonomy:
+%   DiagnosisArena is posed as selection (SCS/MCS) in Table 1, marked G  -> Sel
+%   RCA100 and UniADILR-HGc are generation in Table 1, marked Sel      -> G
+%   AthenaBench is the passive dataset, marked S                        -> P
+%   'Cyber Security' / 'AI Systems' are not taxonomy names -> Cybersecurity / Agentic Systems
+%   CLIMATE-FEVER year is \citeyear{salimi2026cedar} (our paper!) -> its own citation
+%   Legend has no P.
+% HOW: edit the cells as listed
+%----------------------------------------------------------------------------
+% DiagnosisArena row:   ... & Healthcare: Clinical Diagnosis & S & G\\        ->  ... & S & Sel\\
+% RCA100 row:           ... & S & Sel\\                                         ->  ... & S & G\\
+% UniADILR-HGc row:     ... & S & Sel\\                                         ->  ... & S & G\\
+% AthenaBench row:      Cyber Security: Threat Actor Attribution & S & G\\    ->  Cybersecurity: Threat Actor Attribution & P & G\\
+% AgentRx row:          AI Systems: Agent Failure Diagnosis                    ->  Agentic Systems: Agent Failure Diagnosis
+% CLIMATE-FEVER row:    (\citeyear{salimi2026cedar})                           ->  (\citeyear{diggelmann2021climatefeverdatasetverificationrealworld})
+% Caption:  Data Delivery Mode: \textbf{I} = Interactive, \textbf{S} = Static.
+%       ->  Data Delivery Mode: \textbf{S} = Static, \textbf{P} = Passive, \textbf{I} = Interactive.
+
+%============================================================================
+% CHANGE 11 -- Sections/Appendix/evaluation_details.tex (3 edits)
+%============================================================================
+% WHY:
+%   'macro F1' is wrong (set F1 averaged over items); a stray ': .' ends the
+%   segmentation sentence; the failed-request rule for Qwen-3.5-27B must be documented.
+% HOW: replace as listed
+%----------------------------------------------------------------------------
+% (1) (reporting exact set match and macro F1)  ->  (reporting exact set match and set F1 averaged over items)
+% (2) before per-step metrics are calculated: .  ->  before per-step metrics are calculated.
+% (3) append after '... and 20 turns for all other datasets.':
+Empty or truncated replies are scored as incorrect. Under CoT, about 1,100 Qwen-3.5-27B requests on ten generation datasets failed with provider errors after retries; its scores on those datasets average the 7--101 completed answers per dataset rather than all 150.
