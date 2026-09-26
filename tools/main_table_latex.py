@@ -125,14 +125,26 @@ def tt(name: str) -> str:
     return "\\texttt{" + name.replace("_", "\\_") + "}"
 
 
-def row(first, regime, metric, cells, solid=True):
-    reg = f"\\solidsepcell{{{regime}}}" if solid else regime
+def row(first, regime, metric, cells, grouped=False):
+    """One table row. `grouped`: the dataset has several regime rows, joined by
+    a solid vertical line on the left of the Regime column."""
+    reg = f"\\abRegime{{{regime}}}" if grouped else regime
     return f"{first} & {reg} & {metric} & " + " & ".join(cells) + " \\\\"
+
+
+# Vertical guide lines drawn inside the cells, one row high each (the table's own
+# strut height), so consecutive rows join into one continuous line and the
+# \addlinespace between datasets breaks it: a solid line groups a dataset's
+# regimes, a dotted one groups the two metrics (EM, F1) of its MCS regime.
+MACROS = r"""\makeatletter
+\providecommand{\abRegime}[1]{\rlap{\hspace{-\tabcolsep}\vrule width 0.5pt height \ht\@arstrutbox depth \dp\@arstrutbox}#1}
+\providecommand{\abMetric}[1]{\rlap{\hspace{-\tabcolsep}\lower\dp\@arstrutbox\vbox to \dimexpr\ht\@arstrutbox+\dp\@arstrutbox\relax{\cleaders\vbox to 1.2pt{\vss\hbox{\vrule width 0.55pt height 0.55pt}}\vfill}}#1}
+\makeatother"""
 
 
 def main() -> int:
     out = Path(sys.argv[1])
-    L = []
+    L = [MACROS]
     L.append(r"\begin{table*}[t]")
     L.append(r"\centering")
     L.append(r"\scriptsize")
@@ -174,8 +186,8 @@ def main() -> int:
             cells = []
             for mid, _ in MODELS:
                 cells += [static_cell(ds, mid, "io", prefix, key), static_cell(ds, mid, "cot", prefix, key)]
-            metric = f"\\sepcell{{{lab}}}" if prefix == "MCS" else lab
-            L.append(row(tt(ds) if i == 0 else "", reg, metric, cells))
+            metric = f"\\abMetric{{{lab}}}" if prefix == "MCS" else lab
+            L.append(row(tt(ds) if i == 0 else "", reg, metric, cells, grouped=len(regimes) > 1))
         L.append(r"\addlinespace[1.2pt]")
     sub("1b. Generation")
     for ds, key, lab in STATIC_GENERATION:
@@ -198,7 +210,7 @@ def main() -> int:
                 cells = []
                 for mid, _ in MODELS:
                     cells += [episode_cell(ds, mid, tprefix), "--"]
-                L.append(row(tt(ds) if i == 0 else "", reg, lab, cells))
+                L.append(row(tt(ds) if i == 0 else "", reg, lab, cells, grouped=len(regimes) > 1))
             if block is INTERACTIVE:
                 L.append(r"\addlinespace[1.2pt]")
 
