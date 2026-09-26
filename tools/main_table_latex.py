@@ -7,10 +7,9 @@ at T=0.7; score = mean over every scored sample). Interactive and sequential:
 the two episode runs (50 records each, asked once). A score is the mean of the
 record-level metric -- never a report's cached value.
 
-A cell is "--" when the run does not exist by design (CoT for the io-only
-interactive / sequential protocols) and "--$^\\dagger$" when it was started but
-covers fewer than 90 % of the planned samples (Qwen3.5-27B's CoT pass stopped
-early on several static datasets).
+A cell is "--" only where the run does not exist by design (CoT for the io-only
+interactive / sequential protocols). A run that stopped early (Qwen3.5-27B's CoT
+pass on several static datasets) is scored on the samples it completed.
 """
 
 from __future__ import annotations
@@ -94,8 +93,10 @@ def score(run: str, dataset: str, model: str, template_glob: str, key: str, plan
     recs = [r for r in _records(paths[0]) if r.get("status") in ("ok", "empty", "truncated")]
     vals = [(r.get("metrics") or {}).get(key) for r in recs]
     vals = [v for v in vals if isinstance(v, (int, float))]
-    if len(recs) < MIN_COVERAGE * planned or not vals:
-        return "--$^\\dagger$"
+    if not vals:
+        return "--"
+    # Scored on the samples that exist, also where a run stopped early
+    # (Qwen3.5-27B's CoT pass covers 7-101 of 150 samples on some datasets).
     return f"{100 * np.mean(vals):.1f}"
 
 
@@ -158,8 +159,7 @@ def main() -> int:
              r"Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, "
              r"EM (for Gen) = exact match of the written answer, RC = root-cause match, Proxy = judge-scored closest "
              r"explanation, Set-EM = exact premise-set match, "
-             r"JRA = joint root-cause accuracy (fault type and component). \texttt{--}$^\dagger$: run covers "
-             r"fewer than 90\% of the planned samples (not reported).}")
+             r"JRA = joint root-cause accuracy (fault type and component).}")
     L.append(r"\label{tab:main_results_all_models}")
     L.append(r"\resizebox{\linewidth}{!}{%")
     L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + "}")
