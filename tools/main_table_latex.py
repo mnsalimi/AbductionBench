@@ -55,8 +55,8 @@ STATIC_GENERATION = [
     ("hypogen", "flip_judged", "LLM-J"), ("llm4biohypogen", "hypothesis_judged", "LLM-J"),
     ("matter_to_mechanism", "hypothesis_judged", "LLM-J"), ("medcasereasoning", "diagnosis_judged", "LLM-J"),
     ("medr_bench", "diagnosis_judged", "LLM-J"), ("neulr", "premise_judged", "LLM-J"),
-    ("proof_writer", "exact_match", "EM"), ("uncommonsense", "proxy_closest_explanation_score", "Proxy"),
-    ("uniadilr_hgc", "premise_set_match", "Set-EM"),
+    ("proof_writer", "exact_match", "EM"), ("uncommonsense", "proxy_closest_explanation_score", "LLM-J"),
+    ("uniadilr_hgc", "premise_set_match", "EM"),
 ]
 # (dataset, [(regime, template prefix, metric label)]) -- final_answer_accuracy
 INTERACTIVE = [
@@ -124,11 +124,40 @@ def tt(name: str) -> str:
     return "\\texttt{" + name.replace("_", "\\_") + "}"
 
 
+COLUMN_VALUES: list[list[float]] = []   # per model column, every value shown in it
+ROW_AVERAGES: list[float] = []
+
+
+def _num(cell: str) -> float | None:
+    try:
+        return float(cell)
+    except ValueError:
+        return None
+
+
+def bold_max(cells: list[str]) -> list[str]:
+    """The row's highest value in bold (all of them, if tied)."""
+    nums = [_num(c) for c in cells]
+    top = max((n for n in nums if n is not None), default=None)
+    return [f"\\textbf{{{c}}}" if n is not None and n == top else c for c, n in zip(cells, nums)]
+
+
 def row(first, regime, metric, cells, grouped=False):
-    """One table row. `grouped`: the dataset has several regime rows, joined by
-    a solid vertical line on the left of the Regime column."""
+    """One table row: the best value bolded and the row mean appended (Avg.).
+    `grouped`: the dataset has several regime rows, joined by a solid vertical
+    line on the left of the Regime column."""
+    nums = [_num(c) for c in cells]
+    if not COLUMN_VALUES:
+        COLUMN_VALUES.extend([] for _ in cells)
+    for col, n in zip(COLUMN_VALUES, nums):
+        if n is not None:
+            col.append(n)
+    present = [n for n in nums if n is not None]
+    avg = f"{np.mean(present):.1f}" if present else "--"
+    if present:
+        ROW_AVERAGES.append(float(avg))
     reg = f"\\abRegime{{{regime}}}" if grouped else regime
-    return f"{first} & {reg} & {metric} & " + " & ".join(cells) + " \\\\"
+    return f"{first} & {reg} & {metric} & " + " & ".join(bold_max(cells)) + f" & {avg} \\\\"
 
 
 # Vertical guide lines drawn inside the cells, one row high each (the table's own
@@ -157,18 +186,20 @@ def main() -> int:
              r"score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed "
              r"(EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). "
              r"Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, "
-             r"EM (for Gen) = exact match of the written answer, RC = root-cause match, Proxy = judge-scored closest "
-             r"explanation, Set-EM = exact premise-set match, "
-             r"JRA = joint root-cause accuracy (fault type and component).}")
+             r"EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), "
+             r"RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). "
+             r"\textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes "
+             r"reported. \textbf{Average}: mean of each column over all rows with a value in it (CoT columns "
+             r"therefore cover the static datasets only).}")
     L.append(r"\label{tab:main_results_all_models}")
     L.append(r"\resizebox{\linewidth}{!}{%")
-    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + "}")
+    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + " c}")
     L.append(r"\toprule")
     L.append(r"\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & "
-             + " & ".join(f"\\multicolumn{{2}}{{c}}{{\\textbf{{{n}}}}}" for _, n in MODELS) + r" \\")
+             + " & ".join(f"\\multicolumn{{2}}{{c}}{{\\textbf{{{n}}}}}" for _, n in MODELS) + r" & \textbf{Avg.} \\")
     L.append(" ".join(f"\\cmidrule(lr){{{4 + 2 * i}-{5 + 2 * i}}}" for i in range(len(MODELS))))
-    L.append("& & & " + " & ".join(r"\textbf{IO} & \textbf{CoT}" for _ in MODELS) + r" \\")
-    ncol = 3 + 2 * len(MODELS)
+    L.append("& & & " + " & ".join(r"\textbf{IO} & \textbf{CoT}" for _ in MODELS) + r" & \\")
+    ncol = 4 + 2 * len(MODELS)
 
     def section(title):
         L.append(r"\midrule")
@@ -206,6 +237,10 @@ def main() -> int:
             if block is INTERACTIVE:
                 L.append(r"\addlinespace[1.2pt]")
 
+    L.append(r"\midrule")
+    col_avgs = [f"{np.mean(v):.1f}" if v else "--" for v in COLUMN_VALUES]
+    L.append(r"\textbf{Average} & & & " + " & ".join(bold_max(col_avgs))
+             + f" & {np.mean(ROW_AVERAGES):.1f} \\\\")
     L.append(r"\bottomrule")
     L.append(r"\end{tabular}%")
     L.append(r"}")
