@@ -20,6 +20,8 @@ import glob
 import sys
 from pathlib import Path
 
+import re
+
 import numpy as np
 import orjson
 
@@ -122,7 +124,39 @@ def episode_cell(dataset, model, tprefix):
     return "--"
 
 
+JEV = "jev-openrouter"
+_JEV_ANSWER = re.compile(r"^\s*Answer:\s*(.+?)\s*$", re.S)
+
+
+def jev_cell(dataset: str, prefix: str) -> str:
+    """Jev (System One, IO only, single-choice selection only).
+
+    Its replies were stored as "Answer: X", and for letter labels the scorer
+    read the "A" of "Answer" -- DiagnosisArena and True Detective scored as if
+    every answer were A. The letter is re-read from the reply here (the rule
+    tools/rescore_jev_answers.py applies with the dataset's own adapter; the two
+    agree on all six datasets), without rewriting the records.
+    """
+    if prefix != "SCS":
+        return "--"
+    paths = glob.glob(f"{STATIC_RUN}/datasets/{dataset}/{JEV}/io_SCS*@*/records.jsonl")
+    if not paths:
+        return "--"
+    vals = []
+    for r in _records(paths[0]):
+        if r.get("status") != "ok":
+            continue
+        m = _JEV_ANSWER.match((r.get("response") or {}).get("content") or "")
+        label = m.group(1).strip() if m else None
+        vals.append(1.0 if label is not None and label == str((r.get("reference") or {}).get("gold_label")) else 0.0)
+    return f"{100 * np.mean(vals):.1f}" if vals else "--"
+
+
+DISPLAY = {"aiops2025": "RCA100"}
+
+
 def tt(name: str) -> str:
+    name = DISPLAY.get(name, name)
     return "\\texttt{" + name.replace("_", "\\_") + "}"
 
 
@@ -144,7 +178,7 @@ def bold_max(cells: list[str]) -> list[str]:
     return [f"\\textbf{{{c}}}" if n is not None and n == top else c for c, n in zip(cells, nums)]
 
 
-def row(first, regime, metric, cells, grouped=False):
+def row(first, regime, metric, cells, grouped=False, in_average=True):
     """One table row: the best value bolded and the row mean appended (Avg.).
     `grouped`: the dataset has several regime rows, joined by a solid vertical
     line on the left of the Regime column."""
@@ -152,7 +186,7 @@ def row(first, regime, metric, cells, grouped=False):
     if not COLUMN_VALUES:
         COLUMN_VALUES.extend([] for _ in cells)
     for col, n in zip(COLUMN_VALUES, nums):
-        if n is not None:
+        if n is not None and in_average:     # F1 rows stay out of the Average row
             col.append(n)
     present = [n for n in nums if n is not None]
     avg = f"{np.mean(present):.1f}" if present else "--"
@@ -195,19 +229,22 @@ def main() -> int:
              r"EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), "
              r"RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). "
              r"\textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes "
-             r"reported. \textbf{Average}: mean of each column over all rows with a value in it (CoT columns "
-             r"therefore cover the static datasets only).}")
+             r"reported. \textbf{Average}: mean of each column over all rows with a value in it, F1 rows "
+             r"excluded (CoT columns therefore cover the static datasets only). \textbf{Jev}: a System One "
+             r"decision system, not an LLM; run with the IO prompt on the single-choice (SCS) selection tasks "
+             r"only, so its Average covers those six rows.}")
     L.append(r"\label{tab:main_results_all_models}")
     L.append(r"\resizebox{\linewidth}{!}{%")
     L.append(r"\sbox{\abTabBox}{%")
-    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + r" @{\hspace{3\tabcolsep}} c}")
+    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS) + 1) + r" @{\hspace{3\tabcolsep}} c}")
     L.append(r"\toprule")
     L.append(r"\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & "
-             + " & ".join(f"\\multicolumn{{2}}{{{'c@{\\hspace{3\\tabcolsep}}' if k == len(MODELS) - 1 else 'c'}}}"
-                          f"{{\\textbf{{{n}}}}}" for k, (_, n) in enumerate(MODELS)) + r" & \textbf{Avg.} \\")
-    L.append(" ".join(f"\\cmidrule(lr){{{4 + 2 * i}-{5 + 2 * i}}}" for i in range(len(MODELS))))
-    L.append("& & & " + " & ".join(r"\textbf{IO} & \textbf{CoT}" for _ in MODELS) + r" & \\")
-    ncol = 4 + 2 * len(MODELS)
+             + " & ".join(f"\\multicolumn{{2}}{{c}}{{\\textbf{{{n}}}}}" for _, n in MODELS)
+             + r" & \multicolumn{1}{c@{\hspace{3\tabcolsep}}}{\textbf{Jev}} & \textbf{Avg.} \\")
+    L.append(" ".join(f"\\cmidrule(lr){{{4 + 2 * i}-{5 + 2 * i}}}" for i in range(len(MODELS)))
+             + f" \\cmidrule(lr){{{4 + 2 * len(MODELS)}-{4 + 2 * len(MODELS)}}}")
+    L.append("& & & " + " & ".join(r"\textbf{IO} & \textbf{CoT}" for _ in MODELS) + r" & \textbf{IO} & \\")
+    ncol = 5 + 2 * len(MODELS)
 
     def section(title):
         L.append(r"\midrule")
@@ -224,14 +261,17 @@ def main() -> int:
             cells = []
             for mid, _ in MODELS:
                 cells += [static_cell(ds, mid, "io", prefix, key), static_cell(ds, mid, "cot", prefix, key)]
+            cells.append(jev_cell(ds, prefix if lab != "F1" else "MCS"))
             metric = f"\\abMetric{{{lab}}}" if prefix == "MCS" else lab
-            L.append(row(tt(ds) if i == 0 else "", reg, metric, cells, grouped=len(regimes) > 1))
+            L.append(row(tt(ds) if i == 0 else "", reg, metric, cells, grouped=len(regimes) > 1,
+                         in_average=lab != "F1"))
         L.append(r"\addlinespace[1.2pt]")
     sub("1b. Generation")
     for ds, key, lab in STATIC_GENERATION:
         cells = []
         for mid, _ in MODELS:
             cells += [static_cell(ds, mid, "io", "n-a", key), static_cell(ds, mid, "cot", "n-a", key)]
+        cells.append("--")
         L.append(row(tt(ds), "Gen", lab, cells))
 
     for title, block in (("2. Interactive Delivery", INTERACTIVE), ("3. Passive Delivery", SEQUENTIAL)):
@@ -241,6 +281,7 @@ def main() -> int:
                 cells = []
                 for mid, _ in MODELS:
                     cells += [episode_cell(ds, mid, tprefix), "--"]
+                cells.append("--")
                 L.append(row(tt(ds) if i == 0 else "", reg, lab, cells, grouped=len(regimes) > 1))
             if block is INTERACTIVE:
                 L.append(r"\addlinespace[1.2pt]")
@@ -248,7 +289,7 @@ def main() -> int:
     L.append(r"\midrule")
     col_avgs = [f"{np.mean(v):.1f}" if v else "--" for v in COLUMN_VALUES]
     L.append(r"\textbf{Average} & & & " + " & ".join(bold_max(col_avgs))
-             + f" & {np.mean(ROW_AVERAGES):.1f} \\\\")
+             + r" & \\")
     L.append(r"\bottomrule")
     L.append(r"\end{tabular}}%")
     # Avg. column width = its widest cell: the bold header or a number.

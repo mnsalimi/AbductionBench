@@ -11,83 +11,83 @@
 \scriptsize
 \renewcommand{\arraystretch}{0.82}
 \setlength{\tabcolsep}{3pt}
-\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning before answering. \textbf{Interactive} and \textbf{Passive}: 50 records per dataset, one episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed (EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). \textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes reported. \textbf{Average}: mean of each column over all rows with a value in it (CoT columns therefore cover the static datasets only).}
+\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning before answering. \textbf{Interactive} and \textbf{Passive}: 50 records per dataset, one episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed (EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). \textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes reported. \textbf{Average}: mean of each column over all rows with a value in it, F1 rows excluded (CoT columns therefore cover the static datasets only). \textbf{Jev}: a System One decision system, not an LLM; run with the IO prompt on the single-choice (SCS) selection tasks only, so its Average covers those six rows.}
 \label{tab:main_results_all_models}
 \resizebox{\linewidth}{!}{%
 \sbox{\abTabBox}{%
-\begin{tabular}{l l l cccccccccccccccc @{\hspace{3\tabcolsep}} c}
+\begin{tabular}{l l l ccccccccccccccccc @{\hspace{3\tabcolsep}} c}
 \toprule
-\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & \multicolumn{2}{c}{\textbf{GPT-5.6-Luna}} & \multicolumn{2}{c}{\textbf{Gemini-3.8-Flash}} & \multicolumn{2}{c}{\textbf{Gemma-4-31B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-27B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E4B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E2B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-4B}} & \multicolumn{2}{c@{\hspace{3\tabcolsep}}}{\textbf{Qwen-3.5-2B}} & \textbf{Avg.} \\
-\cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11} \cmidrule(lr){12-13} \cmidrule(lr){14-15} \cmidrule(lr){16-17} \cmidrule(lr){18-19}
-& & & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \\
+\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & \multicolumn{2}{c}{\textbf{GPT-5.6-Luna}} & \multicolumn{2}{c}{\textbf{Gemini-3.8-Flash}} & \multicolumn{2}{c}{\textbf{Gemma-4-31B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-27B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E4B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E2B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-4B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-2B}} & \multicolumn{1}{c@{\hspace{3\tabcolsep}}}{\textbf{Jev}} & \textbf{Avg.} \\
+\cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11} \cmidrule(lr){12-13} \cmidrule(lr){14-15} \cmidrule(lr){16-17} \cmidrule(lr){18-19} \cmidrule(lr){20-20}
+& & & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \\
 \midrule
-\multicolumn{20}{l}{\textit{\textbf{1. Static Delivery}}} \\
+\multicolumn{21}{l}{\textit{\textbf{1. Static Delivery}}} \\
 \midrule
-\multicolumn{20}{l}{\textit{1a. Selection}} \\
-\texttt{art} & \abRegime{MCS} & \abMetric{EM} & 86.7 & 89.3 & \textbf{92.7} & \textbf{92.7} & 88.7 & 91.3 & 88.0 & 88.7 & 72.7 & 72.0 & 56.7 & 48.0 & 74.0 & 82.7 & 54.0 & 21.3 & 75.0 \\
- & \abRegime{} & \abMetric{F1} & 89.8 & 91.6 & \textbf{92.7} & \textbf{92.7} & 91.8 & 92.2 & 89.3 & 89.6 & 82.4 & 86.7 & 68.7 & 74.7 & 74.4 & 85.8 & 64.2 & 57.8 & 82.8 \\
- & \abRegime{SCS} & ACC & 88.0 & 93.3 & \textbf{94.0} & 93.3 & 91.3 & 92.0 & 90.0 & 92.0 & 82.0 & 88.0 & 70.0 & 78.0 & 71.3 & 87.3 & 65.3 & 74.7 & 84.4 \\
- & \abRegime{Gen} & LLM-J & 43.3 & 50.7 & 49.0 & 44.7 & 51.3 & 42.7 & 44.7 & \textbf{52.7} & 32.0 & 39.3 & 26.7 & 37.3 & 32.0 & 41.3 & 14.7 & 8.0 & 38.2 \\
+\multicolumn{21}{l}{\textit{1a. Selection}} \\
+\texttt{art} & \abRegime{MCS} & \abMetric{EM} & 86.7 & 89.3 & \textbf{92.7} & \textbf{92.7} & 88.7 & 91.3 & 88.0 & 88.7 & 72.7 & 72.0 & 56.7 & 48.0 & 74.0 & 82.7 & 54.0 & 21.3 & -- & 75.0 \\
+ & \abRegime{} & \abMetric{F1} & 89.8 & 91.6 & \textbf{92.7} & \textbf{92.7} & 91.8 & 92.2 & 89.3 & 89.6 & 82.4 & 86.7 & 68.7 & 74.7 & 74.4 & 85.8 & 64.2 & 57.8 & -- & 82.8 \\
+ & \abRegime{SCS} & ACC & 88.0 & 93.3 & \textbf{94.0} & 93.3 & 91.3 & 92.0 & 90.0 & 92.0 & 82.0 & 88.0 & 70.0 & 78.0 & 71.3 & 87.3 & 65.3 & 74.7 & 86.7 & 84.5 \\
+ & \abRegime{Gen} & LLM-J & 43.3 & 50.7 & 49.0 & 44.7 & 51.3 & 42.7 & 44.7 & \textbf{52.7} & 32.0 & 39.3 & 26.7 & 37.3 & 32.0 & 41.3 & 14.7 & 8.0 & -- & 38.2 \\
 \addlinespace[1.2pt]
-\texttt{ecare} & \abRegime{MCS} & \abMetric{EM} & 82.7 & 79.3 & 88.7 & 88.0 & 86.0 & 84.7 & \textbf{91.3} & 86.0 & 76.0 & 75.3 & 67.3 & 73.3 & 73.3 & 76.7 & 54.0 & 13.3 & 74.7 \\
- & \abRegime{} & \abMetric{F1} & 84.9 & 81.6 & 88.7 & 88.0 & 86.0 & 86.4 & \textbf{91.3} & 86.9 & 85.3 & 84.2 & 87.8 & 84.0 & 75.6 & 81.6 & 66.9 & 59.6 & 82.4 \\
- & \abRegime{SCS} & ACC & 78.7 & 84.0 & \textbf{90.0} & 88.0 & 89.3 & 85.3 & 85.3 & 87.3 & 85.3 & 81.3 & 84.7 & 81.3 & 74.0 & 80.7 & 75.3 & 69.3 & 82.5 \\
- & \abRegime{Gen} & LLM-J & 60.7 & 64.0 & 62.7 & \textbf{68.7} & 45.3 & 42.7 & 60.7 & 52.7 & 28.7 & 30.7 & 34.7 & 24.7 & 50.7 & 52.0 & 42.0 & 39.3 & 47.5 \\
+\texttt{ecare} & \abRegime{MCS} & \abMetric{EM} & 82.7 & 79.3 & 88.7 & 88.0 & 86.0 & 84.7 & \textbf{91.3} & 86.0 & 76.0 & 75.3 & 67.3 & 73.3 & 73.3 & 76.7 & 54.0 & 13.3 & -- & 74.7 \\
+ & \abRegime{} & \abMetric{F1} & 84.9 & 81.6 & 88.7 & 88.0 & 86.0 & 86.4 & \textbf{91.3} & 86.9 & 85.3 & 84.2 & 87.8 & 84.0 & 75.6 & 81.6 & 66.9 & 59.6 & -- & 82.4 \\
+ & \abRegime{SCS} & ACC & 78.7 & 84.0 & \textbf{90.0} & 88.0 & 89.3 & 85.3 & 85.3 & 87.3 & 85.3 & 81.3 & 84.7 & 81.3 & 74.0 & 80.7 & 75.3 & 69.3 & 88.0 & 82.8 \\
+ & \abRegime{Gen} & LLM-J & 60.7 & 64.0 & 62.7 & \textbf{68.7} & 45.3 & 42.7 & 60.7 & 52.7 & 28.7 & 30.7 & 34.7 & 24.7 & 50.7 & 52.0 & 42.0 & 39.3 & -- & 47.5 \\
 \addlinespace[1.2pt]
-\texttt{climate\_fever} & \abRegime{MCS} & \abMetric{EM} & 55.3 & 54.7 & 52.0 & 57.3 & 62.7 & 60.7 & \textbf{64.0} & \textbf{64.0} & 56.7 & 59.3 & 54.0 & 62.0 & 62.7 & 59.3 & 43.3 & 29.3 & 56.1 \\
- & \abRegime{} & \abMetric{F1} & 64.8 & 56.0 & 52.0 & 57.3 & 62.7 & 60.7 & 65.3 & 64.0 & \textbf{67.8} & 62.8 & 59.3 & 62.8 & 65.3 & 64.0 & 46.3 & 50.0 & 60.1 \\
- & \abRegime{SCS} & ACC & 64.0 & 51.3 & 55.3 & 56.7 & 62.0 & 60.7 & 67.3 & 61.3 & \textbf{70.0} & 64.0 & 62.7 & 58.0 & 64.0 & 67.3 & 39.3 & 64.0 & 60.5 \\
+\texttt{climate\_fever} & \abRegime{MCS} & \abMetric{EM} & 55.3 & 54.7 & 52.0 & 57.3 & 62.7 & 60.7 & \textbf{64.0} & \textbf{64.0} & 56.7 & 59.3 & 54.0 & 62.0 & 62.7 & 59.3 & 43.3 & 29.3 & -- & 56.1 \\
+ & \abRegime{} & \abMetric{F1} & 64.8 & 56.0 & 52.0 & 57.3 & 62.7 & 60.7 & 65.3 & 64.0 & \textbf{67.8} & 62.8 & 59.3 & 62.8 & 65.3 & 64.0 & 46.3 & 50.0 & -- & 60.1 \\
+ & \abRegime{SCS} & ACC & 64.0 & 51.3 & 55.3 & 56.7 & 62.0 & 60.7 & 67.3 & 61.3 & \textbf{70.0} & 64.0 & 62.7 & 58.0 & 64.0 & 67.3 & 39.3 & 64.0 & 62.0 & 60.6 \\
 \addlinespace[1.2pt]
-\texttt{true\_detective} & \abRegime{MCS} & \abMetric{EM} & 40.0 & 58.0 & 73.3 & \textbf{74.0} & 50.0 & 53.3 & 40.7 & 55.3 & 14.7 & 36.0 & 16.0 & 21.3 & 24.7 & 25.3 & 2.7 & 0.7 & 36.6 \\
- & \abRegime{} & \abMetric{F1} & 42.8 & 59.2 & 73.3 & \textbf{74.0} & 50.0 & 53.6 & 40.7 & 56.2 & 29.4 & 38.9 & 22.6 & 23.1 & 32.0 & 27.5 & 34.1 & 3.4 & 41.3 \\
- & \abRegime{SCS} & ACC & 38.7 & 64.0 & \textbf{73.3} & \textbf{73.3} & 51.3 & 54.0 & 42.0 & 56.1 & 28.7 & 36.0 & 19.3 & 24.7 & 30.0 & 31.3 & 30.0 & 0.7 & 40.8 \\
+\texttt{true\_detective} & \abRegime{MCS} & \abMetric{EM} & 40.0 & 58.0 & 73.3 & \textbf{74.0} & 50.0 & 53.3 & 40.7 & 55.3 & 14.7 & 36.0 & 16.0 & 21.3 & 24.7 & 25.3 & 2.7 & 0.7 & -- & 36.6 \\
+ & \abRegime{} & \abMetric{F1} & 42.8 & 59.2 & 73.3 & \textbf{74.0} & 50.0 & 53.6 & 40.7 & 56.2 & 29.4 & 38.9 & 22.6 & 23.1 & 32.0 & 27.5 & 34.1 & 3.4 & -- & 41.3 \\
+ & \abRegime{SCS} & ACC & 38.7 & 64.0 & \textbf{73.3} & \textbf{73.3} & 51.3 & 54.0 & 42.0 & 56.1 & 28.7 & 36.0 & 19.3 & 24.7 & 30.0 & 31.3 & 30.0 & 0.7 & 36.0 & 40.6 \\
 \addlinespace[1.2pt]
-\texttt{diagnosisarena} & \abRegime{MCS} & \abMetric{EM} & 32.0 & 27.3 & 39.2 & 52.0 & \textbf{54.0} & 29.3 & 20.0 & 52.3 & 6.7 & 19.3 & 16.0 & 14.0 & 15.3 & 33.3 & 13.3 & 7.3 & 27.0 \\
- & \abRegime{} & \abMetric{F1} & 60.1 & 60.0 & 61.8 & \textbf{67.0} & 59.2 & 57.0 & 47.9 & 63.2 & 41.3 & 47.8 & 43.6 & 43.8 & 45.1 & 52.6 & 48.1 & 32.4 & 51.9 \\
- & \abRegime{SCS} & ACC & 65.3 & \textbf{74.7} & 73.3 & 71.3 & 59.3 & 57.3 & 56.0 & 59.3 & 43.3 & 48.7 & 37.3 & 42.0 & 43.3 & 47.3 & 46.0 & 45.3 & 54.4 \\
+\texttt{diagnosisarena} & \abRegime{MCS} & \abMetric{EM} & 32.0 & 27.3 & 39.2 & 52.0 & \textbf{54.0} & 29.3 & 20.0 & 52.3 & 6.7 & 19.3 & 16.0 & 14.0 & 15.3 & 33.3 & 13.3 & 7.3 & -- & 27.0 \\
+ & \abRegime{} & \abMetric{F1} & 60.1 & 60.0 & 61.8 & \textbf{67.0} & 59.2 & 57.0 & 47.9 & 63.2 & 41.3 & 47.8 & 43.6 & 43.8 & 45.1 & 52.6 & 48.1 & 32.4 & -- & 51.9 \\
+ & \abRegime{SCS} & ACC & 65.3 & \textbf{74.7} & 73.3 & 71.3 & 59.3 & 57.3 & 56.0 & 59.3 & 43.3 & 48.7 & 37.3 & 42.0 & 43.3 & 47.3 & 46.0 & 45.3 & 50.7 & 54.1 \\
 \addlinespace[1.2pt]
-\texttt{agentrx} & \abRegime{MCS} & \abMetric{EM} & 48.0 & 48.7 & \textbf{58.0} & 54.0 & 47.3 & 46.7 & 48.0 & 53.3 & 41.3 & 32.0 & 34.0 & 18.7 & 37.3 & 42.7 & 10.0 & 11.3 & 39.5 \\
- & \abRegime{} & \abMetric{F1} & 52.9 & 49.6 & \textbf{61.6} & 56.3 & 50.0 & 56.1 & 50.7 & 54.7 & 46.7 & 47.8 & 50.9 & 47.8 & 44.4 & 49.4 & 31.0 & 26.6 & 48.5 \\
- & \abRegime{SCS} & ACC & 53.3 & 50.0 & \textbf{61.3} & 60.0 & 52.7 & 54.0 & 50.7 & 50.0 & 46.7 & 42.7 & 46.0 & 54.7 & 42.0 & 47.3 & 34.0 & 48.7 & 49.6 \\
+\texttt{agentrx} & \abRegime{MCS} & \abMetric{EM} & 48.0 & 48.7 & \textbf{58.0} & 54.0 & 47.3 & 46.7 & 48.0 & 53.3 & 41.3 & 32.0 & 34.0 & 18.7 & 37.3 & 42.7 & 10.0 & 11.3 & -- & 39.5 \\
+ & \abRegime{} & \abMetric{F1} & 52.9 & 49.6 & \textbf{61.6} & 56.3 & 50.0 & 56.1 & 50.7 & 54.7 & 46.7 & 47.8 & 50.9 & 47.8 & 44.4 & 49.4 & 31.0 & 26.6 & -- & 48.5 \\
+ & \abRegime{SCS} & ACC & 53.3 & 50.0 & \textbf{61.3} & 60.0 & 52.7 & 54.0 & 50.7 & 50.0 & 46.7 & 42.7 & 46.0 & 54.7 & 42.0 & 47.3 & 34.0 & 48.7 & 48.7 & 49.6 \\
 \addlinespace[1.2pt]
-\texttt{aer} & \abRegime{MCS} & \abMetric{EM} & 56.7 & 64.0 & 65.3 & 66.7 & \textbf{73.3} & 66.7 & 49.3 & 62.2 & 49.3 & 58.0 & 38.0 & 43.3 & 52.7 & 58.7 & 37.3 & 3.3 & 52.8 \\
- & \abRegime{} & \abMetric{F1} & 80.3 & 84.2 & 85.1 & 85.7 & \textbf{88.4} & 87.3 & 77.6 & 83.8 & 71.6 & 78.7 & 65.6 & 68.2 & 76.3 & 82.0 & 67.4 & 31.5 & 75.9 \\
+\texttt{aer} & \abRegime{MCS} & \abMetric{EM} & 56.7 & 64.0 & 65.3 & 66.7 & \textbf{73.3} & 66.7 & 49.3 & 62.2 & 49.3 & 58.0 & 38.0 & 43.3 & 52.7 & 58.7 & 37.3 & 3.3 & -- & 52.8 \\
+ & \abRegime{} & \abMetric{F1} & 80.3 & 84.2 & 85.1 & 85.7 & \textbf{88.4} & 87.3 & 77.6 & 83.8 & 71.6 & 78.7 & 65.6 & 68.2 & 76.3 & 82.0 & 67.4 & 31.5 & -- & 75.9 \\
 \addlinespace[1.2pt]
-\multicolumn{20}{l}{\textit{1b. Generation}} \\
-\texttt{aiops2025} & Gen & RC & 28.7 & 15.3 & 24.0 & 22.0 & 31.3 & 24.7 & \textbf{32.7} & 24.7 & 26.0 & 26.7 & 28.0 & 28.7 & 22.7 & 24.0 & 14.7 & 20.0 & 24.6 \\
-\texttt{commonwhy} & Gen & LLM-J & 62.0 & 70.7 & \textbf{83.3} & 81.3 & 50.0 & 54.7 & 59.3 & 53.3 & 38.7 & 46.0 & 28.0 & 28.7 & 35.3 & 32.7 & 23.3 & 18.7 & 47.9 \\
-\texttt{crosstrace} & Gen & LLM-J & 62.0 & \textbf{66.7} & 56.4 & 56.7 & 61.3 & 53.3 & 53.3 & 34.0 & 38.7 & 32.0 & 44.0 & 32.7 & 42.0 & 42.7 & 19.3 & 13.3 & 44.3 \\
-\texttt{enwn\_entailmentbank} & Gen & LLM-J & 86.0 & \textbf{95.3} & 90.5 & 88.0 & 94.0 & 90.0 & 83.3 & 83.8 & 59.3 & 73.3 & 59.3 & 80.0 & 65.3 & 86.7 & 52.7 & 74.7 & 78.9 \\
-\texttt{house\_md} & Gen & LLM-J & 38.0 & 42.7 & 43.3 & \textbf{54.7} & 40.7 & 33.3 & 26.0 & 40.7 & 15.3 & 19.3 & 10.0 & 14.0 & 11.3 & 21.3 & 5.3 & 4.0 & 26.2 \\
-\texttt{hypogen} & Gen & LLM-J & \textbf{78.7} & 71.3 & 72.7 & 74.7 & 71.3 & 71.3 & 68.0 & 54.1 & 58.7 & 54.0 & 50.0 & 51.3 & 53.3 & 54.0 & 38.7 & 29.3 & 59.5 \\
-\texttt{llm4biohypogen} & Gen & LLM-J & 70.0 & 64.0 & 67.1 & 66.0 & 62.0 & 62.7 & \textbf{71.3} & 68.2 & 63.3 & 65.3 & 56.7 & 60.0 & 62.0 & 67.3 & 36.7 & 52.7 & 62.2 \\
-\texttt{matter\_to\_mechanism} & Gen & LLM-J & \textbf{76.7} & 64.7 & 59.3 & 60.7 & 69.3 & 53.3 & 57.3 & 57.9 & 47.3 & 40.7 & 41.3 & 45.3 & 48.7 & 42.7 & 23.3 & 12.0 & 50.0 \\
-\texttt{medcasereasoning} & Gen & LLM-J & 62.0 & \textbf{66.0} & 54.4 & 60.7 & 49.3 & 54.0 & 42.0 & 37.5 & 24.7 & 25.3 & 14.7 & 18.7 & 23.3 & 42.7 & 8.0 & 20.7 & 37.8 \\
-\texttt{medr\_bench} & Gen & LLM-J & 87.3 & \textbf{90.0} & 88.0 & 82.7 & 69.3 & 79.3 & 78.0 & 77.3 & 54.0 & 67.3 & 56.7 & 64.0 & 56.0 & 67.3 & 29.3 & 39.3 & 67.9 \\
-\texttt{neulr} & Gen & LLM-J & 58.7 & 64.7 & 68.7 & 66.0 & 54.0 & \textbf{70.7} & 52.7 & 66.7 & 30.0 & 64.0 & 28.0 & 62.0 & 13.3 & 68.0 & 3.3 & 37.3 & 50.5 \\
-\texttt{proof\_writer} & Gen & EM & 37.3 & 40.0 & 40.0 & 44.0 & 42.0 & 47.3 & 34.0 & \textbf{59.3} & 39.3 & 17.3 & 15.3 & 52.7 & 16.0 & 52.0 & 7.3 & 8.7 & 34.5 \\
-\texttt{uncommonsense} & Gen & LLM-J & \textbf{78.7} & \textbf{78.7} & 71.3 & 70.0 & 66.0 & 58.0 & 74.7 & 63.4 & 73.3 & 68.7 & 64.0 & 55.3 & 48.7 & 47.3 & 34.7 & 18.7 & 60.7 \\
-\texttt{uniadilr\_hgc} & Gen & EM & 42.7 & 33.3 & 72.0 & \textbf{76.0} & 64.0 & 46.7 & 14.0 & 14.3 & 40.0 & 2.7 & 9.3 & 4.0 & 13.3 & 8.0 & 0.7 & 3.3 & 27.8 \\
+\multicolumn{21}{l}{\textit{1b. Generation}} \\
+\texttt{RCA100} & Gen & RC & 28.7 & 15.3 & 24.0 & 22.0 & 31.3 & 24.7 & \textbf{32.7} & 24.7 & 26.0 & 26.7 & 28.0 & 28.7 & 22.7 & 24.0 & 14.7 & 20.0 & -- & 24.6 \\
+\texttt{commonwhy} & Gen & LLM-J & 62.0 & 70.7 & \textbf{83.3} & 81.3 & 50.0 & 54.7 & 59.3 & 53.3 & 38.7 & 46.0 & 28.0 & 28.7 & 35.3 & 32.7 & 23.3 & 18.7 & -- & 47.9 \\
+\texttt{crosstrace} & Gen & LLM-J & 62.0 & \textbf{66.7} & 56.4 & 56.7 & 61.3 & 53.3 & 53.3 & 34.0 & 38.7 & 32.0 & 44.0 & 32.7 & 42.0 & 42.7 & 19.3 & 13.3 & -- & 44.3 \\
+\texttt{enwn\_entailmentbank} & Gen & LLM-J & 86.0 & \textbf{95.3} & 90.5 & 88.0 & 94.0 & 90.0 & 83.3 & 83.8 & 59.3 & 73.3 & 59.3 & 80.0 & 65.3 & 86.7 & 52.7 & 74.7 & -- & 78.9 \\
+\texttt{house\_md} & Gen & LLM-J & 38.0 & 42.7 & 43.3 & \textbf{54.7} & 40.7 & 33.3 & 26.0 & 40.7 & 15.3 & 19.3 & 10.0 & 14.0 & 11.3 & 21.3 & 5.3 & 4.0 & -- & 26.2 \\
+\texttt{hypogen} & Gen & LLM-J & \textbf{78.7} & 71.3 & 72.7 & 74.7 & 71.3 & 71.3 & 68.0 & 54.1 & 58.7 & 54.0 & 50.0 & 51.3 & 53.3 & 54.0 & 38.7 & 29.3 & -- & 59.5 \\
+\texttt{llm4biohypogen} & Gen & LLM-J & 70.0 & 64.0 & 67.1 & 66.0 & 62.0 & 62.7 & \textbf{71.3} & 68.2 & 63.3 & 65.3 & 56.7 & 60.0 & 62.0 & 67.3 & 36.7 & 52.7 & -- & 62.2 \\
+\texttt{matter\_to\_mechanism} & Gen & LLM-J & \textbf{76.7} & 64.7 & 59.3 & 60.7 & 69.3 & 53.3 & 57.3 & 57.9 & 47.3 & 40.7 & 41.3 & 45.3 & 48.7 & 42.7 & 23.3 & 12.0 & -- & 50.0 \\
+\texttt{medcasereasoning} & Gen & LLM-J & 62.0 & \textbf{66.0} & 54.4 & 60.7 & 49.3 & 54.0 & 42.0 & 37.5 & 24.7 & 25.3 & 14.7 & 18.7 & 23.3 & 42.7 & 8.0 & 20.7 & -- & 37.8 \\
+\texttt{medr\_bench} & Gen & LLM-J & 87.3 & \textbf{90.0} & 88.0 & 82.7 & 69.3 & 79.3 & 78.0 & 77.3 & 54.0 & 67.3 & 56.7 & 64.0 & 56.0 & 67.3 & 29.3 & 39.3 & -- & 67.9 \\
+\texttt{neulr} & Gen & LLM-J & 58.7 & 64.7 & 68.7 & 66.0 & 54.0 & \textbf{70.7} & 52.7 & 66.7 & 30.0 & 64.0 & 28.0 & 62.0 & 13.3 & 68.0 & 3.3 & 37.3 & -- & 50.5 \\
+\texttt{proof\_writer} & Gen & EM & 37.3 & 40.0 & 40.0 & 44.0 & 42.0 & 47.3 & 34.0 & \textbf{59.3} & 39.3 & 17.3 & 15.3 & 52.7 & 16.0 & 52.0 & 7.3 & 8.7 & -- & 34.5 \\
+\texttt{uncommonsense} & Gen & LLM-J & \textbf{78.7} & \textbf{78.7} & 71.3 & 70.0 & 66.0 & 58.0 & 74.7 & 63.4 & 73.3 & 68.7 & 64.0 & 55.3 & 48.7 & 47.3 & 34.7 & 18.7 & -- & 60.7 \\
+\texttt{uniadilr\_hgc} & Gen & EM & 42.7 & 33.3 & 72.0 & \textbf{76.0} & 64.0 & 46.7 & 14.0 & 14.3 & 40.0 & 2.7 & 9.3 & 4.0 & 13.3 & 8.0 & 0.7 & 3.3 & -- & 27.8 \\
 \midrule
-\multicolumn{20}{l}{\textit{\textbf{2. Interactive Delivery}}} \\
+\multicolumn{21}{l}{\textit{\textbf{2. Interactive Delivery}}} \\
 \midrule
-\texttt{medqdx} & Gen & LLM-J & \textbf{40.0} & -- & 34.0 & -- & 36.0 & -- & 32.0 & -- & 24.0 & -- & 32.0 & -- & 26.0 & -- & 6.0 & -- & 28.8 \\
+\texttt{medqdx} & Gen & LLM-J & \textbf{40.0} & -- & 34.0 & -- & 36.0 & -- & 32.0 & -- & 24.0 & -- & 32.0 & -- & 26.0 & -- & 6.0 & -- & -- & 28.8 \\
 \addlinespace[1.2pt]
-\texttt{med\_inquire} & Gen & LLM-J & 22.0 & -- & \textbf{44.0} & -- & 28.0 & -- & 20.0 & -- & 12.0 & -- & 8.0 & -- & 6.0 & -- & 0.0 & -- & 17.5 \\
+\texttt{med\_inquire} & Gen & LLM-J & 22.0 & -- & \textbf{44.0} & -- & 28.0 & -- & 20.0 & -- & 12.0 & -- & 8.0 & -- & 6.0 & -- & 0.0 & -- & -- & 17.5 \\
 \addlinespace[1.2pt]
-\texttt{vivabench} & Gen & LLM-J & 52.0 & -- & \textbf{58.0} & -- & 48.0 & -- & 40.0 & -- & 22.0 & -- & 18.0 & -- & 28.0 & -- & 8.0 & -- & 34.2 \\
+\texttt{vivabench} & Gen & LLM-J & 52.0 & -- & \textbf{58.0} & -- & 48.0 & -- & 40.0 & -- & 22.0 & -- & 18.0 & -- & 28.0 & -- & 8.0 & -- & -- & 34.2 \\
 \addlinespace[1.2pt]
-\texttt{ddxplus} & \abRegime{SCS} & ACC & 32.0 & -- & 22.0 & -- & 26.0 & -- & 42.0 & -- & 36.0 & -- & \textbf{44.0} & -- & 40.0 & -- & 18.0 & -- & 32.5 \\
- & \abRegime{MCS} & ACC & 28.0 & -- & 30.0 & -- & 36.0 & -- & \textbf{38.0} & -- & 34.0 & -- & \textbf{38.0} & -- & 32.0 & -- & 24.0 & -- & 32.5 \\
+\texttt{ddxplus} & \abRegime{SCS} & ACC & 32.0 & -- & 22.0 & -- & 26.0 & -- & 42.0 & -- & 36.0 & -- & \textbf{44.0} & -- & 40.0 & -- & 18.0 & -- & -- & 32.5 \\
+ & \abRegime{MCS} & ACC & 28.0 & -- & 30.0 & -- & 36.0 & -- & \textbf{38.0} & -- & 34.0 & -- & \textbf{38.0} & -- & 32.0 & -- & 24.0 & -- & -- & 32.5 \\
 \addlinespace[1.2pt]
-\texttt{cloud\_opsbench} & Gen & JRA & 6.0 & -- & \textbf{10.0} & -- & 4.0 & -- & 2.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & 2.8 \\
+\texttt{cloud\_opsbench} & Gen & JRA & 6.0 & -- & \textbf{10.0} & -- & 4.0 & -- & 2.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & -- & 2.8 \\
 \addlinespace[1.2pt]
 \midrule
-\multicolumn{20}{l}{\textit{\textbf{3. Passive Delivery}}} \\
+\multicolumn{21}{l}{\textit{\textbf{3. Passive Delivery}}} \\
 \midrule
-\texttt{athena\_bench} & Gen & LLM-J & 30.0 & -- & \textbf{44.0} & -- & 26.0 & -- & 20.0 & -- & 20.0 & -- & 8.0 & -- & 10.0 & -- & 0.0 & -- & 19.8 \\
+\texttt{athena\_bench} & Gen & LLM-J & 30.0 & -- & \textbf{44.0} & -- & 26.0 & -- & 20.0 & -- & 20.0 & -- & 8.0 & -- & 10.0 & -- & 0.0 & -- & -- & 19.8 \\
 \midrule
-\textbf{Average} & & & 56.9 & 63.9 & 62.2 & \textbf{68.5} & 57.7 & 61.5 & 53.5 & 61.3 & 44.5 & 50.9 & 39.9 & 46.8 & 42.2 & 53.7 & 29.6 & 29.2 & 48.9 \\
+\textbf{Average} & & & 54.8 & 62.6 & 60.0 & \textbf{67.0} & 55.4 & 59.3 & 51.1 & 58.9 & 41.4 & 47.8 & 36.6 & 44.1 & 38.9 & 51.4 & 25.4 & 27.2 & 62.0 & \\
 \bottomrule
 \end{tabular}}%
 \settowidth{\abAvgW}{\textbf{Avg.}}\settowidth{\abAvgD}{00.0}\ifdim\abAvgD>\abAvgW\setlength{\abAvgW}{\abAvgD}\fi%
