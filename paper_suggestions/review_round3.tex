@@ -1,0 +1,169 @@
+% ===========================================================================
+% AbductionBench -- review of Overleaf version 6b21960 (ready-to-paste fixes)
+% Page limit: OK -- the main text ends on page 9 (Conclusion on p9).
+% Nothing was written to Overleaf.
+% ===========================================================================
+
+
+% ---------------------------------------------------------------------------
+% FIX A (CRITICAL) -- Sections/7_future_work.tex : FULL REPLACEMENT
+% WHY: still opens with "The present draft has four material limitations" --
+% tells reviewers the paper is unfinished. The section is titled "Future Work"
+% and misses the limitations reviewers will raise themselves: a single,
+% unvalidated LLM judge; 50 records per dataset; the +- in Table 1 covers only
+% sampling noise, not record sampling; the simulator dependence. Naming them
+% first reads as rigor; leaving them for reviewers reads as a flaw. The two
+% "What Final Answers Do Not Reveal" / "Implications" subsections repeat the
+% introduction and are dropped (this also makes room for FIX D).
+% ---------------------------------------------------------------------------
+\FloatBarrier
+
+\section{Limitations}
+\label{sec:future_work}
+\label{sec:limitations}
+
+All free-form answers, trace measures, and step-relevance labels come from a single LLM judge (gpt-oss-120b); we manually reviewed random samples of its outputs and revised its prompts accordingly, but did not measure agreement with human annotators systematically. Each dataset contributes 50 records: the $\pm$ in Table~\ref{tab:main_results_all_models} reflects variation across the three samples per record, not across records, and a 95\% interval over records is roughly $\pm$7--8 points for a static score and up to $\pm$13 for an episode score, so small differences between models should not be over-read. Because of their token cost, passive and interactive episodes were run once, under IO only, and interactive results depend on the simulated patient or examiner (gpt-4o-mini). Comparisons across domains, formulations, and delivery modes are observational, since the source datasets differ in content and difficulty. Only six passive and interactive datasets exist in a form we could integrate, which reflects a gap in the field and limits analysis of these settings. Finally, written traces are observable outputs, not faithful records of the computation behind an answer. Future work should validate the judges on human-annotated samples, extend the model roster, and build controlled passive and interactive tasks that change one property at a time.
+
+
+% ---------------------------------------------------------------------------
+% FIX B (CRITICAL) -- Sections/6_results.tex, setup paragraph, LAST sentence
+% WHY: says "nine" datasets; the records show TEN, with only 7--101 of 150
+% answers, and those cells average only completed answers while every other
+% model's failed replies count as wrong. The +-23.1 / +-28.9 values now visible
+% in Table 1 make reviewers ask why -- the text must answer it.
+% ---------------------------------------------------------------------------
+% OLD:
+% Qwen-3.5-27B's CoT run is incomplete on nine static datasets, whose scores rest on the samples completed.
+% NEW:
+Empty or truncated replies count as incorrect. For Qwen-3.5-27B under CoT, provider errors left only 7--101 of 150 answers on ten generation datasets (\texttt{house\_md}, \texttt{hypogen}, \texttt{llm4biohypogen}, \texttt{matter\_to\_mechanism}, \texttt{medcasereasoning}, \texttt{medr\_bench}, \texttt{neulr}, \texttt{proof\_writer}, \texttt{uncommonsense}, \texttt{uniadilr\_hgc}); these cells average the completed answers only, are never bolded, and have large $\pm$ values.
+
+
+% ---------------------------------------------------------------------------
+% FIX C (MAJOR) -- Sections/2_introduction.tex, sentence + Figure 1 caption
+% WHY: the sentence claims "within a dataset, longer traces go with lower
+% accuracy" and cites Figure 1, but Figure 1 shows accuracy by step count for
+% THREE models pooled over datasets, and its curve rises before it falls. The
+% within-dataset quintile analysis was removed from the paper. Figure 1 is
+% also never discussed in Results.
+% ---------------------------------------------------------------------------
+% OLD: Within a dataset, longer traces go with lower accuracy (Figure~\ref{fig:horizon_scaling}).
+% NEW:
+Accuracy peaks for short reasoning chains and falls below the direct-answer baseline as traces grow longer, at every input length (Figure~\ref{fig:horizon_scaling}; Appendix~\ref{app:horizon_by_context}).
+% NEW caption for Figure 1:
+%  \caption{Accuracy of CoT answers by trace length (steps) for Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna, pooled over the static tasks, against each model's IO baseline (dashed); bands are $\pm$SEM, points with $n<5$ omitted.}
+% NOTE: the within-dataset quintile result (68% -> 37%, figS4) is no longer in
+% the paper, so do not claim "within a dataset" unless you add it back.
+
+
+% ---------------------------------------------------------------------------
+% FIX D (MAJOR) -- Sections/6_results.tex, relevance subsection: add a sentence
+% WHY: the abstract and introduction both claim "a relevant first question
+% predicts a correct final answer", but the main text no longer shows or cites
+% it (it moved to Appendix C.1.3 and nothing points there). A headline claim
+% with no support in the main text is a classic reviewer complaint.
+% WHERE: at the end of the paragraph that starts "The share of relevant actions
+% falls as the episode proceeds ...", after "... not a more informative one."
+% ---------------------------------------------------------------------------
+The first step already matters: only 35\% of episodes open with a relevant action, but those end correctly 2.4 times as often as the rest (39.7\% vs.\ 16.6\%), with the effect present for every model (Appendix~\ref{sec:first_question}).
+% Also give the subsection a label (it has none; it only carries app:...):
+%  \subsection{Do models keep asking relevant questions as an interaction goes on?}
+%  \label{sec:relevance_by_step}
+
+
+% ---------------------------------------------------------------------------
+% FIX E (MAJOR) -- Sections/6_results.tex, Sec 5.1 "Delivery mode" + "Models"
+% WHY: (1) "Interactive and passive tasks are the hardest" is contradicted by
+% Table 1: RCA100 (24.6) and house_md (26.2) have lower row averages than
+% ddxplus (32.5) and vivabench (34.2). (2) In the Average row, IO also averages
+% the low interactive rows, so CoT looks better for every model. Over the
+% static rows (computed from Table 1) CoT helps six models and HURTS
+% Gemma-4-31B and Qwen-3.5-2B -- a reviewer who recomputes will find this.
+% ---------------------------------------------------------------------------
+% OLD: \textbf{Delivery mode.} Interactive and passive tasks are the hardest: the best model ...
+% NEW: \textbf{Delivery mode.} Interactive and passive tasks are among the hardest: the best model ...
+%
+% OLD (last sentence of "Models"): The IO averages include the interactive and passive rows, which have no CoT variant, so IO and CoT averages are not directly comparable.
+% NEW:
+The IO averages include the interactive and passive rows, which have no CoT variant; over the static rows alone, CoT raises the average for six of the eight LLMs, most for Qwen-3.5-4B (43.4$\to$51.4), and lowers it for Gemma-4-31B and Qwen-3.5-2B (2.4 points each).
+
+
+% ---------------------------------------------------------------------------
+% FIX F (MAJOR) -- describe Jev (Sec 5 setup or Sec 5.2, plus an appendix line)
+% WHY: Jev appears in the abstract, the contributions and Table 1, but the
+% paper never says what it is: no citation, no architecture, no input format,
+% no training data. "System One decision system" is not a standard term.
+% Reviewers cannot interpret a baseline they cannot identify. FILL IN the
+% brackets -- only the team knows these facts; keep it anonymous if Jev is
+% the authors' own system ("an in-house system", no product name/URL).
+% ---------------------------------------------------------------------------
+% Jev is a non-LLM decision system [one sentence: what it is, e.g. a <model
+% class> trained on <data>] that maps an input and a fixed set of candidates to
+% a single choice in one fast pass, without generating text or an explanation
+% [\citep{...} if public]. We query it with the same IO prompt as the LLMs and
+% read its choice from its reply.
+
+
+% ---------------------------------------------------------------------------
+% FIX G (MINOR) -- Sections/5_evaluation.tex, Sec 4.2
+% WHY: Table 1 now scores RCA100 by EM (deterministic root-cause entity match),
+% but Sec 4.2 lists exact match only for ProofWriter and UniADILR-HGc.
+% ---------------------------------------------------------------------------
+% OLD: Generation tasks with a formally checkable answer (ProofWriter, UniADILR-HGc) are scored by exact match;
+% NEW:
+Generation tasks with a checkable answer are scored by exact match (ProofWriter, UniADILR-HGc) or by matching the gold root-cause entity (RCA100);
+
+
+% ---------------------------------------------------------------------------
+% FIX H (MINOR) -- Sections/1_abstract.tex
+% WHY: "while preserving their native execution structure" contradicts Sec 4.1
+% ("templates that replace the source prompts").
+% ---------------------------------------------------------------------------
+% OLD: ... across static, passive, and interactive settings while preserving their native execution structure.
+% NEW: ... across static, passive, and interactive settings while keeping each task's native answer space and environment.
+
+
+% ---------------------------------------------------------------------------
+% FIX I (MINOR) -- Sections/6_results.tex, Sec 5.4 first sentence
+% WHY: says the same thing twice ("the order abduction prescribes" + "since
+% abduction proceeds from evidence to hypothesis").
+% ---------------------------------------------------------------------------
+% OLD: ... (Figure~\ref{fig:position_heatmaps_a}): since abduction proceeds from evidence to hypothesis, observations concentrate ...
+% NEW: ... (Figure~\ref{fig:position_heatmaps_a}): observations concentrate ...
+
+
+% ---------------------------------------------------------------------------
+% FIX J (MAJOR, appendix -- still unfixed from the last round)
+% ---------------------------------------------------------------------------
+% Sections/Appendix/dataset.tex (the table disagrees with Table 1 and the taxonomy):
+%   DiagnosisArena  ... & S & G\\        -> & S & Sel\\      (SCS/MCS in Table 1)
+%   RCA100          ... & S & Sel\\      -> & S & G\\        (Gen in Table 1)
+%   UniADILR-HGc    ... & S & Gen\\      -> & S & G\\        (legend uses G)
+%   AthenaBench     Cyber Security:      -> Cybersecurity:   (taxonomy name)
+%   AgentRx         AI Systems:          -> Agentic Systems: (taxonomy name)
+%   CLIMATE-FEVER   (\citeyear{salimi2026cedar})
+%                -> (\citeyear{diggelmann2021climatefeverdatasetverificationrealworld})
+%                   (prints OUR paper's year next to another paper's authors)
+%   caption: \textbf{I} = Interactive, \textbf{S} = Static.
+%         -> \textbf{S} = Static, \textbf{P} = Passive, \textbf{I} = Interactive.
+%
+% Sections/Appendix/appendix.tex:
+%   - delete the subsubsection "Per-Model Correctness, IO vs. CoT" (figure +
+%     text): its caption says CoT helps 5 models, its text says 4, Table 1
+%     gives 6; it contradicts itself and the main table.
+%   - delete the line \label{app:metrics} right after \section{Metrics}
+%     (also defined in metrics.tex -> "multiply defined" warning).
+%   - 23 internal run names remain (\textsc{qwen3-5-27b-openrouter},
+%     \textsc{gemma-4-e2b-local}, ...): use Qwen-3.5-27B, Gemma-4-E2B, ...
+%
+% Sections/Appendix/evaluation_details.tex: "macro F1" appears twice -> "set F1
+% averaged over items" (the code computes per-item set F1, then averages).
+
+
+% ---------------------------------------------------------------------------
+% FIX K -- the anonymous code link (abstract footnote)
+% WHY: the anonymized repo hides the author names, but it is an OLD snapshot
+% (its main_table.tex predates the current table), and
+% src/abductionbench/adapters/climate_fever.py says "CEDAR (Salimi et al.,
+% 2026)". Refresh the snapshot on anonymous.4open.science before submitting;
+% optionally drop the author name from that docstring first.
+% ---------------------------------------------------------------------------
