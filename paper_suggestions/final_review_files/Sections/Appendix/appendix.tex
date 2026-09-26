@@ -1,0 +1,254 @@
+\appendix
+
+\section{Benchmark Inventory and Taxonomy}
+\label{app:benchmark_inventory}
+
+\input{Sections/Appendix/domain_taxonomy}
+\input{Sections/Appendix/dataset}
+\input{Sections/Appendix/related_work_coverage}
+% \input{Sections/Appendix/dataset_samples}
+
+% Metrics are intentionally lettered Z to keep them visually distinct from
+% the descriptive appendices requested in the manuscript outline.
+% \setcounter{section}{25}
+\section{Metrics}
+\input{Sections/Appendix/metrics}
+
+
+\section{Extended Results and Case Studies}
+\label{app:qualitative_results}
+
+\subsection{Additional Tables and Figures}
+\FloatBarrier
+\subsubsection{Single-Choice vs.\ Multiple-Choice-Allowed Selection}
+\label{sec:single_vs_multiple_choice}
+\FloatBarrier
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\linewidth]{figS6_single_vs_multiple_choice.pdf}
+  \caption{\emph{Mean accuracy on the selection datasets under single-choice
+  (\textsc{scs}) versus multiple-choice-allowed (\textsc{mcs}) formats.}
+  Models are ordered by \textsc{scs} accuracy, descending. Allowing multiple
+  selections reduces mean accuracy for every model; the drop ranges from
+  $-4$ points (Qwen-3.5-27B) to $-28$ points
+  (Qwen-3.5-2B).}
+  \label{fig:single_vs_multiple_choice}
+\end{figure}
+
+Figure~\ref{fig:single_vs_multiple_choice} compares mean accuracy on the
+selection datasets when models must choose exactly one hypothesis
+(\textsc{scs}) against a format that permits selecting more than one
+(\textsc{mcs}). Every model loses accuracy under \textsc{mcs}, but the size
+of the drop is far from uniform: Qwen-3.5-27B, Gemma-4-31B,
+Gemini-3.8-Flash, and Qwen-3.5-4B lose between 4 and 7
+points, GPT-5.6-Luna loses 9, Gemma-4-E4B and
+Gemma-4-E2B lose 13 and 15, and Qwen-3.5-2B loses
+28---roughly four to seven times the penalty paid by the largest models.
+The ordering tracks scale within each family: among the \textsc{qwen} models,
+the penalty rises monotonically as parameter count falls
+($27\text{b}\!\to\!4\text{b}\!\to\!2\text{b}$: $-4, -7, -28$), and the two
+smaller \textsc{gemma} variants pay a substantially larger penalty than
+Gemma-4-31B. This suggests that removing the constraint of a
+single correct choice does not uniformly increase the difficulty of
+hypothesis selection---it disproportionately harms smaller models, consistent
+with multiple-choice-allowed formats demanding a more reliable notion of
+per-hypothesis confidence (rather than a single relative ranking) that
+smaller models are less able to supply.
+
+\FloatBarrier
+
+\subsection{Do models keep asking relevant questions as an interaction goes on?}\par\nopagebreak\smallskip
+\label{app:relevance_by_step}
+\FloatBarrier
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{Sections/fig_relevance_by_step_per_model.pdf}
+  \caption{Share of actions judged relevant to the gold answer at each step of the interactive episodes, one panel per model (color, with 95\% Wilson bands), the other seven models in gray. A step is shown only if at least 30 of the model's episodes reach it, so models that usually answer early have shorter curves. Corner labels give relevance at the first $\to$ last plotted step. MedQDx counts its questions only.}
+  \label{fig:relevance_by_step_model}
+\end{figure}
+
+No. For every model, the share of relevant actions falls as the episode proceeds (Figure~\ref{fig:relevance_by_step_model}): from 52\% to 25\% for Gemini-3.8-Flash, 46\% to 24\% for Gemma-4-31B, 37\% to 18\% for GPT-5.6-Luna, and from 30\% or less to under 10\% for the Qwen-3.5 models. The models also differ in \emph{how long} they keep asking: Gemini and the Gemma models usually commit within about eight turns, so their curves end early, whereas the Qwen models and GPT-5.6-Luna continue to steps 16--19 with a low relevance rate, spending turns without gathering useful evidence. Later steps come only from longer episodes, which tend to be the harder or less successful ones, so part of the decline reflects which episodes are still running rather than a within-episode drop alone; either way, a longer interview is not a more informative one.
+
+
+\FloatBarrier
+\subsection{Trace Profiles and Reasoning Length}
+\label{app:trace_profiles}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[c]{0.40\linewidth}
+    \centering
+    \subcaption{\textbf{\small Trace profiles}}
+    \label{fig:cognitive_profile_radar}
+    \includegraphics[width=\linewidth]{fig_cognitive_profile_radar_11_metrics.pdf}
+  \end{subfigure}%
+  \hspace{0.03\linewidth}%
+  \begin{subfigure}[c]{0.55\linewidth}
+    \centering
+    \subcaption{\textbf{\small Correct vs.\ incorrect traces}}
+    \label{fig:quality_gap_histogram}
+    \includegraphics[width=\linewidth]{fig_quality_gap_11_metrics_histogram.pdf}
+  \end{subfigure}
+  \caption{Eleven normalized trace measures (0--1) for the CoT traces of Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna. \textbf{(a)} Mean per model. \textbf{(b)} Mean for correct ($y=1$) and incorrect ($y=0$) answers. Helpful Fraction and Gold Alive are judged against the gold answer.}
+  \label{fig:cognitive_profile_and_quality_gap}
+\end{figure}
+
+Models reach similar accuracy through different traces (Figure~\ref{fig:cognitive_profile_radar}): Gemma-4-31B covers the most observations and compares candidates most exhaustively, whereas GPT-5.6-Luna has the highest share of helpful steps and prior-knowledge use and commits to its answer earliest. Correct and incorrect traces (Figure~\ref{fig:quality_gap_histogram}) differ most in helpful-step fraction (0.72 vs.\ 0.19) and gold-hypothesis retention (0.36 vs.\ 0.16), moderately in observation coverage (0.72 vs.\ 0.61) and comparison exhaustiveness (0.62 vs.\ 0.52), and barely in directionality (0.70 vs.\ 0.69), prior knowledge (0.44 vs.\ 0.45), and anchoring point (0.50 vs.\ 0.50); failed traces are more diverse (0.70 vs.\ 0.59) and contain more useless steps (0.61 vs.\ 0.55).
+
+\subsubsection{Accuracy and Reasoning Length}
+\label{app:reasoning_length}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_horizon_scaling.jpeg}
+    \subcaption{}
+    \label{fig:horizon_scaling}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figS4_accuracy_vs_reasoning_length.pdf}
+    \subcaption{}
+    \label{fig:accuracy_vs_reasoning_length}
+  \end{subfigure}
+  \caption{\textbf{(a)} Accuracy by CoT trace length (steps) for three models against each model's IO baseline (dashed); bands are $\pm$SEM, points with $n<5$ omitted. \textbf{(b)} CoT accuracy by reasoning-length quintile for all eight LLMs, computed within each dataset and model (1 = shortest fifth of replies), with 95\% Wilson bands; dotted: all models pooled.}
+  \label{fig:reasoning_length}
+\end{figure}
+
+Accuracy is highest for short chains---79.8 for Gemini-3.8-Flash and 77.1 for GPT-5.6-Luna at two steps, 81.0 for Gemma-4-31B at four---all above their IO baselines (Figure~\ref{fig:horizon_scaling}). Beyond six steps, GPT-5.6-Luna falls to 33.3 and Gemini-3.8-Flash to 59.4 at ten steps, both below IO, while Gemma-4-31B stays near its baseline. Within every model, accuracy declines monotonically from the shortest to the longest fifth of CoT replies, from 68\% to 37\% pooled; Qwen-3.5-2B falls from 40\% to 11\% (Figure~\ref{fig:accuracy_vs_reasoning_length}).
+
+\paragraph{Reasoning length by input context length.}
+\label{app:horizon_by_context}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{fig_horizon_by_context.jpeg}
+  \caption{Accuracy by CoT trace length (steps) for Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna, split by input length: short ($<$1k tokens, $n=9{,}684$ traces), medium (1k--2k, $n=2{,}663$), and long ($>$2k, $n=1{,}123$). Dashed lines: each model's IO accuracy in the same tier; bands are $\pm$SEM, points with $n<5$ omitted.}
+  \label{fig:horizon_by_context}
+\end{figure}
+
+The decline beyond six steps seen in Figure~\ref{fig:horizon_scaling} holds within each input-length tier (Figure~\ref{fig:horizon_by_context}). On short inputs, GPT-5.6-Luna peaks at two steps (78.5\%) and falls to 53.1\% at eight, and Gemini-3.8-Flash falls from 74.2\% at six steps to 47.9\% at twelve, while Gemma-4-31B needs several steps before it exceeds its IO baseline (18.4\% at one step, 78.6\% at six). On long inputs the effect of CoT is largest in both directions: GPT-5.6-Luna scores only 27.5\% under IO but 85.8\% with three- to four-step chains, then 33.3\% at eight steps, and Gemma-4-31B drops from 88.9\% at four steps to 30.4\% at eight. Gemini-3.8-Flash is the most stable on long inputs, near or above its IO baseline up to six steps. The long tier has the fewest traces, so its curves have the widest bands, and, as in the main text, the relation is associational: longer inputs and longer chains both mark harder cases.
+
+\FloatBarrier
+\label{app:additional_results}
+\subsubsection{Model-Wise Metric Profiles Across the Reasoning Chain}
+\label{sec:by_model}
+\FloatBarrier
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{fig_relative_position_heatmap_by_model.pdf}
+  \caption{Mean of each judged metric by relative position in the chain
+  (0--100\%), shown separately per model, for all eight models evaluated.
+  Each row is independently min--max scaled across all panels, so peak
+  \emph{timing} is comparable within a metric across models but peak
+  \emph{height} is not.}
+  \label{fig:relative_position_heatmap_by_model}
+\end{figure}
+
+Figure~\ref{fig:relative_position_heatmap_by_model} breaks the pooled view of
+Figure~\ref{fig:position_heatmaps} out by model. We describe the
+pattern in detail for three models---Gemini-3.8-Flash,
+Gemma-4-31B, and GPT-5.6-Luna---and note where the
+remaining five models (Gemma-4-E2B, Gemma-4-E4B,
+Qwen-3.5-27B, Qwen-3.5-2B,
+Qwen-3.5-4B) appear to fall; a full per-model, per-metric
+characterization of all eight is left to future work.
+
+Gemini-3.8-Flash and Gemma-4-31B both show a single,
+unimodal \emph{anchoring point} concentrated in the last fifth of the chain:
+each settles on its final answer once, late. GPT-5.6-Luna does not
+share this shape---its \emph{anchoring point} is visibly bimodal, with a
+distinct early peak around the first third of the chain in addition to the
+late peak the other two models share. Rather than converging on its answer
+at a single characteristic point in the chain, \textsc{gpt} appears to
+commit at one of two different points depending on the trace, a pattern not
+present in \textsc{gemini} or \textsc{gemma}; whether it is present in the
+remaining five models has not been checked.
+
+This split is not confined to \emph{anchoring point}. \emph{Helpfulness},
+\emph{step directionality}, \emph{comparisons}, \emph{gold alive}, and
+\emph{prior knowledge} all rise through the chain and peak in the final
+10--20\% for \textsc{gemini} and \textsc{gemma}, the same late-climax shape as
+\emph{anchoring point} above. \textsc{gpt} again departs: \emph{helpfulness},
+\emph{step directionality}, \emph{prior knowledge}, \emph{mentions}, and
+\emph{branchiness} peak in its first 20\% rather than its last, and
+\emph{comparisons} and \emph{gold alive} peak around the chain's midpoint
+rather than the end. The pooled curve of
+Figure~\ref{fig:position_heatmaps} therefore does not represent
+\textsc{gpt} well; among the three models discussed here it reads far closer
+to \textsc{gemini}/\textsc{gemma}. Whether it represents the other five
+models well is a separate, unverified question---the pooled curve averages
+over all eight, and a minority of back- or front-loaded models among the
+remaining five could shift that average in either direction without being
+described above. (\emph{Prior knowledge}'s late-chain peak for \textsc{gpt}
+rests on comparatively few, longer chains and should be read with that
+caveat.)
+
+\emph{Unresolved contradiction} follows the same split, again restricted to
+the three models discussed here: \textsc{gemini} and \textsc{gemma} each show
+one clean early bump (\raise.17ex\hbox{$\scriptstyle\sim$}15--20\%) and taper
+off, while \textsc{gpt} shows three distinct bumps spread across the chain
+(\raise.17ex\hbox{$\scriptstyle\sim$}15\%, \raise.17ex\hbox{$\scriptstyle\sim$}35\%,
+\raise.17ex\hbox{$\scriptstyle\sim$}60\%)---consistent with \textsc{gpt} returning to
+introduce or drop claims at several points rather than settling once.
+\emph{Backtracking} peaks at roughly the same point
+(\raise.17ex\hbox{$\scriptstyle\sim$}45--50\%) for \textsc{gemini} and \textsc{gemma} but later
+(\raise.17ex\hbox{$\scriptstyle\sim$}70--80\%) for \textsc{gpt}; given how rarely \textsc{gpt}
+backtracks at all (1 of 684 traces, Section~\ref{sec:main_results}), this is
+noted only as a minor aside.
+
+\FloatBarrier
+
+% \subsubsection{Medical-Domain Outcome Landscape}
+
+% The available medical-domain analysis covers DiagnosisArena, House~MD, MedCaseReasoning, and MedR-Bench for GPT-5.6-Luna, Gemini-3.8-Flash, and Gemma-4-31B. Figure~\ref{fig:medical_accuracy} reports the outcome baseline. GPT leads on MedCaseReasoning and MedR-Bench, while Gemini leads on House~MD and DiagnosisArena multi-select. On DiagnosisArena, the reported gap is concentrated in multi-select ($0.27$ versus $0.52$); GPT is strongest on single-select ($0.75$).
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=\linewidth]{prism-uploads/fig01_medical_accuracy_landscape.png}
+%   \caption{Outcome accuracy on four medical datasets: per-sample means with Wilson 95\% confidence intervals, CoT (solid) versus IO (hatched), with three repeat runs shown as markers. DiagnosisArena uses exact set match and is split into multi-select (MCS) and single-select (SCS); the other datasets use the binary diagnosis judge. The source reports $n=4{,}497$ rows, with 50 records and three repeats per cell.}
+%   \label{fig:medical_accuracy}
+% \end{figure}
+
+% \subsubsection{Medical-Domain Early Commitment}
+
+% Each medical CoT trace is segmented and judged for its anchoring point and whether the gold diagnosis remains under consideration. GPT anchors in the first quarter in 14--59\% of traces, compared with 2--20\% for Gemini. Early anchoring is not uniformly harmful: across the plotted datasets, GPT's early-anchor traces are as accurate as or more accurate than its later-anchor traces. House~MD is the important exception. Of GPT's 82 early-anchor traces there, 45 are incorrect, and in 42 of those the gold diagnosis is never active at any step. This is primarily a candidate-recall failure rather than abandonment of an already considered correct diagnosis.
+
+% When gold is alive early, GPT retains it more reliably than the other two plotted models: the source reports later error rates of 20\% for GPT, 29\% for Gemini, and 40\% for Gemma. The remaining failures include option-granularity mismatches in which the trace names the relevant condition but selects a near-synonymous label.
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=\linewidth]{prism-uploads/fig_early_commitment.png}
+%   \caption{Early anchoring in medical chains. \textbf{(A)} Share of judged traces anchored in the first quarter. \textbf{(B)} Early-anchor traces split by outcome and whether gold is ever active. \textbf{(C)} GPT accuracy for early versus later anchors. Judged CoT traces only ($n=684/737/435$ for GPT/Gemini/Gemma). The source notes that Gemma's judged House~MD subset is accuracy-biased by $+0.32$.}
+%   \label{fig:early_commitment_medical}
+% \end{figure}
+
+% \subsubsection{Pre-Anchor Observation Share}
+
+% Across the available traces, the anchoring point occurs at step $3.95$ on average, or normalized position $0.50$. By then, the model has used $3.92$ of the $5.22$ observations it eventually uses, from $10.84$ observations available, for a mean pre-anchor observation share of $0.74$. Gemma and Gemini anchor after most of their used evidence is present (shares $0.92$ and $0.83$), whereas GPT anchors at step $1.25$ on average with a pre-anchor share of $0.48$. This descriptive contrast is consistent with the model-specific timing patterns in Section~\ref{sec:early_commitment}; it does not alone establish post-hoc rationalization.
+
+\input{Sections/Appendix/interesting_samples}
+
+% \input{Sections/Appendix/methods}
+
+
+% Resume the requested appendix sequence at B.
+% \setcounter{section}{1}
+\section{Evaluation Details}
+\label{app:evaluation_details}
+\input{Sections/Appendix/evaluation_details}
+\input{Sections/Appendix/prompts}
+
+% \subsection{Output Parsing and Trace Extraction}
+% \label{app:output_parsing}
+% \emph{Missing information: provide the answer parsers, malformed-output rules, trace delimiters, step-segmentation procedure, observation-inventory construction, and task-specific extraction exceptions.}
+
+% \subsection{Aggregation and Failure Handling}
+% \label{app:failure_handling}
+% The main protocol distinguishes not-applicable, unavailable, and successfully scored task--metric pairs. Execution failures and evaluator failures are recorded separately, and summaries should report eligible, attempted, and scored counts.
+
+% \emph{Missing information: provide the finalized aggregation formulas, weighting, common-subset rules, uncertainty estimation, retry limits, timeout settings, refusal handling, parser-failure handling, judge-failure handling, and score-denominator policy.}

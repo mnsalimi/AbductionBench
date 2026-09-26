@@ -1,0 +1,107 @@
+\subsection{Dataset and Task Inventory}
+\label{app:datasets}
+
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{P}[1]{>{\sloppy\raggedright\arraybackslash}p{#1}}
+% Local, self-contained row counter: do NOT rely on an externally
+% defined/shared \rownum counter, since it may already have been
+% incremented elsewhere in the document by the time this table starts
+% (this was the cause of the row numbers previously starting at 22
+% instead of 1). Defining and resetting our own counter here
+% guarantees the numbering always starts at 1 regardless of context.
+\newcounter{tblrownum}
+\renewcommand{\arraystretch}{1.5}
+\setcounter{tblrownum}{0}
+\begingroup
+\scriptsize
+\hbadness=10000
+\setlength{\tabcolsep}{1.8pt}
+\begin{longtable}{|C{0.3cm}|C{5.5cm}|C{3cm}|C{1.2cm}|C{1cm}|}
+\caption{Summary of datasets used. Data Delivery Mode: \textbf{S} = Static, \textbf{P} = Passive, \textbf{I} = Interactive. Hypothesis Processing Mode: \textbf{G} = Generation, \textbf{Sel} = Selection; \textbf{G / Sel} denotes datasets with separate generation and selection tasks.} \\
+\hline
+\textbf{\#} & \textbf{Name and Citation} & \textbf{Domain} & \textbf{Data\newline Delivery} & \textbf{Hyp.\newline Mode} \\
+\hline
+\endfirsthead
+
+\hline
+\textbf{\#} & \textbf{Name and Citation} & \textbf{Domain} & \textbf{Data\newline Delivery} & \textbf{Hyp.\newline Mode} \\
+\hline
+\endhead
+
+\hline
+\multicolumn{5}{r}{Continued on next page} \\
+\endfoot
+
+\hline
+\endlastfoot
+
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/MaiWert/MedQDx}{MedQDx} \citeauthor{werthaim2026q4dx} (\citeyear{werthaim2026q4dx}) & Healthcare: Diagnostic Questioning & I & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/yf-he/EvoClinician}{Med-Inquire} \citeauthor{he2026evoclinician} (\citeyear{he2026evoclinician}) & Healthcare: Clinical Diagnosis & I & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/LLM4Ops/Cloud-OpsBench}{Cloud-OpsBench} \citeauthor{wang2026cloudopsbench} (\citeyear{wang2026cloudopsbench}) & Computing Systems: Cloud Root-Cause Analysis & I & G\\
+\hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://causalgame.github.io/}{CausalGame} \citeauthor{chen2025causalgame} (\citeyear{chen2025causalgame}) & Scientific Discovery: Causal Discovery & I & G\\
+% \hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://huggingface.co/datasets/chychiu/VivaBench}{VivaBench} \citeauthor{chiu2025vivabench} (\citeyear{chiu2025vivabench}) & Healthcare: Clinical Diagnosis & I & G\\
+\hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://github.com/principia-ai/PhysGym}{PhysGym} \citeauthor{chen2025physgym} (\citeyear{chen2025physgym}) & Scientific Discovery: Physics Law Discovery & I & G\\
+% \hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://github.com/kanishkg/boxing-gym}{BoxingGym} \citeauthor{gandhi2025boxinggym} (\citeyear{gandhi2025boxinggym}) & Scientific Discovery: Experimental Design and Model Discovery & I & G\\
+% \hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://github.com/scientific-discovery/LLM-AutoSciLab}{SciLab} \citeauthor{kabra2025llmautoscilab} (\citeyear{kabra2025llmautoscilab}) & Scientific Discovery: Active Mechanism Discovery & I & G \& Sel\\
+% \hline
+
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/Waste-Wood/e-CARE/}{e-CARE} \citeauthor{du2022ecare} (\citeyear{du2022ecare}) & Commonsense: Causal Reasoning & S & G / Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/allenai/abductive-commonsense-reasoning}{ART} \citeauthor{Bhagavatula2020Abductive} (\citeyear{Bhagavatula2020Abductive}) & Narrative Reasoning: Abductive Explanation & S & G / Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://huggingface.co/datasets/allenai/UNcommonsense}{UNCOMMONSENSE} \citeauthor{impl_zhao2023uncommonsense} (\citeyear{impl_zhao2023uncommonsense}) & Commonsense: Uncommon-Situation Abduction & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://allenai.org/data/proofwriter}{ProofWriter} \citeauthor{impl_tafjord2020proofwriter} (\citeyear{impl_tafjord2020proofwriter}) & Formal Reasoning: Rule-Based Inference & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/TartuNLP/true-detective}{True Detective} \citeauthor{del2022truedetective} (\citeyear{del2022truedetective}) & Narrative Reasoning: Mystery Solving & S & Sel\\
+\hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://github.com/CTT-Pavilion/_HypoSpace}{HypoSpace} \citeauthor{chen2026hypospace} (\citeyear{chen2026hypospace}) & General: Set-Valued Hypothesis Generation & S & G\\
+% \hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/Zayne-sprague/Natural_Language_Deduction_with_Incomplete_Information.git}{ENWN and EntailmentBank} \citeauthor{sprague2022natural} (\citeyear{sprague2022natural}) & Formal Reasoning: Missing-Premise Inference & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/SPIRAL-MED/DiagnosisArena}{DiagnosisArena} \citeauthor{zhu2025diagnosisarena} (\citeyear{zhu2025diagnosisarena}) & Healthcare: Clinical Diagnosis & S & Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/MAGIC-AI4Med/MedRBench/tree/main/data}{MedR-Bench} \citeauthor{qiu2025medrbench} (\citeyear{qiu2025medrbench}) & Healthcare: Clinical Reasoning & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/DeepReasoning/NeuLR}{NeuLR} \citeauthor{xu2023llmslogicalreasoners} (\citeyear{xu2023llmslogicalreasoners}) & Formal Reasoning: Logical Entailment & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/mila-iqia/ddxplus}{DDXPlus} \citeauthor{fansitchango2022ddxplus} (\citeyear{fansitchango2022ddxplus}) & Healthcare: Differential Diagnosis & I & Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/sooo66/semeval2026-task12-dataset.git}{AER} \citeauthor{cao2026semeval} (\citeyear{cao2026semeval}) & Event Reasoning: Abductive Event Causality & S & Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://bit.ly/4p9ltW8}{House M.D.} \citeauthor{gupta2025housemd} (\citeyear{gupta2025housemd}) & Healthcare: Rare-Disease Diagnosis & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/andrewbouras/crosstrace}{CrossTrace} \citeauthor{bouras2026crosstrace} (\citeyear{bouras2026crosstrace}) & Scientific Discovery: Cross-Domain Hypothesis Generation & S & G\\
+% \hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://github.com/allenai/discoverybench}{DiscoveryBench} \citeauthor{majumder2025discoverybench} (\citeyear{majumder2025discoverybench}) & Scientific Discovery: Data-Driven Discovery & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://huggingface.co/datasets/UniverseTBD/hypogen-dr1}{HypoGen} \citeauthor{oneill2025sparks} (\citeyear{oneill2025sparks}) & Scientific Discovery: Computer-Science Hypothesis Generation & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://huggingface.co/datasets/matter2mech/matter-to-mechanism}{Matter to Mechanism} \citeauthor{sourav2026matter} (\citeyear{sourav2026matter}) & Scientific Discovery: Materials Mechanism Inference & S & G\\
+% \hline
+% \stepcounter{tblrownum}\thetblrownum & \href{https://huggingface.co/datasets/ChicagoHAI/HypoGeniC-datasets}{HypoBench} \citeauthor{liu2026hypobench} (\citeyear{liu2026hypobench}) & Scientific Discovery: Hypothesis Generation & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/microsoft/AgentRx}{AgentRx} \citeauthor{barke2026agentrx} (\citeyear{barke2026agentrx}) & Agentic Systems: Agent Failure Diagnosis & S & Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://www.aiops.cn/gitlab/aiops-live-benchmark/agenticopseval}{RCA100} \citeauthor{cai2026aiops} (\citeyear{cai2026aiops}) & Computing Systems: Microservice Failure Diagnosis & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/YuSheng-00/UniADILR}{UniADILR-HGc} \citeauthor{sheng2025unadilr} (\citeyear{sheng2025unadilr}) & Formal Reasoning: Constrained Abductive Hypothesis Generation & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/tdiggelm/climate-fever-dataset}{CLIMATE-FEVER} \citeauthor{diggelmann2021climatefeverdatasetverificationrealworld} (\citeyear{diggelmann2021climatefeverdatasetverificationrealworld}) & Scientific Reasoning: Evidence-Based Claim Explanation & S & Sel\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/Athena-Software-Group/athenabench}{AthenaBench (TAA)} \citeauthor{alam2025athenabench} (\citeyear{alam2025athenabench}) & Cybersecurity: Threat Actor Attribution & P & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/kevinwu23/Stanford-MedCaseReasoning}{MedCaseReasoning} \citeauthor{wu2025medcasereasoning} (\citeyear{wu2025medcasereasoning}) & Healthcare: Clinical Diagnosis & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/faezemoradik/CommonWhyDataset.git}{CommonWhy} \citeauthor{toroghi2026commonwhy} (\citeyear{toroghi2026commonwhy}) & Commonsense: Entity-Based Causal Reasoning & S & G\\
+\hline
+\stepcounter{tblrownum}\thetblrownum & \href{https://github.com/TsinghuaC3I/LLM4BioHypoGen}{LLM4BioHypoGen} \citeauthor{qi2024biohypogen} (\citeyear{qi2024biohypogen}) & Scientific Discovery: Biomedical Hypothesis Generation & S & G\\
+\end{longtable}
+\endgroup

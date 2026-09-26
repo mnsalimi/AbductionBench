@@ -1,0 +1,17 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Abductive reasoning seeks plausible explanations for observed evidence. When information is incomplete, several hypotheses may fit the same observations, and new evidence may change which explanation is best supported. For large language models (LLMs), a correct final answer alone does not show whether the model used the relevant evidence, considered alternatives, or revised an earlier hypothesis. Evaluation therefore needs to examine outcomes alongside observable reasoning and evidence-gathering behavior, without treating written traces as direct records of internal computation.
+
+Existing benchmarks address parts of this problem. Abductive Commonsense Reasoning evaluates narrative explanation selection and generation \citep{Bhagavatula2020Abductive}; GEAR evaluates generated hypothesis sets on four programmable benchmarks \citep{impl_he2025gear}. Because each benchmark fixes its own formulation and scoring, results do not show how abductive ability varies with the kind of hypothesis required, the domain, or the way evidence arrives. Most benchmarks also supply all evidence at once, whereas practical abduction---clinical diagnosis, incident response, threat attribution---requires revising a hypothesis as evidence arrives or deciding which evidence to seek.
+
+AbductionBench addresses this gap. It brings existing tasks into one execution and reporting protocol and describes each along three axes: hypothesis generation or selection, application domain, and evidence delivery, which is \emph{static} (all evidence at the outset), \emph{passive} (evidence arrives in a fixed order and the model revises its hypothesis after each turn), or \emph{interactive} (the model's questions or actions determine what it observes next). It scores final answers with task-appropriate checks or an LLM judge, and separately analyzes chain-of-thought (CoT) traces for evidence use, hypothesis comparison, uncertainty, and commitment, and multi-turn episodes for question relevance and hypothesis revision.
+
+We evaluate eight LLMs from four model families on 27 datasets (21 static, five interactive, one passive), together with Jev, a non-LLM System~One decision system, on the single-choice tasks. CoT helps when an explanation must be derived by chaining evidence but often hurts open-ended hypothesis generation, and within a dataset, longer traces go with lower accuracy. Jev is competitive with small LLMs when selecting among explanations over compact evidence but falls behind on long cases. In interactive diagnosis, a relevant first question goes with a correct final answer and relevance declines as the interaction proceeds; with passively arriving evidence, models rarely revise their first hypothesis.
+
+Our contributions are:
+\begin{itemize}
+    \item \textbf{A structured suite} of 27 datasets spanning ten domains, hypothesis generation and selection, and three modes of evidence delivery (static, passive, interactive), including a passive adaptation of AthenaBench, with source-task adaptations documented.
+    \item \textbf{A complementary evaluation protocol} that reports final-answer outcomes alongside trace measures for static tasks and turn-level measures for passive and interactive episodes.
+    \item \textbf{An empirical study} of eight LLMs and a non-LLM System~One decision system (Jev), covering 69,599 static responses and 2,400 passive and interactive episodes.
+\end{itemize}

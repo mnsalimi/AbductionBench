@@ -1,0 +1,32 @@
+% \subsection{Models and Inference Settings}
+% \label{app:model_inference_settings}
+
+% The active result figures name \textsc{gemini-3.8-flash}, \textsc{gemma-4-31b-it}, and \textsc{gpt-5.6-luna}, while the introduction describes an eight-model evaluation. The current project does not provide the remaining model identifiers or the numerical inference configuration.
+
+% \emph{Missing information: list all model versions, providers or checkpoints, access dates, run dates, decoding settings, seeds or repetitions, context and output limits, hardware where applicable, and passive or interactive action budgets.}
+
+% \subsection{Evaluator and Judge Configuration}
+% \label{app:evaluator_configuration}
+
+% Appendix~\ref{app:prompts} gives the current binary and graded answer-judge prompts and the available reasoning-judge prompts. Deterministic outcome checks are used where exact matching, set scoring, F1, or executable verification is appropriate.
+
+% \emph{Missing information: map every task and metric to its evaluator, judge model and version, judge decoding settings, number of judgments, reference access, adjudication procedure, human-validation sample, and retry policy.}
+
+
+\subsection{Models and Inference Settings}
+\label{app:model_inference_settings}
+
+The evaluation suite utilizes eight large language models alongside a non-LLM decision system. GPT-5.6-Luna, Gemini-3.8-Flash, Gemma-4-31B-IT, and Qwen-3.5-27B are queried through an API. Gemma-4-E4B, Gemma-4-E2B, Qwen-3.5-4B, and Qwen-3.5-2B are served locally using vLLM. The non-LLM System One decision system, Jev, is evaluated exclusively on the single-choice selection tasks under the direct-answer (IO) template. 
+Additionally, \texttt{gpt-4o-mini} is utilized to play the role of the patient or examiner in MedQDx, Med-Inquire, and VivaBench, while DDXPlus relies on BM25 retrieval for answering.
+
+For the static datasets, inference is run on 50 seeded records per dataset. The models generate three samples per record at a temperature of 0.7. For passive and interactive tasks, models are evaluated using 50 records per dataset but are only run for one direct-answer episode per record. In these multi-turn settings, the model receives the full interaction history in every turn, and native internal reasoning is disabled (with the exception of Gemini-3.8-Flash, which cannot fully disable reasoning and runs with a minimal setting). The interactive and passive action budgets are capped at 14 turns for MedQDx, 6 turns for AthenaBench, and 20 turns for all other datasets. Empty or truncated replies are scored as incorrect. Under CoT, about 1,100 Qwen-3.5-27B requests on ten generation datasets failed with provider errors after retries; its scores on those datasets average the 7--101 completed answers per dataset rather than all 150.
+
+\subsection{Evaluator and Judge Configuration}
+\label{app:evaluator_configuration}
+
+Task outcomes and metrics are mapped to either deterministic evaluators or LLM judges based on the task format. Deterministic outcome checks are applied to single-choice selection tasks (reporting accuracy) and multiple-choice or set-valued tasks (reporting exact set match and set F1 averaged over items). 
+% Executable verification or task-native verifiers replace text-based comparisons wherever available.
+
+For open-ended generation tasks, free-form answers, trace analyses, and step-relevance measures, the framework uses \texttt{gpt-oss-120b} as the designated answer judge and reasoning judge. Answer judges evaluate the final output by comparing the generated explanations against the gold reference answers to make a binary correct/incorrect judgment. Reasoning judges evaluate the process by receiving the task input, the model's explicit reasoning trace, and the fields required for the targeted descriptor. To analyze these traces, a single segmentation judge is used to cut the reasoning chain into discrete inferential steps before per-step metrics are calculated.
+
+% Currently, the benchmark relies solely on these automated judgments; the authors note in the limitations section that human-validation samples (human agreement and robustness checks) for the LLM judges have not yet been conducted and remain future work.

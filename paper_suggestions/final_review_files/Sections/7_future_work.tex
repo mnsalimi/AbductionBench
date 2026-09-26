@@ -1,0 +1,7 @@
+\FloatBarrier
+
+\section{Limitations}
+\label{sec:future_work}
+\label{sec:limitations}
+
+Comparisons across domains, hypothesis formulations, and delivery modes are observational: the source datasets differ in content, difficulty, and answer space, so category-level differences do not isolate a single cause. All free-form answers, trace measures, and step-relevance labels come from a single LLM judge (gpt-oss-120b) whose agreement with human annotators we have not measured. With 50 records per dataset, a static score has a 95\% interval of roughly $\pm$7--8 points and an episode score of up to $\pm$13, so small differences between models should not be over-read. Interactive results depend on the simulated patient or examiner (gpt-4o-mini) and on recorded environments, and passive and interactive tasks are run under IO only. Finally, written traces are observable outputs, not faithful records of the computation that produced the answer. Future work should validate the judges on human-annotated samples and add controlled variants that change one task property at a time.

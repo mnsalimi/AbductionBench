@@ -1,0 +1,4 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+AbductionBench organizes abductive evaluation around what models must do with hypotheses, where tasks are applied, and how evidence becomes available, and it reports reasoning traces and interaction histories alongside final answers. Across eight LLMs and 27 datasets, generating an explanation is much harder than selecting one, CoT helps derivation-heavy tasks but often hurts open-ended generation, and longer traces go with lower accuracy. A non-LLM decision system matches small LLMs on selection over compact evidence but not on long cases. Beyond static tasks, the first question of an interactive diagnosis already signals its outcome, and models rarely revise their first hypothesis when evidence arrives passively. Evaluating abduction therefore requires looking at how evidence is sought and used, not only at the final answer, while keeping clear limits on what written traces reveal about internal reasoning.

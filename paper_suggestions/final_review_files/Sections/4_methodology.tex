@@ -1,0 +1,43 @@
+\section{Benchmark Scope and Design}
+\label{sec:framework}
+\label{sec:methodology}
+
+AbductionBench brings existing tasks into a common evaluation interface. This section defines which tasks fall within its scope, how they are categorized, and how datasets are integrated; execution and scoring are specified in Section~\ref{sec:evaluation_protocol}.
+
+\subsection{What Counts as an Abductive Task}
+\label{sec:framework_scope}
+
+We include benchmarks designed to evaluate abductive reasoning and selected tasks from other benchmarks. For each task, we identify what is given, what the model must infer, and why that inference is abductive: usually, the model infers a hypothesis that explains supplied observations. Inclusion is decided at the task or subset level rather than from a dataset's domain label.
+
+\subsection{Task Taxonomy}
+\label{sec:task_representation}
+
+A \emph{task configuration} specifies a task from a dataset or subset, the information available to the model, the required output, and how evidence is supplied; a dataset contributes one configuration per task format it supports. We describe each configuration along three axes.
+
+\subsubsection{Hypothesis Generation and Selection}
+\label{sec:methodology_task_formulation}
+
+Following \citet{salimi2026wiring}, \textbf{generation} produces one or more candidate explanations $H=\{h_1,\ldots,h_n\}$ for observations $O$, whereas \textbf{selection} evaluates supplied candidates against the observations and returns the choice or subset the task requires, as in ART's $\alpha$NLI \citep{Bhagavatula2020Abductive}. Selection is posed as single choice (SCS) or, where several candidates may be correct, multiple choice (MCS). When a dataset supports both generation and selection, we evaluate each as a separate configuration. These terms describe the benchmark's observable inputs and outputs, not stages of the model's internal computation.
+
+\subsubsection{Application Domains}
+\label{sec:methodology_domain_taxonomy}
+
+Each configuration receives one primary-domain label: Healthcare, Commonsense, Narrative Reasoning, Formal Reasoning, Event Reasoning, Scientific Discovery, Scientific Reasoning, Computing Systems, Cybersecurity, or Agentic Systems (definitions in Appendix~\ref{app:domain_taxonomy}).
+
+\subsubsection{Evidence-Delivery Mode}
+\label{sec:methodology_data_delivery}
+
+Evidence-delivery mode describes when the model receives evidence and whether it can influence what evidence arrives next.
+\textbf{Static:} all evidence supplied by the task is available at the outset; it may still be incomplete, as is typical in abduction.
+\textbf{Passive:} evidence arrives in a predetermined sequence; the model may revise its hypothesis as evidence accumulates, but cannot choose what it receives next.
+\textbf{Interactive:} the model's actions or queries determine the information it receives next, so later observations depend on the interaction history.
+
+\input{Sections/abductive_task_scope.tex}
+
+\subsection{Dataset Selection and Adaptation}
+\label{sec:methodology_dataset_selection}
+
+From a larger candidate inventory, we retain tasks that meet the scope above and exclude datasets that are not publicly accessible, are prohibitively expensive to evaluate, are saturated by current models, or duplicate the abductive challenge of another selection. The resulting 27 datasets (Appendix~\ref{app:datasets}) cover all ten domains, both hypothesis formulations, and all three delivery modes. For each configuration, a dataset adapter converts source records into the common interface and connects them to the required evaluation resources, such as reference answers or an interaction environment; changes to the evidence shown, the allowed answers, or the output format are documented as our adaptations.
+
+\paragraph{Passive adaptation of AthenaBench.}
+AthenaBench poses threat-actor attribution: given evidence about malicious activity, name the responsible actor. We convert its 57 attribution cases (39 actors) into passive episodes. Each case's 15--25 evidence items---the actor's profile and motivation, techniques with MITRE ATT\&CK identifiers, and documented incidents---are delivered in source order over four to six turns, usually four items per turn. After each turn, the model names one actor while retaining all earlier evidence and predictions; it cannot request, reorder, or stop the evidence, which separates hypothesis revision from evidence acquisition. We keep the source's per-turn question and supply the system prompt and answer format. Because actors have many aliases (e.g., Sednit and APT28), each turn's prediction is judged against the gold actor by an LLM judge rather than by string match (Section~\ref{sec:sequential_interactive_evaluation}).

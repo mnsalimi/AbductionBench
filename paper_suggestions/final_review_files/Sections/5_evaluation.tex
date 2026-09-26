@@ -1,0 +1,26 @@
+\section{Evaluation Protocol}
+\label{sec:evaluation_protocol}
+\label{sec:methodology_evaluation_protocol}
+
+The protocol separates \emph{final-answer evaluation}, which scores the answer or terminal result, from \emph{process analysis}, which characterizes the reasoning trace or interaction history produced alongside it. Full metric definitions are in Appendix~\ref{app:metrics} and all judge prompts in Appendix~\ref{app:prompts}.
+
+\subsection{Prompting and Task Execution}
+\label{sec:task_execution}
+
+\textbf{Static tasks} are run under two AbductionBench templates that replace the source prompts: input--output (IO), which requests a direct answer, and chain-of-thought (CoT), which additionally requests an explicit reasoning trace. \textbf{Passive and interactive tasks} are run as multi-turn episodes under IO only, since the interaction itself exposes the process: the source's questions and environments are kept, while the system prompt and answer format are ours. The absence of a written trace under IO is not treated as evidence that a model performs no internal reasoning.
+
+\subsection{Final-Answer Evaluation}
+\label{sec:outcome_evaluation}
+\label{sec:methodology_metrics}
+
+Single-choice selection (SCS) is scored by accuracy, and multiple-choice selection (MCS) by exact set match (EM) and set F1 averaged over items. Generation tasks with a formally checkable answer (ProofWriter, UniADILR-HGc) are scored by exact match; other free-form explanations receive a binary correct/incorrect verdict from an LLM judge (gpt-oss-120b) that compares them with the gold explanation. Cloud-OpsBench is scored by joint root-cause accuracy: the judged fault type and the faulty component must both be correct.
+
+\subsection{Reasoning-Trace Analysis}
+\label{sec:reasoning_trace_evaluation}
+
+For CoT outputs, a segmentation judge splits each trace into steps, and a reasoning judge (gpt-oss-120b) scores each step or trace on thirteen descriptors: evidence use (observation coverage); step quality (useful and helpful steps, backtracking); expressed uncertainty; hypothesis breadth (branchiness, diversity, comparison exhaustiveness); direction and commitment (evidence-to-hypothesis directionality, anchoring point); unsupported content (prior knowledge, unresolved contradiction); and whether the gold hypothesis remains under consideration. These measures describe the reasoning a model writes, not its hidden computation.
+
+\subsection{Passive and Interactive Evaluation}
+\label{sec:sequential_interactive_evaluation}
+
+Every episode is scored by final-answer accuracy. For interactive tasks, each action before the final answer (a question, test, or tool call) is judged relevant or irrelevant to the gold answer, giving per-step relevance and the turns taken. For AthenaBench, every turn's prediction is judged against the gold actor, giving per-turn accuracy, the first correct turn, and the first turn at which the final prediction appears. Static-trace measures are not applied to episodes.
