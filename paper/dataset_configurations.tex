@@ -1,0 +1,60 @@
+% Requires \usepackage{booktabs,longtable,array,url} in the manuscript preamble.
+% Rows are the 21 static, 5 interactive, and 1 passive datasets reported in
+% Abduction_Benchmarking-2.pdf, checked against configs/datasets, adapter
+% documentation in docs/datasets.md, and configs/runs/pilot.yaml.
+% The per-dataset source release revision is not pinned by the repository.
+\begingroup
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{longtable}{@{}p{2.6cm}p{1.55cm}p{4.45cm}p{6.6cm}@{}}
+\caption{Evaluated dataset configurations. Every dataset contributes 50 sampled records. SCS and MCS denote single-choice and multiple-choice selection; Gen denotes free-form generation. Adapter versions are 1.0 except VivaBench (2.0).}\label{tab:dataset-configurations}\\
+\toprule
+Dataset & Format & Source subset and split & Adapter treatment \\
+\midrule
+\endfirsthead
+\caption[]{Evaluated dataset configurations (continued).}\\
+\toprule
+Dataset & Format & Source subset and split & Adapter treatment \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\multicolumn{4}{@{}l}{\textit{Static delivery (21 datasets)}}\\
+\midrule
+\path{art} & SCS, MCS, Gen & Official alphaNLI test with public labels; alphaNLG test & Selection chooses a connecting event; generation writes one. The two source tasks are kept distinct. \\
+\path{ecare} & SCS, MCS, Gen & Official dev: Causal Reasoning (cause questions) and Explanation Generation & Effect-prediction questions are excluded from selection; conceptual explanations form a separate generation task. \\
+\path{climate_fever} & SCS, MCS & Released claim set, 1,535 items; no official split & Retrieved evidence is presented with each claim; all four verdict classes are retained. \\
+\path{true_detective} & SCS, MCS & Whole release, 191 mysteries; no official split & Published answer options and gold labels are parsed into selection items. \\
+\path{diagnosisarena} & SCS, MCS & Official test, 915 cases & The four released candidate diagnoses are used for the reported selection configuration. \\
+\path{agentrx} & SCS, MCS & Root-cause-labelled Magentic-One and TAU trajectories, 97 cases; no official split & The failure summary is the default evidence; categories from the annotations form the candidate set. \\
+\path{aer} & MCS & Official dev, 400 labelled items; test labels unavailable & Candidate causes are scored as sets; retrieved documents are supplied as titles and snippets. \\
+\midrule
+\path{aiops2025} (RCA100) & Gen & RCA100, 103 answer-keyed incidents & Alert text and bounded topology are shown; live telemetry queries are unavailable offline. \\
+\path{commonwhy} & Gen & Head and Longtail pools, 7,430 questions each; no official split & Pools are combined for sampling; the answer-bearing rule field is withheld. \\
+\path{crosstrace} & Gen & Released \path{test_ours.jsonl}, 107 items & The user turn supplies the observation; the source system prompt is not reused. \\
+\path{enwn_entailmentbank} & Gen & Abductive-step data: EntailmentBank train (5,835) and ENWN validation (48) & Missing-premise steps are extracted; deductive and full-tree tasks are excluded. \\
+\path{house_md} & Gen & Four released workbooks, 701 unique vignettes; no official split & Vignettes are deduplicated across workbooks and model-answer columns are excluded. \\
+\path{hypogen} & Gen & Official test, 50 items & Title, abstract, and other answer-revealing fields are withheld. \\
+\path{llm4biohypogen} & Gen & GPT-4 extraction, \path{test_unseen.json}, 197 studies & Only the unseen-study split is used; the hypothesis is withheld from the prompt. \\
+\path{matter_to_mechanism} & Gen & Whole released table, 2,645 rows; no official split & Problem-side fields are shown; hypothesis, mechanism, outcome, and reasoning fields are withheld. \\
+\path{medcasereasoning} & Gen & Official test, 897 case reports & Case evidence is presented for open-vocabulary diagnosis. \\
+\path{medr_bench} & Gen & Diagnosis collection, 957 cases; no official split & Treatment cases are excluded; the concise diagnosis field supplies the reference. \\
+\path{neulr} & Gen & Whole \path{abductive_neutral.json}, 1,000 items & The missing-fact task is retained; deductive and inductive files are excluded. \\
+\path{proof_writer} & Gen & Official test, open-world depths 1, 2, 3, and 5 & Missing-fact abduction items are reconstructed from the released proofs. \\
+\path{uncommonsense} & Gen & Official validation, 2,239 items; no test split & Human explanations provide references; model-written explanation fields are excluded. \\
+\path{uniadilr_hgc} & Gen & Released \path{abduction.jsonl}, 500 items & The model predicts supporting statements, without being told the gold set size. \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Interactive delivery (5 datasets)}}\\
+\midrule
+\path{medqdx} & Gen & \path{Patient Cases.csv}, 100 vignettes at three information levels & The model interviews the patient and names a disease; no candidate list is shown. \\
+\path{med_inquire} & Gen & Official test, 915 case reports & The model requests history, examinations, and tests before committing to a diagnosis. \\
+\path{vivabench} & Gen & \path{pubmed_reviewed}, 990 cases; no official split & The released viva workflow and action vocabulary are used for evidence gathering and diagnosis. \\
+\path{ddxplus} & SCS, MCS & Official test, 134,529 patients & Coded evidence is decoded to English; candidates come from each case's differential. \\
+\path{cloud_opsbench} & Gen & All ground-truth cases, 754 across two namespaces; no official split & The model queries a bounded cache of tool outputs before naming the root cause. \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Passive delivery (1 dataset)}}\\
+\midrule
+\path{athena_bench} & Gen & Bundled attribution set, 57 cases; no official split & Evidence arrives in source order, usually four items per turn; the model predicts an actor after each turn. \\
+\end{longtable}
+\endgroup
