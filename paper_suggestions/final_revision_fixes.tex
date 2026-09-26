@@ -1,0 +1,165 @@
+% =====================================================================
+% FINAL-REVISION FIXES -- ready to paste. Each block says which file and
+% what to replace. Nothing here has been applied to the Overleaf project.
+% =====================================================================
+
+
+% ---------------------------------------------------------------------
+% FIX 1 [CRITICAL] Sections/ai_disclosure.tex -- replace the WHOLE file.
+% The section is REQUIRED; it still holds the template placeholders.
+% Edit anything that is not true for your team.
+% ---------------------------------------------------------------------
+\subsection*{AI use statement}
+
+In this work, LLMs are the object of study: the evaluated models, the answer and reasoning-trace judge (gpt-oss-120b), and the simulated patients and examiners (gpt-4o-mini) are described in Section~\ref{sec:results} and Appendix~\ref{app:evaluation_details}. Beyond this, we used generative AI coding assistants to help implement the evaluation framework, dataset adapters, and analysis and plotting scripts, and to assist with editing the text of this paper. We did not use generative AI tools to generate research ideas or to fabricate or alter data or results. All AI-assisted code was reviewed and tested by the authors, all reported numbers are computed by our pipeline from the stored model outputs, and all AI-assisted text was reviewed and revised by the authors. We take responsibility for the final content of this work, including text, claims, and artifacts produced with the aid of generative AI.
+
+
+% ---------------------------------------------------------------------
+% FIX 2 [CRITICAL] Sections/2_introduction.tex, paragraph 4 -- WRONG FACT.
+% OLD:  ... AthenaBench, three samples per record (7,200 episodes), with native reasoning disabled.
+% NEW (the episodes were run ONCE per record: 8 models x 7 tasks x 50 = 2,800):
+% ---------------------------------------------------------------------
+% ... the same eight LLMs on 50 records from each of the five interactive datasets and the passive AthenaBench, once per record (2,800 episodes), with native reasoning disabled.
+
+
+% ---------------------------------------------------------------------
+% FIX 3 [CRITICAL] Sections/6_experiments.tex -- the main text no longer
+% says how anything was run (Experimental Setup is commented out, and the
+% setup paragraph was not added). Insert right after
+% "\graphicspath{{prism-uploads/}{figures/}{./}}", replacing the sentence
+% "Table~\ref{tab:main_results_all_models} reports final-answer scores ...".
+% ---------------------------------------------------------------------
+\paragraph{Setup.} We evaluate 27 datasets---21 static, five interactive, and one passive---on 50 seeded records each (Appendix~\ref{app:benchmark_inventory}). The eight LLMs are GPT-5.6-Luna, Gemini-3.8-Flash, Gemma-4-31B, and Qwen-3.5-27B, queried through an API, and Gemma-4-E4B/E2B and Qwen-3.5-4B/2B, served locally with vLLM; the Jev decision system answers the single-choice tasks under IO only. Static tasks are run under IO and CoT, with three samples per record at temperature 0.7. Interactive and passive tasks are run once per record under IO, with native reasoning disabled (minimal for Gemini-3.8-Flash, which cannot disable it) and the full interaction history in every turn, up to 14 turns for MedQDx, six for AthenaBench, and 20 otherwise; gpt-4o-mini plays the patient or examiner in MedQDx, Med-Inquire, and VivaBench, DDXPlus answers from each patient's recorded questionnaire by BM25 retrieval, and CloudOpsBench replays its recorded tool outputs. Free-form answers and all trace and step-relevance measures are judged by gpt-oss-120b (Appendix~\ref{app:evaluation_details}). Qwen-3.5-27B's CoT run is incomplete on nine static datasets, whose scores rest on the samples completed. Table~\ref{tab:main_results_all_models} reports the final-answer scores.
+
+
+% ---------------------------------------------------------------------
+% FIX 4 [CRITICAL: page limit + "draft" wording] Sections/7_future_work.tex
+% -- replace the WHOLE file. It reads "The present draft has four material
+% limitations ... not yet documented"; this version is a real limitations
+% section and is about 1 page shorter.
+% ---------------------------------------------------------------------
+\section{Limitations}
+\label{sec:future_work}
+
+Comparisons across domains, task formats, and delivery modes are observational: the datasets differ in content, difficulty, answer space, and prompt source, so category-level differences do not isolate a single cause, and the relations between trace length, question relevance, and accuracy are associations, not causal effects. Free-form answers and all trace and step measures are scored by a single LLM judge (gpt-oss-120b) that has not been validated against human annotators; we checked only that the same judge served by different providers agrees with itself about as often as two runs of the local judge do. With 50 records per dataset, a static cell (150 answers) carries a 95\% interval of roughly $\pm$7--8 points and an episode cell (50 episodes) roughly $\pm$13, so small differences in Table~\ref{tab:main_results_all_models} are not significant. The interactive environments rely on a simulated patient or examiner, so their scores depend partly on the simulator. Written traces are observable outputs, not faithful records of the models' computation. Future work should validate the judges on human-annotated samples and pair natural benchmarks with controlled variants that change one property---candidate-set size, trace length, or delivery mode---at a time.
+
+
+% ---------------------------------------------------------------------
+% FIX 5 [MAJOR] Sections/8_conclusion.tex -- replace the paragraph.
+% The current one claims results that are no longer in the paper
+% ("accuracy depends on ... context length", "larger candidate sets make
+% selection harder") and omits the interactive and passive findings.
+% ---------------------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+AbductionBench organizes abductive evaluation around what models must do with hypotheses, where tasks are applied, and how evidence becomes available, and scores final answers separately from the traces and interaction histories that produce them. Across 27 datasets, eight LLMs, and a System-One decision system, proposing an explanation proves much harder than selecting one, chain-of-thought helps derivational tasks but often hurts open-ended hypothesis generation, and longer traces go with lower accuracy. When models must gather evidence, the relevance of their first question predicts the outcome and relevance declines as the interaction proceeds; when evidence arrives passively, they rarely revise their first hypothesis. These findings argue for evaluating abductive systems through both their conclusions and the evidence-sensitive process they expose, while keeping clear what written traces can and cannot establish about internal reasoning.
+
+
+% ---------------------------------------------------------------------
+% FIX 6 [MAJOR] Sections/5_evaluation.tex -- three false or inaccurate
+% statements.
+% (a) "Passive and interactive tasks." paragraph -- replace:
+% ---------------------------------------------------------------------
+\paragraph{Passive and interactive tasks.}
+These tasks run in IO only, because each turn must be a single action or answer that the environment can process. We adapt each benchmark's protocol---its action vocabulary, limits, and answer format---into our prompt structure, and write our own prompts for the passive AthenaBench adaptation. Passive tasks deliver evidence on a fixed schedule, whereas in interactive tasks the model's actions or queries determine the evidence it receives. Section~\ref{sec:sequential_interactive_evaluation} describes how these runs are evaluated.
+
+% (b) "Final-Answer Evaluation", sentence 3 -- OLD: "... we report exact set match and macro F1."
+%     NEW: "... we report exact set match and set F1, averaged over items."
+
+% (c) "Passive and Interactive Evaluation" -- replace the paragraph (the
+%     current one lists a measure that is never computed: "whether
+%     evidence-gathering behavior preserves or eliminates viable hypotheses"):
+\subsection{Passive and Interactive Evaluation}
+\label{sec:sequential_interactive_evaluation}
+
+Both settings are scored on final-answer accuracy---the judge's verdict for free-form answers and exact match for label answers---and on the number of turns to the final output. Interactive episodes additionally receive \emph{step relevance}: the judge labels each action as relevant or irrelevant to the gold answer given the full interaction history. For the passive task, every turn's prediction is judged, yielding the first turn with a correct prediction, the mean per-turn accuracy, and the first turn at which the final prediction appears. Static-trace metrics are not applied to episodes.
+
+
+% ---------------------------------------------------------------------
+% FIX 7 [CRITICAL: anonymity] Sections/Appendix/related_work_coverage.tex,
+% CEDAR-GRPO row, last cell -- OLD:
+%   Substantial empirical and software overlap: released evaluation orchestration and task scripts; training transfer is the central objective.
+% NEW:
+%   Post-training method evaluated on abductive transfer; not a benchmark aggregating existing datasets.
+% ---------------------------------------------------------------------
+
+
+% ---------------------------------------------------------------------
+% FIX 8 [MAJOR] Sections/Appendix/dataset.tex (dataset table)
+%  - CLIMATE-FEVER row: \citeyear{salimi2026cedar} -> \citeyear{diggelmann2021climatefeverdatasetverificationrealworld}
+%    (wrong key; it also adds an accidental self-citation)
+%  - RCA100 row, last column: Sel -> G
+%  - UniADILR-HGc row, last column: Sel -> G
+%  - AthenaBench row: "Cyber Security" -> "Cybersecurity"; delivery "S" -> "P"
+%  - Caption legend: "Data Delivery Mode: \textbf{I} = Interactive, \textbf{S} = Static."
+%       -> "Data Delivery Mode: \textbf{S} = Static, \textbf{P} = Passive, \textbf{I} = Interactive."
+% ---------------------------------------------------------------------
+
+
+% ---------------------------------------------------------------------
+% FIX 9 [MAJOR] Jev naming is inconsistent: abstract "System1", intro
+% "System~One", Results heading "System-One". Use ONE form everywhere,
+% e.g. "System~One" (abstract, introduction, Results heading and text,
+% table caption, conclusion).
+% ---------------------------------------------------------------------
+
+
+% ---------------------------------------------------------------------
+% FIX 10 [MAJOR] Sections/Appendix/evaluation_details.tex -- replace the
+% WHOLE file (both subsections are "Missing information" placeholders).
+% ---------------------------------------------------------------------
+\subsection{Models and Inference Settings}
+\label{app:model_inference_settings}
+
+We evaluate GPT-5.6-Luna, Gemini-3.8-Flash, Gemma-4-31B, and Qwen-3.5-27B through the OpenRouter API, and Gemma-4-E4B, Gemma-4-E2B, Qwen-3.5-4B, and Qwen-3.5-2B served locally with vLLM on a single GPU; all runs took place in September 2026. Jev is queried through its API with the IO template on the single-choice selection tasks. Each dataset contributes 50 records drawn with a fixed seed. Static tasks are asked three times per record at temperature 0.7 under both IO and CoT; for CoT, models that expose native reasoning use it, and the written or native trace is analyzed. Interactive and passive tasks are asked once per record at temperature 0.7 under IO with native reasoning disabled (minimal for Gemini-3.8-Flash) and the full interaction history in every turn. Turn limits are 14 for MedQDx, 20 for the other interactive tasks, and the four to six evidence turns of each AthenaBench case. gpt-4o-mini (temperature 0) plays the patient or examiner in MedQDx, Med-Inquire, and VivaBench; DDXPlus answers from the patient's recorded questionnaire, returning the up to three recorded questions most similar to the model's question by BM25 over stemmed words (normalized score $\geq 0.5$); CloudOpsBench replays its recorded tool outputs.
+
+\subsection{Evaluator and Judge Configuration}
+\label{app:evaluator_configuration}
+
+Label answers (SCS accuracy, MCS exact set match and set F1, and exact-match generation tasks) are scored deterministically. Free-form answers are judged by gpt-oss-120b at temperature 0 with the binary equivalence prompt in Appendix~\ref{app:prompts}, one judgment per answer; for AthenaBench every turn's prediction is judged. Reasoning-trace measures use the reasoning-judge prompts in Appendix~\ref{app:prompts}, and interactive step relevance uses the step-relevance prompt, both with gpt-oss-120b. Transient API failures are retried up to eight times. An exchange too long for the judge's context window is not judged: it counts as incorrect for final-answer accuracy and is excluded from trace measures. The judge was not validated against human annotators.
+
+
+% ---------------------------------------------------------------------
+% FIX 11 [MAJOR] Sections/Appendix/appendix.tex -- replace the two
+% remaining "Missing information" paragraphs.
+% (a) under \subsection{Output Parsing and Trace Extraction}:
+% ---------------------------------------------------------------------
+Models are asked to place their answer in \texttt{<answer>...</answer>} tags; when the tags are missing, the last line of the reply is parsed. A reply that stops at the output limit before giving an answer is recorded as unreadable and scored as incorrect. For CoT, the analyzed trace is the written reasoning or, for models that return it separately, the native reasoning. A segmentation judge splits the trace into steps, and every per-step measure must return exactly one value per step or the measure is discarded for that trace.
+
+% (b) under \subsection{Aggregation and Failure Handling}, replacing the
+%     "Missing information" paragraph (keep the paragraph before it):
+A task's score is the mean of its primary metric over all scored samples; unreadable answers count as 0, while requests that failed at the API are excluded and reported through coverage. Trace measures are averaged over the traces for which the reasoning judge returned a valid result. The Average row of Table~\ref{tab:main_results_all_models} is the unweighted mean of each column over the rows that report a value, excluding F1 rows. Figures report 95\% Wilson intervals for proportions.
+
+
+% ---------------------------------------------------------------------
+% FIX 12 [MINOR, but a "??" in the PDF] The Results text cites
+% Appendix~\ref{app:reasoning_length}, which does not exist yet. Paste into
+% Sections/Appendix/appendix.tex (e.g. after the single- vs.
+% multiple-choice block) and upload figS4_accuracy_vs_reasoning_length.pdf
+% to prism-uploads/.
+% ---------------------------------------------------------------------
+\subsubsection{Accuracy and Reasoning Length Across All Eight LLMs}
+\label{app:reasoning_length}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\linewidth]{figS4_accuracy_vs_reasoning_length.pdf}
+  \caption{CoT accuracy by reasoning-length quintile, computed within each dataset and model (1 = shortest fifth of replies), with 95\% Wilson bands; dotted: all models pooled.}
+  \label{fig:accuracy_vs_reasoning_length}
+\end{figure}
+Within every model, accuracy declines from the shortest to the longest fifth of CoT replies, from 68\% to 37\% pooled; Qwen-3.5-2B falls from 40\% to 11\%.
+
+
+% ---------------------------------------------------------------------
+% FIX 13 [MINOR] other appendix clean-ups
+%  - Sections/Appendix/interesting_samples.tex: the MuSR case study
+%    (MuSR is not among the 27 evaluated datasets) -- remove it, or add
+%    "(MuSR was piloted but is not part of the final suite)".
+%  - Sections/Appendix/appendix.tex, model-wise heatmap text: replace the
+%    internal run names (gemini-3.8-flash-openrouter, qwen3-5-27b-openrouter,
+%    gemma-4-e2b-local, ...) with the paper's names (Gemini-3.8-Flash,
+%    Qwen-3.5-27B, Gemma-4-E2B, ...). The figure's panel titles use the
+%    same internal names.
+%  - \label{app:metrics} is defined twice (appendix.tex and metrics.tex):
+%    delete the one in appendix.tex.
+% ---------------------------------------------------------------------
