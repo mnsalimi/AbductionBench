@@ -1,0 +1,30 @@
+% Horizon-by-context figure -> Appendix D, and figure-placement fixes for Section 5.
+% (1) Sections/Appendix/appendix.tex: paste the block below right BEFORE the lines
+%       \FloatBarrier
+%       \label{app:additional_results}
+%     (this also defines app:reasoning_length, so FIX 12 is not needed separately).
+
+\FloatBarrier
+\subsection{Accuracy and Reasoning Length}
+\label{app:reasoning_length}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\linewidth]{figS4_accuracy_vs_reasoning_length.pdf}
+  \caption{CoT accuracy by reasoning-length quintile, computed within each dataset and model (1 = shortest fifth of replies), with 95\% Wilson bands; dotted: all models pooled.}
+  \label{fig:accuracy_vs_reasoning_length}
+\end{figure}
+
+Within every model, accuracy declines monotonically from the shortest to the longest fifth of CoT replies, from 68\% to 37\% pooled; Qwen-3.5-2B falls from 40\% to 11\% (Figure~\ref{fig:accuracy_vs_reasoning_length}).
+
+\subsubsection{Reasoning Length by Input Context Length}
+\label{app:horizon_by_context}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{fig_horizon_by_context.jpeg}
+  \caption{Accuracy by CoT trace length (steps) for Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna, split by input length: short ($<$1k tokens, $n=9{,}684$ traces), medium (1k--2k, $n=2{,}663$), and long ($>$2k, $n=1{,}123$). Dashed lines: each model's IO accuracy in the same tier; bands are $\pm$SEM, points with $n<5$ omitted.}
+  \label{fig:horizon_by_context}
+\end{figure}
+
+The decline beyond six steps seen in Figure~\ref{fig:horizon_scaling} holds within each input-length tier (Figure~\ref{fig:horizon_by_context}). On short inputs, GPT-5.6-Luna peaks at two steps (78.5\%) and falls to 53.1\% at eight, and Gemini-3.8-Flash falls from 74.2\% at six steps to 47.9\% at twelve, while Gemma-4-31B needs several steps before it exceeds its IO baseline (18.4\% at one step, 78.6\% at six). On long inputs the effect of CoT is largest in both directions: GPT-5.6-Luna scores only 27.5\% under IO but 85.8\% with three- to four-step chains, then 33.3\% at eight steps, and Gemma-4-31B drops from 88.9\% at four steps to 30.4\% at eight. Gemini-3.8-Flash is the most stable on long inputs, near or above its IO baseline up to six steps. The long tier has the fewest traces, so its curves have the widest bands, and, as in the main text, the relation is associational: longer inputs and longer chains both mark harder cases.
