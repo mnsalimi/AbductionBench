@@ -1,5 +1,9 @@
 \makeatletter
 \providecommand{\abRegime}[1]{\rlap{\hspace{-\tabcolsep}\vrule width 0.5pt height \ht\@arstrutbox depth \dp\@arstrutbox}#1}
+% The line in front of the Avg. column: drawn over the finished table box, at
+% the column boundary, from the top rule to the bottom rule -- one unbroken
+% line (a | in the column spec is cut by every booktabs rule and \addlinespace).
+\@ifundefined{abTabBox}{\newsavebox{\abTabBox}\newlength{\abAvgW}\newlength{\abAvgD}}{}
 \providecommand{\abMetric}[1]{\rlap{\hspace{-\tabcolsep}\lower\dp\@arstrutbox\vbox to \dimexpr\ht\@arstrutbox+\dp\@arstrutbox\relax{\cleaders\vbox to 1.2pt{\vss\hbox{\vrule width 0.55pt height 0.55pt}}\vfill}}#1}
 \makeatother
 \begin{table*}[t]
@@ -7,12 +11,13 @@
 \scriptsize
 \renewcommand{\arraystretch}{0.82}
 \setlength{\tabcolsep}{3pt}
-\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning before answering. \textbf{Interactive} and \textbf{Sequential}: 50 records per dataset, one episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed (EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). \textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes reported. \textbf{Average}: mean of each column over all rows with a value in it (CoT columns therefore cover the static datasets only).}
+\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning before answering. \textbf{Interactive} and \textbf{Passive}: 50 records per dataset, one episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed (EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). \textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes reported. \textbf{Average}: mean of each column over all rows with a value in it (CoT columns therefore cover the static datasets only).}
 \label{tab:main_results_all_models}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{l l l cccccccccccccccc c}
+\sbox{\abTabBox}{%
+\begin{tabular}{l l l cccccccccccccccc @{\hspace{3\tabcolsep}} c}
 \toprule
-\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & \multicolumn{2}{c}{\textbf{GPT-5.6-Luna}} & \multicolumn{2}{c}{\textbf{Gemini-3.8-Flash}} & \multicolumn{2}{c}{\textbf{Gemma-4-31B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-27B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E4B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E2B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-4B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-2B}} & \textbf{Avg.} \\
+\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & \multicolumn{2}{c}{\textbf{GPT-5.6-Luna}} & \multicolumn{2}{c}{\textbf{Gemini-3.8-Flash}} & \multicolumn{2}{c}{\textbf{Gemma-4-31B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-27B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E4B}} & \multicolumn{2}{c}{\textbf{Gemma-4-E2B}} & \multicolumn{2}{c}{\textbf{Qwen-3.5-4B}} & \multicolumn{2}{c@{\hspace{3\tabcolsep}}}{\textbf{Qwen-3.5-2B}} & \textbf{Avg.} \\
 \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11} \cmidrule(lr){12-13} \cmidrule(lr){14-15} \cmidrule(lr){16-17} \cmidrule(lr){18-19}
 & & & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \textbf{IO} & \textbf{CoT} & \\
 \midrule
@@ -78,12 +83,14 @@
 \texttt{cloud\_opsbench} & Gen & JRA & 6.0 & -- & \textbf{10.0} & -- & 4.0 & -- & 2.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & 0.0 & -- & 2.8 \\
 \addlinespace[1.2pt]
 \midrule
-\multicolumn{20}{l}{\textit{\textbf{3. Sequential Delivery}}} \\
+\multicolumn{20}{l}{\textit{\textbf{3. Passive Delivery}}} \\
 \midrule
 \texttt{athena\_bench} & Gen & LLM-J & 30.0 & -- & \textbf{44.0} & -- & 26.0 & -- & 20.0 & -- & 20.0 & -- & 8.0 & -- & 10.0 & -- & 0.0 & -- & 19.8 \\
 \midrule
 \textbf{Average} & & & 56.9 & 63.9 & 62.2 & \textbf{68.5} & 57.7 & 61.5 & 53.5 & 61.3 & 44.5 & 50.9 & 39.9 & 46.8 & 42.2 & 53.7 & 29.6 & 29.2 & 48.9 \\
 \bottomrule
-\end{tabular}%
+\end{tabular}}%
+\settowidth{\abAvgW}{\textbf{Avg.}}\settowidth{\abAvgD}{00.0}\ifdim\abAvgD>\abAvgW\setlength{\abAvgW}{\abAvgD}\fi%
+\usebox{\abTabBox}\llap{\rule[\dimexpr-\dp\abTabBox+\heavyrulewidth\relax]{0.4pt}{\dimexpr\ht\abTabBox+\dp\abTabBox-2\heavyrulewidth\relax}\hspace{\dimexpr\tabcolsep+\abAvgW+1.5\tabcolsep-0.2pt\relax}}%
 }
 \end{table*}

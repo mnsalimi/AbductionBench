@@ -1,5 +1,7 @@
 """The paper's main results table (LaTeX), every number read from the records.
 
+Needs \\usepackage{booktabs,graphicx}.
+
     PYTHONPATH=src .venv/bin/python tools/main_table_latex.py OUT.tex
 
 Static delivery: runs/20260924-002252_openrouter-trio (50 records x 3 repeats
@@ -166,6 +168,10 @@ def row(first, regime, metric, cells, grouped=False):
 # regimes, a dotted one groups the two metrics (EM, F1) of its MCS regime.
 MACROS = r"""\makeatletter
 \providecommand{\abRegime}[1]{\rlap{\hspace{-\tabcolsep}\vrule width 0.5pt height \ht\@arstrutbox depth \dp\@arstrutbox}#1}
+% The line in front of the Avg. column: drawn over the finished table box, at
+% the column boundary, from the top rule to the bottom rule -- one unbroken
+% line (a | in the column spec is cut by every booktabs rule and \addlinespace).
+\@ifundefined{abTabBox}{\newsavebox{\abTabBox}\newlength{\abAvgW}\newlength{\abAvgD}}{}
 \providecommand{\abMetric}[1]{\rlap{\hspace{-\tabcolsep}\lower\dp\@arstrutbox\vbox to \dimexpr\ht\@arstrutbox+\dp\@arstrutbox\relax{\cleaders\vbox to 1.2pt{\vss\hbox{\vrule width 0.55pt height 0.55pt}}\vfill}}#1}
 \makeatother"""
 
@@ -181,7 +187,7 @@ def main() -> int:
     L.append(r"\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores "
              r"are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at "
              r"temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning "
-             r"before answering. \textbf{Interactive} and \textbf{Sequential}: 50 records per dataset, one "
+             r"before answering. \textbf{Interactive} and \textbf{Passive}: 50 records per dataset, one "
              r"episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the "
              r"score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed "
              r"(EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). "
@@ -193,10 +199,12 @@ def main() -> int:
              r"therefore cover the static datasets only).}")
     L.append(r"\label{tab:main_results_all_models}")
     L.append(r"\resizebox{\linewidth}{!}{%")
-    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + " c}")
+    L.append(r"\sbox{\abTabBox}{%")
+    L.append(r"\begin{tabular}{l l l " + "c" * (2 * len(MODELS)) + r" @{\hspace{3\tabcolsep}} c}")
     L.append(r"\toprule")
     L.append(r"\textbf{Benchmark / Dataset} & \textbf{Regime} & \textbf{Metric} & "
-             + " & ".join(f"\\multicolumn{{2}}{{c}}{{\\textbf{{{n}}}}}" for _, n in MODELS) + r" & \textbf{Avg.} \\")
+             + " & ".join(f"\\multicolumn{{2}}{{{'c@{\\hspace{3\\tabcolsep}}' if k == len(MODELS) - 1 else 'c'}}}"
+                          f"{{\\textbf{{{n}}}}}" for k, (_, n) in enumerate(MODELS)) + r" & \textbf{Avg.} \\")
     L.append(" ".join(f"\\cmidrule(lr){{{4 + 2 * i}-{5 + 2 * i}}}" for i in range(len(MODELS))))
     L.append("& & & " + " & ".join(r"\textbf{IO} & \textbf{CoT}" for _ in MODELS) + r" & \\")
     ncol = 4 + 2 * len(MODELS)
@@ -226,7 +234,7 @@ def main() -> int:
             cells += [static_cell(ds, mid, "io", "n-a", key), static_cell(ds, mid, "cot", "n-a", key)]
         L.append(row(tt(ds), "Gen", lab, cells))
 
-    for title, block in (("2. Interactive Delivery", INTERACTIVE), ("3. Sequential Delivery", SEQUENTIAL)):
+    for title, block in (("2. Interactive Delivery", INTERACTIVE), ("3. Passive Delivery", SEQUENTIAL)):
         section(title)
         for ds, regimes in block:
             for i, (reg, tprefix, lab) in enumerate(regimes):
@@ -242,7 +250,13 @@ def main() -> int:
     L.append(r"\textbf{Average} & & & " + " & ".join(bold_max(col_avgs))
              + f" & {np.mean(ROW_AVERAGES):.1f} \\\\")
     L.append(r"\bottomrule")
-    L.append(r"\end{tabular}%")
+    L.append(r"\end{tabular}}%")
+    # Avg. column width = its widest cell: the bold header or a number.
+    L.append(r"\settowidth{\abAvgW}{\textbf{Avg.}}\settowidth{\abAvgD}{00.0}"
+             r"\ifdim\abAvgD>\abAvgW\setlength{\abAvgW}{\abAvgD}\fi%")
+    L.append(r"\usebox{\abTabBox}\llap{\rule[\dimexpr-\dp\abTabBox+\heavyrulewidth\relax]{0.4pt}"
+             r"{\dimexpr\ht\abTabBox+\dp\abTabBox-2\heavyrulewidth\relax}"
+             r"\hspace{\dimexpr\tabcolsep+\abAvgW+1.5\tabcolsep-0.2pt\relax}}%")
     L.append(r"}")
     L.append(r"\end{table*}")
     out.write_text("\n".join(L) + "\n", encoding="utf-8")
