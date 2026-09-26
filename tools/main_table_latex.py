@@ -2,10 +2,13 @@
 
 Needs \\usepackage{booktabs,graphicx}.
 
-    PYTHONPATH=src .venv/bin/python tools/main_table_latex.py OUT.tex
+    PYTHONPATH=src .venv/bin/python tools/main_table_latex.py OUT.tex [--error]
 
 Static delivery: runs/20260924-002252_openrouter-trio (50 records x 3 repeats
-at T=0.7; score = mean over every scored sample). Interactive and sequential:
+at T=0.7; score = mean over every scored sample). With --error, each static cell
+also shows +- the standard deviation of the three repeat scores (repeat r = the
+r-th sample of every record, sample_id suffix #r0/#r1/#r2): the self-consistency
+spread. Episodes were run once, so their cells carry no error. Interactive and sequential:
 the two episode runs (50 records each, asked once). A score is the mean of the
 record-level metric -- never a report's cached value.
 
@@ -53,7 +56,7 @@ STATIC_SELECTION = [
     ("aer", [("MCS", "MCS", "exact_set_match", "EM"), ("", "MCS", "set_f1", "F1")]),
 ]
 STATIC_GENERATION = [
-    ("aiops2025", "root_cause_match", "RC"), ("commonwhy", "explanation_judged", "LLM-J"),
+    ("aiops2025", "root_cause_match", "EM"), ("commonwhy", "explanation_judged", "LLM-J"),
     ("crosstrace", "insight_judged", "LLM-J"), ("enwn_entailmentbank", "premise_judged", "LLM-J"),
     ("house_md", "diagnosis_judged", "LLM-J"),
     ("hypogen", "flip_judged", "LLM-J"), ("llm4biohypogen", "hypothesis_judged", "LLM-J"),
@@ -73,6 +76,8 @@ INTERACTIVE = [
 SEQUENTIAL = [("athena_bench", [("Gen", "io_n-a_sequential", "LLM-J")])]
 
 _cache: dict[str, list[dict]] = {}
+WITH_ERROR = "--error" in sys.argv
+_REPEAT = re.compile(r"#r(\d+)$")
 
 
 def _records(path: str) -> list[dict]:
@@ -101,7 +106,23 @@ def score(run: str, dataset: str, model: str, template_glob: str, key: str, plan
         return "--"
     # Scored on the samples that exist, also where a run stopped early
     # (Qwen3.5-27B's CoT pass covers 7-101 of 150 samples on some datasets).
-    return f"{100 * np.mean(vals):.1f}"
+    # "!" marks a cell below MIN_COVERAGE of its planned samples: shown, never bolded.
+    low = "!" if len(vals) < MIN_COVERAGE * planned else ""
+    return f"{100 * np.mean(vals):.1f}" + _repeat_error(recs, key) + low
+
+
+def _repeat_error(recs: list[dict], key: str) -> str:
+    """"|<sd>": sd of the per-repeat scores, when --error and >= 2 repeats."""
+    if not WITH_ERROR:
+        return ""
+    by_repeat: dict[str, list[float]] = {}
+    for r in recs:
+        v = (r.get("metrics") or {}).get(key)
+        m = _REPEAT.search(str(r.get("sample_id") or ""))
+        if isinstance(v, (int, float)) and m:
+            by_repeat.setdefault(m.group(1), []).append(v)
+    means = [100 * np.mean(v) for v in by_repeat.values() if v]
+    return f"|{np.std(means, ddof=1):.1f}" if len(means) >= 2 else ""
 
 
 def static_cell(dataset, model, mode, prefix, key):
@@ -120,7 +141,7 @@ def episode_cell(dataset, model, tprefix):
     for run in EPISODE_RUNS:
         s = score(run, dataset, model, tprefix, "final_answer_accuracy", EPISODE_PLANNED)
         if s is not None:
-            return s
+            return s.split("|")[0].rstrip("!")      # asked once: no repeat error
     return "--"
 
 
@@ -142,14 +163,16 @@ def jev_cell(dataset: str, prefix: str) -> str:
     paths = glob.glob(f"{STATIC_RUN}/datasets/{dataset}/{JEV}/io_SCS*@*/records.jsonl")
     if not paths:
         return "--"
-    vals = []
+    vals, scored = [], []
     for r in _records(paths[0]):
         if r.get("status") != "ok":
             continue
         m = _JEV_ANSWER.match((r.get("response") or {}).get("content") or "")
         label = m.group(1).strip() if m else None
-        vals.append(1.0 if label is not None and label == str((r.get("reference") or {}).get("gold_label")) else 0.0)
-    return f"{100 * np.mean(vals):.1f}" if vals else "--"
+        v = 1.0 if label is not None and label == str((r.get("reference") or {}).get("gold_label")) else 0.0
+        vals.append(v)
+        scored.append({"sample_id": r.get("sample_id"), "metrics": {"accuracy": v}})
+    return f"{100 * np.mean(vals):.1f}" + _repeat_error(scored, "accuracy") if vals else "--"
 
 
 DISPLAY = {"aiops2025": "RCA100"}
@@ -166,16 +189,23 @@ ROW_AVERAGES: list[float] = []
 
 def _num(cell: str) -> float | None:
     try:
-        return float(cell)
+        return float(cell.split("|")[0].rstrip("!"))
     except ValueError:
         return None
 
 
+def _show(value: str, bold: bool) -> str:
+    """"86.7|1.2" -> 86.7$_{\\pm1.2}$ (value bolded, error never)."""
+    v, _, err = value.rstrip("!").partition("|")
+    v = f"\\textbf{{{v}}}" if bold else v
+    return v + (f"$_{{\\pm{err}}}$" if err else "")
+
+
 def bold_max(cells: list[str]) -> list[str]:
     """The row's highest value in bold (all of them, if tied)."""
-    nums = [_num(c) for c in cells]
+    nums = [_num(c) if not c.endswith("!") else None for c in cells]
     top = max((n for n in nums if n is not None), default=None)
-    return [f"\\textbf{{{c}}}" if n is not None and n == top else c for c, n in zip(cells, nums)]
+    return [_show(c, n is not None and n == top) for c, n in zip(cells, nums)]
 
 
 def row(first, regime, metric, cells, grouped=False, in_average=True):
@@ -213,26 +243,19 @@ MACROS = r"""\makeatletter
 def main() -> int:
     out = Path(sys.argv[1])
     L = [MACROS]
-    L.append(r"\begin{table*}[t]")
+    L.append(r"\begin{table}[t]")
     L.append(r"\centering")
     L.append(r"\scriptsize")
     L.append(r"\renewcommand{\arraystretch}{0.82}")
     L.append(r"\setlength{\tabcolsep}{3pt}")
-    L.append(r"\caption{\textbf{Main results by delivery protocol, task format and selection regime.} All scores "
-             r"are percentages (\%). \textbf{Static}: 50 records per dataset, each asked three times at "
-             r"temperature 0.7, score averaged over all 150 answers; IO = direct answer, CoT = reasoning "
-             r"before answering. \textbf{Interactive} and \textbf{Passive}: 50 records per dataset, one "
-             r"episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the "
-             r"score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed "
-             r"(EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). "
-             r"Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, "
-             r"EM (for Gen) = exact match of the written answer (for \texttt{uniadilr\_hgc}, of the premise set), "
-             r"RC = root-cause match, JRA = joint root-cause accuracy (fault type and component). "
-             r"\textbf{Bold}: best value in the row. \textbf{Avg.}: mean of the row over all models and modes "
-             r"reported. \textbf{Average}: mean of each column over all rows with a value in it, F1 rows "
-             r"excluded (CoT columns therefore cover the static datasets only). \textbf{Jev}: a System One "
-             r"decision system, not an LLM; run with the IO prompt on the single-choice (SCS) selection tasks "
-             r"only, so its Average covers those six rows.}")
+    L.append(r"\caption{Main results (\%) by delivery mode, task format, and selection regime. Static tasks: "
+             r"50 records, three samples per record at temperature 0.7"
+             + (r"; $\pm$ is the standard deviation across the three samples" if WITH_ERROR else "")
+             + r". Interactive and passive tasks: 50 records, one IO episode each. "
+             r"SCS/MCS = single/multiple-choice selection, Gen = generation; ACC = accuracy, "
+             r"EM = exact match, F1 = set F1, LLM-J = LLM-judge verdict, JRA = joint root-cause accuracy. "
+             r"Bold = best in row. Avg./Average = row/column mean (F1 rows excluded from Average). "
+             r"Jev (non-LLM) is run on SCS tasks only.}")
     L.append(r"\label{tab:main_results_all_models}")
     L.append(r"\resizebox{\linewidth}{!}{%")
     L.append(r"\sbox{\abTabBox}{%")
@@ -299,7 +322,7 @@ def main() -> int:
              r"{\dimexpr\ht\abTabBox+\dp\abTabBox-2\heavyrulewidth\relax}"
              r"\hspace{\dimexpr\tabcolsep+\abAvgW+1.5\tabcolsep-0.2pt\relax}}%")
     L.append(r"}")
-    L.append(r"\end{table*}")
+    L.append(r"\end{table}")
     out.write_text("\n".join(L) + "\n", encoding="utf-8")
     print(out)
     return 0
