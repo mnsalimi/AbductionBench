@@ -343,9 +343,6 @@ def fig_first_question_by_model(df, out):
     fig.legend(handles=[Patch(color="#c4c3bd", label="first question irrelevant"),
                         Patch(color=INK2, label="first question relevant (model colour)")],
                loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.0), fontsize=6.8)
-    fig.text(0.995, 0.0, "50 episodes per model and task (MedQDx: questions only); 95% Wilson intervals; "
-             "×: ratio over all tasks; –: no episode in that group", ha="right", va="top", fontsize=5.6,
-             color=INK2)
     fig.tight_layout(pad=0.3, w_pad=0.8, h_pad=0.9)
     fig.subplots_adjust(top=0.935)
     save(fig, out, "fig5b_first_question_per_model")
