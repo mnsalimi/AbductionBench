@@ -48,7 +48,7 @@ Empty or truncated replies count as incorrect. For Qwen-3.5-27B under CoT, provi
 % ---------------------------------------------------------------------------
 % OLD: Within a dataset, longer traces go with lower accuracy (Figure~\ref{fig:horizon_scaling}).
 % NEW:
-Accuracy peaks for short reasoning chains and falls below the direct-answer baseline as traces grow longer, at every input length (Figure~\ref{fig:horizon_scaling}; Appendix~\ref{app:horizon_by_context}).
+Accuracy peaks for short reasoning chains and declines as traces grow longer, falling below the direct-answer baseline for two of three models, at every input length (Figure~\ref{fig:horizon_scaling}; Appendix~\ref{app:horizon_by_context}).
 % NEW caption for Figure 1:
 %  \caption{Accuracy of CoT answers by trace length (steps) for Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna, pooled over the static tasks, against each model's IO baseline (dashed); bands are $\pm$SEM, points with $n<5$ omitted.}
 % NOTE: the within-dataset quintile result (68% -> 37%, figS4) is no longer in
