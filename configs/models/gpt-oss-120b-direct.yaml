@@ -6,7 +6,7 @@ model:
   id: gpt-oss-120b-direct
   endpoint:
     batch:
-      base_url: ${env:ABENCH_MODEL_TUNNEL_URL|https://internationally-springer-practices-cholesterol.trycloudflare.com}
+      base_url: ${env:ABENCH_MODEL_TUNNEL_URL|https://YOUR-TUNNEL.trycloudflare.com}
       path: /v1/chat/completions/batch
       api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
     discovery:

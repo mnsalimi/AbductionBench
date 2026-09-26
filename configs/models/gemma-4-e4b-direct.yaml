@@ -6,7 +6,7 @@ model:
   id: gemma-4-e4b-direct
   endpoint:
     batch:
-      base_url: ${env:ABENCH_MODEL_TUNNEL_URL|https://knights-maker-bright-acts.trycloudflare.com}
+      base_url: ${env:ABENCH_MODEL_TUNNEL_URL|https://YOUR-TUNNEL.trycloudflare.com}
       path: /v1/chat/completions/batch
       api_key: ${env:ABENCH_ADMIN_KEY|${env:ABENCH_API_KEY}}
     discovery:

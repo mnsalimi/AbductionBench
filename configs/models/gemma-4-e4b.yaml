@@ -23,13 +23,13 @@ model:
   reasoning_model: false
 
   endpoint:
-    base_url: ${env:ABENCH_GATEWAY_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+    base_url: ${env:ABENCH_GATEWAY_URL|https://YOUR-TUNNEL.trycloudflare.com}
     api_key: ${env:ABENCH_API_KEY}
     models_path: /v1/models
     chat_path: /v1/chat/completions
     batch:
       enabled: true
-      base_url: ${env:ABENCH_BATCH_URL|https://cosmetic-concerns-manor-portions.trycloudflare.com}
+      base_url: ${env:ABENCH_BATCH_URL|https://YOUR-TUNNEL.trycloudflare.com}
       path: /gemma-4-e4b/v1/chat/completions/batch
       # The server runs MAX_NUM_SEQS=8, so a batch of 8 fills its scheduler
       # exactly; larger batches would just queue inside vLLM.
