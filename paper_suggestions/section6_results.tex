@@ -1,0 +1,138 @@
+% =====================================================================
+% SECTION 6 (Results) -- refined, condensed version.
+% HOW TO USE: in Sections/6_experiments.tex keep everything from the top
+% (\section{Results}, the \abRegime/\abMetric macros and the main table)
+% down to and including \end{table}. Replace EVERYTHING after \end{table}
+% (from "\label{sec:experiments}" to the end of the file, commented-out
+% blocks included) with the text below.
+% =====================================================================
+
+\label{sec:experiments}
+\label{sec:results}
+
+\graphicspath{{prism-uploads/}{figures/}{./}}
+
+Table~\ref{tab:main_results_all_models} reports final-answer scores for eight LLMs and the Jev decision system; the subsections below explain what drives them and what the reasoning traces and interaction histories add.
+
+\subsection{What determines performance across benchmarks?}
+\label{sec:main_results}
+
+\textbf{Task format.} Proposing an explanation is harder than recognizing it: where one dataset is posed both ways, the row average falls from 84.5 (SCS) to 38.2 (Gen) on \texttt{art} and from 82.8 to 47.5 on \texttt{ecare}. Allowing several answers also costs accuracy for every model---10.6 points on average, up to 27.7 for Qwen-3.5-2B (Appendix~\ref{sec:single_vs_multiple_choice}).
+
+\textbf{Chain-of-thought.} CoT helps where the explanation must be derived by chaining premises or findings---\texttt{neulr} (Qwen-3.5-4B 13.3$\to$68.0), \texttt{proof\_writer} (Gemma-4-E2B 15.3$\to$52.7), \texttt{medcasereasoning} (Qwen-3.5-4B 23.3$\to$42.7)---but often hurts open-ended hypothesis generation: \texttt{uniadilr\_hgc} (Gemma-4-E4B 40.0$\to$2.7), \texttt{matter\_to\_mechanism} (GPT-5.6-Luna 76.7$\to$64.7), \texttt{uncommonsense} (Qwen-3.5-2B 34.7$\to$18.7).
+
+\textbf{Delivery mode.} Interactive and passive tasks are the hardest: the best model reaches 58.0 on \texttt{vivabench}, 44.0 on \texttt{athena\_bench}, and only 10.0 on \texttt{cloud\_opsbench}, and four of the eight LLMs score 0.0 on \texttt{cloud\_opsbench}.
+
+\textbf{Models.} Gemini-3.8-Flash has the highest average in both modes (60.0 IO, 67.0 CoT) and the best score on four of the seven interactive and passive rows; the smallest model, Qwen-3.5-2B, is last (25.4 IO, 27.2 CoT). The IO averages include the interactive and passive rows, which have no CoT variant, so IO and CoT averages are not directly comparable.
+
+\subsection{Can a System-One decision system perform abductive selection?}
+\label{sec:jev}
+
+Partly. Jev chooses among the supplied candidates without writing an explanation, so it can only address selection, the discriminative half of abduction; generation, interaction, and multiple-choice selection are outside its interface. On the six single-choice tasks it averages 62.0, above every small LLM under IO (48.3--59.3) but below every large one (64.7--74.5). It is near the top on short commonsense explanation choices---88.0 on \texttt{ecare}, where only two of the sixteen LLM cells are higher, and 86.7 on \texttt{art}---but falls far behind when the candidates must be weighed against many clues in a long case: 36.0 vs.\ 73.3 on \texttt{true\_detective} and 50.7 vs.\ 74.7 on \texttt{diagnosisarena}. A fast decision system thus covers explanation \emph{selection} over compact evidence, but not the evidence integration that longer abductive cases require.
+
+% -------------------------------------------------------------------------
+\begin{figure*}[t]
+  \centering
+  \vspace{-6pt}
+  \begin{subfigure}[c]{0.40\linewidth}
+    \centering
+    \subcaption{\textbf{\small Trace profiles}}
+    \label{fig:cognitive_profile_radar}
+    \includegraphics[width=\linewidth]{fig_cognitive_profile_radar_11_metrics.pdf}
+  \end{subfigure}%
+  \hspace{0.03\linewidth}%
+  \begin{subfigure}[c]{0.55\linewidth}
+    \centering
+    \subcaption{\textbf{\small Correct vs.\ incorrect traces}}
+    \label{fig:quality_gap_histogram}
+    \includegraphics[width=\linewidth]{fig_quality_gap_11_metrics_histogram.pdf}
+  \end{subfigure}
+  \vspace{2pt}
+  \caption{Eleven normalized trace measures (0--1) for the CoT traces of Gemini-3.8-Flash, Gemma-4-31B, and GPT-5.6-Luna. \textbf{(a)} Mean per model. \textbf{(b)} Mean for correct ($y=1$) and incorrect ($y=0$) answers. Helpful Fraction and Gold Alive are judged against the gold answer.}
+  \label{fig:cognitive_profile_and_quality_gap}
+\end{figure*}
+
+\subsection{Which trace properties accompany a correct explanation?}
+\label{sec:cognitive_profiles_and_quality_gap}
+
+Models reach similar accuracy through different traces (Figure~\ref{fig:cognitive_profile_radar}): Gemma-4-31B covers the most observations and compares candidates most exhaustively, whereas GPT-5.6-Luna has the highest share of helpful steps and prior-knowledge use and commits to its answer earliest. Across the three models, correct and incorrect traces differ mainly in whether the correct explanation stays in play (Figure~\ref{fig:quality_gap_histogram}): the helpful-step fraction (0.72 vs.\ 0.19) and the rate at which the gold hypothesis remains under consideration (0.36 vs.\ 0.16) drop sharply in failures, while observation coverage (0.72 vs.\ 0.61) and comparison exhaustiveness (0.62 vs.\ 0.52) differ moderately. The \emph{form} of the trace barely differs---directionality (0.70 vs.\ 0.69), prior knowledge (0.44 vs.\ 0.45), and anchoring point (0.50 vs.\ 0.50)---and failed traces are more diverse (0.70 vs.\ 0.59) and contain more useless steps (0.61 vs.\ 0.55). Because two of the largest gaps are judged against the gold answer, they partly restate correctness; the gold-free gaps (coverage, comparison, diversity) indicate that successful abduction depends on using the evidence to keep and discriminate the right candidates, not on reasoning in an evidence-first style.
+
+\subsection{Does longer reasoning help?}
+\label{sec:reasoning_length}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.62\linewidth]{fig_horizon_scaling.jpeg}
+  \caption{Accuracy by CoT trace length (steps) against each model's IO baseline (dashed); bands are $\pm$SEM, points with $n<5$ omitted.}
+  \label{fig:horizon_scaling}
+\end{figure}
+
+Only up to a point. Accuracy is highest for short chains---79.8 for Gemini-3.8-Flash and 77.1 for GPT-5.6-Luna at two steps, 81.0 for Gemma-4-31B at four---all above their IO baselines (Figure~\ref{fig:horizon_scaling}). Beyond six steps, GPT-5.6-Luna falls to 33.3 and Gemini-3.8-Flash to 59.4 at ten steps, both below IO, while Gemma-4-31B stays near its baseline. The pattern holds for all eight LLMs within each dataset: from the shortest to the longest fifth of traces, accuracy falls from 68\% to 37\% (Appendix~\ref{app:reasoning_length}). The relation is associational---harder cases elicit longer traces---but it shows that additional steps do not recover an explanation the model has not found early.
+
+% -------------------------------------------------------------------------
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_relative_position_heatmap.pdf}
+    \subcaption{}
+    \label{fig:position_heatmaps_a}
+  \end{subfigure}%
+  \hfill
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_correct_incorrect_heatmap.pdf}
+    \subcaption{}
+    \label{fig:position_heatmaps_b}
+  \end{subfigure}
+  \caption{Judged trace measures by relative position in the chain (0--100\%), pooled over the eight LLMs. \textbf{(a)} Mean, each row min--max scaled. \textbf{(b)} Correct-minus-incorrect difference, computed within each dataset and averaged; each row scaled symmetrically around zero, so \textbf{blue} marks positions where correct chains score higher and \textbf{red} where incorrect chains score higher. Row intensities are not comparable across measures.}
+  \label{fig:position_heatmaps}
+\end{figure}
+
+\subsection{Where in the chain do correct and incorrect reasoning diverge?}
+\label{sec:chain_position}
+
+On average, traces follow the order abduction prescribes (Figure~\ref{fig:position_heatmaps_a}): observations concentrate in the first fifth of the chain, backtracking and uncertainty peak near the midpoint, and the anchoring point, the gold hypothesis, and step directionality peak in the last fifth---evidence first, commitment last. Splitting by outcome (Figure~\ref{fig:position_heatmaps_b}) shows where failures begin. \emph{Unresolved contradiction} is higher in incorrect chains from the very first steps, before any hypothesis is anchored, making it the earliest trace signal of an eventual error. Around the midpoint, uncertainty, backtracking, branchiness, and observation mentions are all higher in incorrect chains, so mid-chain hedging and revisiting accompany wrong answers rather than successful self-correction. The gold hypothesis and helpful steps favor correct chains throughout and increasingly toward the end, partly by construction.
+
+% -------------------------------------------------------------------------
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{fig_first_question_per_model.pdf}
+  \caption{Final-answer accuracy of interactive episodes whose \emph{first} action was judged irrelevant (gray) or relevant (color) to the gold answer, per task and pooled (\emph{All}), per model; 95\% Wilson intervals. $\times$: relevant-to-irrelevant ratio over all tasks.}
+  \label{fig:first_question}
+\end{figure}
+
+\subsection{Does asking the right question first decide an interactive diagnosis?}
+\label{sec:first_question}
+
+Largely, yes. Only 35\% of interactive episodes open with an action judged relevant to the gold answer, but those end correctly 2.4 times as often as the rest (39.7\% vs.\ 16.6\%), and every model shows the effect, with ratios from $\times$1.8 (Gemma-4-31B, Qwen-3.5-27B) to $\times$3.1 (Qwen-3.5-2B) (Figure~\ref{fig:first_question}). Relevance then declines as the episode proceeds for every model (Appendix~\ref{app:relevance_by_step}), so later questions rarely repair a poor start. The relation is associational---a model that understands the case both asks better and diagnoses better---but it shows that the quality of evidence \emph{seeking}, invisible in final-answer accuracy, is measurable from the first step.
+
+% -------------------------------------------------------------------------
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig_athena_belief_revision.pdf}
+  \caption{AthenaBench (passive): share of the 50 episodes per model whose predicted actor never changed (right or wrong from the first turn), changed without changing the outcome, or changed from wrong to right or right to wrong between the first and last turn.}
+  \label{fig:athena_revision}
+\end{figure}
+
+\subsection{Do models revise their hypothesis as passive evidence accumulates?}
+\label{sec:athena_revision}
+
+Rarely. Each AthenaBench case reveals 15--25 evidence items over four to six turns, yet in 78.5\% of the 400 episodes the model names the same actor at every turn (Figure~\ref{fig:athena_revision}). Revisions seldom help: only 7 episodes move from a wrong first prediction to a correct final one, and 2 move the other way, so final accuracy nearly equals first-turn accuracy (Gemini-3.8-Flash 40\%$\to$44\%, GPT-5.6-Luna 24\%$\to$30\%, unchanged for the other six LLMs). Frequent revision is not sufficient either: Qwen-3.5-2B changes its prediction in 48\% of episodes but never reaches the correct actor. Passive delivery thus exposes what static evaluation cannot---models anchor on the explanation formed from the first evidence and do not update it as the evidence accumulates.
+
+% =====================================================================
+% APPENDIX ADDITION (needed: the text above cites
+% Appendix~\ref{app:reasoning_length}). Paste into Sections/Appendix/
+% appendix.tex, e.g. right after the single- vs. multiple-choice block,
+% and upload figS4_accuracy_vs_reasoning_length.pdf to prism-uploads/.
+% =====================================================================
+%
+% \subsubsection{Accuracy and Reasoning Length Across All Eight LLMs}
+% \label{app:reasoning_length}
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.7\linewidth]{figS4_accuracy_vs_reasoning_length.pdf}
+%   \caption{CoT accuracy by reasoning-length quintile, computed within each dataset and model (1 = shortest fifth of replies), with 95\% Wilson bands; dotted: all models pooled.}
+%   \label{fig:accuracy_vs_reasoning_length}
+% \end{figure}
+% Within every model, accuracy declines monotonically from the shortest to the longest fifth of CoT replies, from 68\% to 37\% pooled; Qwen-3.5-2B falls from 40\% to 11\%.
