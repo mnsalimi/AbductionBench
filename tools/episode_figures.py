@@ -289,57 +289,66 @@ def fig_first_question(df, out):
     save(fig, out, "fig5_first_question_predicts_success")
 
 
-def fig_first_second_question_by_model(df, out):
-    """Accuracy when the 1st / 2nd question was relevant vs not, one panel per model."""
-    it = df[df.task.isin(TASKS_INTER)].dropna(subset=["acc"])
-    fig, axes = plt.subplots(2, 4, figsize=(FULL, 3.6), sharey=True)
-    w = 0.34
+def fig_first_question_by_model(df, out):
+    """fig5 per model: accuracy when the first question was relevant vs not,
+    for every interactive task and all of them together, one panel per model."""
+    it = df[df.task.isin(TASKS_INTER)].copy()
+    it["first"] = it.steps.apply(lambda s: s[0] if isinstance(s, list) and s else np.nan)
+    it = it.dropna(subset=["first", "acc"])
+    names = TASKS_INTER + ["All"]
+    short = {"DDXPlus (SCS)": "DDX\nSCS", "DDXPlus (MCS)": "DDX\nMCS", "VivaBench": "Viva",
+             "Med-Inquire": "Med-\nInq.", "MedQDx": "Med-\nQDx", "CloudOpsBench": "Cloud-\nOps", "All": "All"}
+    fig, axes = plt.subplots(4, 2, figsize=(FULL, 6.4), sharey=True)
+    w = 0.38
+    x = np.arange(len(names))
     for ax, m in zip(axes.flat, ORDER):
         d = it[it.model == m]
-        for qi, q in enumerate((0, 1)):
-            has = d[d.steps.apply(lambda s: isinstance(s, list) and len(s) > q)]
-            rel = has.steps.apply(lambda s: s[q])
-            vals = {}
-            for f, col, off in ((0, "#c4c3bd", -w / 2 - 0.02), (1, COLOR[m], w / 2 + 0.02)):
-                x = has[rel == f].acc
-                n = len(x)
-                a = x.mean() if n else np.nan
-                lo, hi = wilson(x.sum(), n) if n else (np.nan, np.nan)
-                vals[f] = (a, hi, n)
-                ax.bar(qi + off, a, w, color=col, zorder=2)
-                if n:
-                    ax.errorbar(qi + off, a, yerr=[[a - lo], [hi - a]], fmt="none", ecolor=INK2,
-                                elinewidth=0.6, capsize=1.3, zorder=3)
-                    ax.text(qi + off, 0.012, f"{n}", ha="center", va="bottom", fontsize=4.8,
-                            color="white" if f == 1 and a > 0.06 else INK2, zorder=4)
-            a0, h0, n0 = vals[0]
-            a1, h1, n1 = vals[1]
-            top = np.nanmax([h0, h1])
-            if n0 and n1 and a0 > 0:
-                label = f"×{a1 / a0:.1f}"
-            elif n1 and a1 > 0:
-                label = "×∞"
-            else:
-                label = "–"
-            ax.text(qi, top + 0.035, label, ha="center", fontsize=6.3, color=INK)
-        ax.set_title(m, fontsize=7.3, pad=3)
-        ax.set_xticks([0, 1], ["1st\nquestion", "2nd\nquestion"])
-        ax.tick_params(axis="x", length=0, labelsize=6.3)
-        ax.set_xlim(-0.6, 1.6)
-        ax.set_ylim(0, 0.72)
+        for f, col, off in ((0, "#c4c3bd", -w / 2 - 0.01), (1, COLOR[m], w / 2 + 0.01)):
+            accs, los, his, ns = [], [], [], []
+            for t in names:
+                sub = d if t == "All" else d[d.task == t]
+                v = sub[sub["first"] == f].acc
+                n = len(v)
+                accs.append(v.mean() if n else np.nan)
+                lo, hi = wilson(v.sum(), n) if n else (np.nan, np.nan)
+                los.append(lo)
+                his.append(hi)
+                ns.append(n)
+            accs, los, his = map(np.array, (accs, los, his))
+            ax.bar(x + off, accs, w, color=col, zorder=2)
+            ok = ~np.isnan(accs)
+            ax.errorbar((x + off)[ok], accs[ok], yerr=[np.clip(accs - los, 0, None)[ok],
+                                                      np.clip(his - accs, 0, None)[ok]], fmt="none",
+                        ecolor=INK2, elinewidth=0.5, capsize=1.0, zorder=3)
+            for xi, n in zip(x + off, ns):
+                if n == 0:
+                    ax.text(xi, 0.01, "–", ha="center", va="bottom", fontsize=5.5, color=INK2)
+        # the ratio over the pooled pair only: per-task cells hold ~50 episodes split in two
+        sub = d
+        a0 = sub[sub["first"] == 0].acc.mean()
+        a1 = sub[sub["first"] == 1].acc.mean()
+        ax.text(len(names) - 1, np.nanmax([a0, a1]) + 0.12, f"×{a1 / a0:.1f}" if a0 else "",
+                ha="center", fontsize=6.4, color=INK, fontweight="bold")
+        ax.axvline(len(names) - 1.5, color=GRID, lw=0.9)
+        ax.set_title(m, fontsize=7.4, pad=3)
+        ax.set_xticks(x, [short[n] for n in names])
+        ax.tick_params(axis="x", length=0, labelsize=5.9)
+        ax.set_ylim(0, 1.0)
+        ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
         ax.grid(axis="x", visible=False)
         ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
     for ax in axes[:, 0]:
-        ax.set_ylabel("Final-answer accuracy")
+        ax.set_ylabel("Accuracy", fontsize=7)
     from matplotlib.patches import Patch
-    fig.legend(handles=[Patch(color="#c4c3bd", label="that question was irrelevant"),
-                        Patch(color=INK2, label="that question was relevant (model colour)")],
-               loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.0), fontsize=6.6)
-    fig.text(0.995, -0.005, "6 interactive tasks pooled (MedQDx: questions only); 95% Wilson intervals; "
-             "numbers in bars = episodes", ha="right", va="top", fontsize=5.6, color=INK2)
-    fig.tight_layout(pad=0.3, w_pad=0.5, h_pad=0.9)
-    fig.subplots_adjust(top=0.88)
-    save(fig, out, "fig5b_first_second_question_per_model")
+    fig.legend(handles=[Patch(color="#c4c3bd", label="first question irrelevant"),
+                        Patch(color=INK2, label="first question relevant (model colour)")],
+               loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.0), fontsize=6.8)
+    fig.text(0.995, 0.0, "50 episodes per model and task (MedQDx: questions only); 95% Wilson intervals; "
+             "×: ratio over all tasks; –: no episode in that group", ha="right", va="top", fontsize=5.6,
+             color=INK2)
+    fig.tight_layout(pad=0.3, w_pad=0.8, h_pad=0.9)
+    fig.subplots_adjust(top=0.935)
+    save(fig, out, "fig5b_first_question_per_model")
 
 
 def fig_accuracy_by_length(df, out):
@@ -473,7 +482,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     df = load(sys.argv[2:])
     for f in (fig_accuracy_heatmap, fig_relevance_by_step_datasets, fig_relevance_by_step_models,
-              fig_relevance_success_gap, fig_first_question, fig_first_second_question_by_model,
+              fig_relevance_success_gap, fig_first_question, fig_first_question_by_model,
               fig_accuracy_by_length, fig_efficiency,
               fig_athena_by_turn, fig_athena_revision):
         f(df, out)
