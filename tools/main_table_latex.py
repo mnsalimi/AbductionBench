@@ -51,15 +51,13 @@ STATIC_SELECTION = [
 ]
 STATIC_GENERATION = [
     ("aiops2025", "root_cause_match", "RC"), ("commonwhy", "explanation_judged", "LLM-J"),
-    ("crosstrace", "insight_judged", "LLM-J"), ("house_md", "diagnosis_judged", "LLM-J"),
+    ("crosstrace", "insight_judged", "LLM-J"), ("enwn_entailmentbank", "premise_judged", "LLM-J"),
+    ("house_md", "diagnosis_judged", "LLM-J"),
     ("hypogen", "flip_judged", "LLM-J"), ("llm4biohypogen", "hypothesis_judged", "LLM-J"),
     ("matter_to_mechanism", "hypothesis_judged", "LLM-J"), ("medcasereasoning", "diagnosis_judged", "LLM-J"),
-    ("medr_bench", "diagnosis_judged", "LLM-J"), ("uncommonsense", "proxy_closest_explanation_score", "Proxy"),
+    ("medr_bench", "diagnosis_judged", "LLM-J"), ("neulr", "premise_judged", "LLM-J"),
+    ("proof_writer", "exact_match", "EM"), ("uncommonsense", "proxy_closest_explanation_score", "Proxy"),
     ("uniadilr_hgc", "premise_set_match", "Set-EM"),
-]
-STATIC_COMPLETION = [
-    ("enwn_entailmentbank", "premise_judged", "LLM-J"), ("neulr", "premise_judged", "LLM-J"),
-    ("proof_writer", "exact_match", "EM"),
 ]
 # (dataset, [(regime, template prefix, metric label)]) -- final_answer_accuracy
 INTERACTIVE = [
@@ -156,9 +154,10 @@ def main() -> int:
              r"before answering. \textbf{Interactive} and \textbf{Sequential}: 50 records per dataset, one "
              r"episode each; these protocols run in IO only (native reasoning off), so CoT is \texttt{--}; the "
              r"score is final-answer accuracy. Regimes: SCS = single choice, MCS = multiple choice allowed "
-             r"(EM = exact set match, F1 = set F1), Gen = free-form generation, Comp.\ = knowledge completion. "
+             r"(EM = exact set match, F1 = set F1), Gen = free-form generation (the model writes the answer). "
              r"Metrics: ACC = accuracy, LLM-J = LLM-judge (gpt-oss-120b) equivalence with the reference, "
-             r"RC = root-cause match, Proxy = judge-scored closest explanation, Set-EM = exact premise-set match, "
+             r"EM (for Gen) = exact match of the written answer, RC = root-cause match, Proxy = judge-scored closest "
+             r"explanation, Set-EM = exact premise-set match, "
              r"JRA = joint root-cause accuracy (fault type and component). \texttt{--}$^\dagger$: run covers "
              r"fewer than 90\% of the planned samples (not reported).}")
     L.append(r"\label{tab:main_results_all_models}")
@@ -195,13 +194,6 @@ def main() -> int:
         for mid, _ in MODELS:
             cells += [static_cell(ds, mid, "io", "n-a", key), static_cell(ds, mid, "cot", "n-a", key)]
         L.append(row(tt(ds), "Gen", lab, cells))
-    L.append(r"\addlinespace[1.2pt]")
-    sub("1c. Knowledge completion")
-    for ds, key, lab in STATIC_COMPLETION:
-        cells = []
-        for mid, _ in MODELS:
-            cells += [static_cell(ds, mid, "io", "n-a", key), static_cell(ds, mid, "cot", "n-a", key)]
-        L.append(row(tt(ds), "Comp.", lab, cells))
 
     for title, block in (("2. Interactive Delivery", INTERACTIVE), ("3. Sequential Delivery", SEQUENTIAL)):
         section(title)
