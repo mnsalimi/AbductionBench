@@ -21,7 +21,7 @@ from .checkpoint import TaskCheckpoint, dedupe_records, load_records
 from .config import RunConfig, load_yaml
 from .engine import RunResult, TaskResult
 from .errors import ConfigError
-from .metrics import mean
+from .metrics import aggregate_mean_metrics, mean
 from .registry import resolve_adapter
 from .types import AdapterDocumentation, ResponseStatus, SampleScore, TaskIdentity
 
@@ -153,7 +153,19 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                                 offline=True,
                             )
                             adapters[dataset_id] = adapter_cls(context)
-                            documentation[dataset_id] = adapters[dataset_id].documentation()
+                            # Documentation is optional here. Several adapters
+                            # describe the split they loaded in prepare(), which
+                            # a rebuild never runs, and their documentation()
+                            # raised -- which used to throw the whole adapter
+                            # away, so the task fell back to its stored
+                            # metrics.json: written before the answers were
+                            # judged, it reported every judged score as 0
+                            # (33 tasks of 20260924-002252_openrouter-trio).
+                            try:
+                                documentation[dataset_id] = adapters[dataset_id].documentation()
+                            except Exception as doc_exc:  # noqa: BLE001
+                                logger.info("no documentation for %s in a rebuild (%s)",
+                                            dataset_id, doc_exc)
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(
                                 "cannot instantiate adapter for %s (%s); using stored metrics",
@@ -175,6 +187,11 @@ def rebuild_run_result(run_dir: Path | str) -> RunResult:
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("aggregate() failed for %s: %s", dataset_id, exc)
+                if not metrics and scores:
+                    # No adapter to aggregate with: the mean of the per-sample
+                    # metrics ON DISK, never the stored metrics.json, which can
+                    # predate the judging that changed those records.
+                    metrics.update(aggregate_mean_metrics([sc.metrics for sc in scores]))
                 if not metrics:
                     metrics.update(
                         {
