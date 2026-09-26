@@ -1,6 +1,10 @@
 """One workbook for an interactive + sequential run: metrics, samples, turns.
 
     PYTHONPATH=src .venv/bin/python tools/episode_results_excel.py runs/<run> [out.xlsx]
+    PYTHONPATH=src .venv/bin/python tools/episode_results_excel.py runs/<a> runs/<b> ... --out all.xlsx
+
+Several runs go into ONE workbook (every row says which run and model it
+came from).
 
 Sheets:
   summary      one row per task: the episode metrics (core/episode_metrics.py)
@@ -32,10 +36,20 @@ def _clip(value, n=3000):
 
 
 def main() -> int:
-    run_dir = Path(sys.argv[1]).resolve()
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else run_dir / "reports" / "episode_results.xlsx"
+    args = sys.argv[1:]
+    out_arg = None
+    if "--out" in args:
+        i = args.index("--out")
+        out_arg = Path(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    run_dirs = [Path(a).resolve() for a in args]
+    if out_arg is None and len(run_dirs) == 2 and run_dirs[1].suffix == ".xlsx":
+        out_arg, run_dirs = run_dirs[1], run_dirs[:1]        # the old two-argument form
+    out = out_arg or run_dirs[0] / "reports" / "episode_results.xlsx"
     summary, per_dataset, task_dirs = [], {}, []
-    for metrics_path in sorted(run_dir.glob("datasets/*/*/*/metrics.json")):
+    metrics_paths = [p for run_dir in run_dirs
+                     for p in sorted(run_dir.glob("datasets/*/*/*/metrics.json"))]
+    for metrics_path in metrics_paths:
         task_dir = metrics_path.parent
         task_dirs.append(task_dir)
         blob = json.loads(metrics_path.read_text())
@@ -43,7 +57,7 @@ def main() -> int:
         mode = identity.get("data_delivery_mode", "")
         metrics = blob.get("metrics") or {}
         row = {"dataset": task_dir.parents[1].name, "task": task_dir.name,
-               "delivery": mode, "model": task_dir.parent.name}
+               "delivery": mode, "model": task_dir.parent.name, "run": task_dir.parents[3].name}
         for name in EPISODE_METRICS.get(mode, ()):
             row[name] = metrics.get(name)
         for name in BOOKKEEPING:
@@ -59,7 +73,8 @@ def main() -> int:
             gold = details.get("gold")
             if gold is None:
                 gold = ref.get("gold", ref) if isinstance(ref, dict) else ref
-            r = {"task": task_dir.name, "sample_id": record.get("sample_id"),
+            r = {"model": task_dir.parent.name, "task": task_dir.name,
+                 "sample_id": record.get("sample_id"),
                  "status": record.get("status"),
                  **{f"metric.{k}": v for k, v in (record.get("metrics") or {}).items()},
                  "prediction": _clip(record.get("prediction")),
