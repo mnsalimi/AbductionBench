@@ -10,8 +10,9 @@ a PNG preview of each.
 What is left out, and why -- every figure caption should say it:
   * the datasets disabled for the run (hypobench, musr, scir, xcopa) and the
     non-LLM baseline (jev-openrouter);
-  * any task whose coverage is below 90 % (Qwen3.5 27B's cot pass stopped early
-    on nine datasets): drawn as a hatched "partial" cell, never as a score;
+  * nothing for low coverage: Qwen3.5 27B's cot pass stopped early on nine
+    datasets, and those cells are scored on the samples it completed (7-101 of
+    150) -- say so in the caption;
   * per-sample reasoning metrics exist only where the reasoning judge produced
     them (for Qwen3.5 2B / 4B the step list often failed to parse); those
     figures say how many samples they rest on.
@@ -118,10 +119,10 @@ def rescore_from_records(s: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
 
 
 def headline(s: pd.DataFrame) -> pd.DataFrame:
-    """One score per (task, model, prompt mode): SCS for selection, NaN if partial."""
-    h = s[s.sel.isin(["-", "SCS"])].copy()
-    h.loc[h.partial, "value"] = np.nan
-    return h
+    """One score per (task, model, prompt mode): SCS for selection. A task with
+    low coverage (Qwen3.5 27B's cot pass stopped early on some datasets) is
+    scored on the samples it did complete -- the caption has to say so."""
+    return s[s.sel.isin(["-", "SCS"])].copy()
 
 
 # ----------------------------------------------------------------------------- figures
@@ -157,7 +158,7 @@ def fig_accuracy_heatmap(s, out):
         fig, ax = plt.subplots(figsize=(FULL, 5.2))
         from matplotlib.colors import LinearSegmentedColormap
         cmap = LinearSegmentedColormap.from_list("b", ["#f4f8fd", "#9ec5f4", "#3987e5", "#1c5cab", "#0d366b"])
-        im = _heat(ax, piv, cmap, 0, 1, lambda v: f"{v:.2f}", lambda v: v > 0.6, part)
+        im = _heat(ax, piv, cmap, 0, 1, lambda v: f"{v:.2f}", lambda v: v > 0.6)
         ax.axvline(3.5, color="white", lw=2.5)
         ax.set_title(f"{'Direct answer (io)' if mode == 'io' else 'Chain-of-thought (cot)'} — primary metric per task",
                      fontsize=7.5, loc="left", color=INK)
@@ -179,7 +180,7 @@ def fig_cot_gain_heatmap(s, out):
     cmap = LinearSegmentedColormap.from_list("div", ["#b9302f", "#e34948", "#f3b5b4", "#f0efec",
                                                      "#9ec5f4", "#2a78d6", "#1c5cab"])
     fig, ax = plt.subplots(figsize=(FULL, 5.2))
-    im = _heat(ax, gain, cmap, -0.4, 0.4, lambda v: f"{v:+.2f}", lambda v: abs(v) > 0.25, part)
+    im = _heat(ax, gain, cmap, -0.4, 0.4, lambda v: f"{v:+.2f}", lambda v: abs(v) > 0.25)
     ax.axvline(3.5, color="white", lw=2.5)
     ax.set_title("Chain-of-thought minus direct answer (primary metric; blue = CoT helps, red = CoT hurts)",
                  fontsize=7.3, loc="left", color=INK)
@@ -205,15 +206,16 @@ def fig_cot_gain_by_model(s, df, out):
         ax.scatter(tok[m], g.loc[m, "mean"], s=34, color=COLOR[m], marker="o" if m in API else "s",
                    edgecolor="white", linewidth=0.8, zorder=3)
     offs = {"Gemini 3.8 Flash": (6, 5), "GPT-5.6 Luna": (6, 5), "Gemma 4 31B": (6, -9),
-            "Qwen3.5 27B": (6, -10), "Qwen3.5 4B": (6, 3), "Gemma 4 E4B": (6, -8), "Qwen3.5 2B": (6, 5),
+            "Qwen3.5 27B": (-5, -10), "Qwen3.5 4B": (6, 3), "Gemma 4 E4B": (6, -8), "Qwen3.5 2B": (6, 5),
             "Gemma 4 E2B": (-6, -10)}
     for m in ORDER:
         dx, dy = offs[m]
-        ax.annotate(f"{m} (n={int(g.loc[m, 'count'])})", (tok[m], g.loc[m, "mean"]), xytext=(dx, dy),
+        ax.annotate(m, (tok[m], g.loc[m, "mean"]), xytext=(dx, dy),
                     textcoords="offset points", fontsize=5.8, ha="left" if dx > 0 else "right", color=INK)
     ax.set_xscale("log")
     ax.set_xlabel("Median CoT reply length (tokens, log scale)")
     ax.set_ylabel("Mean gain of CoT over io")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(0.05))
     ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v * 100:+.0f} pts"))
     ax.set_xlim(150, 40000)
     save(fig, out, "figS3_cot_gain_vs_length")
